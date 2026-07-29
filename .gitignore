@@ -1,0 +1,33 @@
+# --- Rust & Cargo ---
+/target/
+**/*.rs.bk
+
+# --- Безопасность и Ключи (КРИТИЧНО!) ---
+*.json
+*.key
+*.pem
+.env
+.env.*
+secrets/
+
+# --- Базы данных и Логи (SQLite / Audit Ledger) ---
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+*.log
+logs/
+
+# --- IPC & Системные сокеты ---
+*.sock
+
+# --- Временный мусор и IDE ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+1.txt
+tz-solana-sniper-bot-production.txt
+solana-sniper-bot-file-tree.txt
+ARCHITECTURE.txt
