@@ -6,6 +6,9 @@ mod sequence_ledger;
 mod signing;
 mod validation;
 
+#[cfg(test)]
+mod fuzz_tests;
+
 use anyhow::Result;
 use sqlx::sqlite::SqlitePoolOptions;
 use std::sync::Arc;

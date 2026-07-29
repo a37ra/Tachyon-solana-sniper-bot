@@ -139,11 +139,8 @@ pub fn build_unsigned_transaction(
 /// `expected_out` is the amount we expect from the swap.
 /// `slippage_bps` is the tolerance (e.g., 500 = 5%).
 pub fn apply_slippage(expected_out: u64, slippage_bps: u32) -> u64 {
-    let factor = 10_000u64.saturating_sub(slippage_bps as u64);
-    expected_out
-        .checked_mul(factor)
-        .map(|v| v / 10_000)
-        .unwrap_or(0)
+    let factor = 10_000u128.saturating_sub(slippage_bps as u128);
+    ((expected_out as u128) * factor / 10_000u128) as u64
 }
 
 #[cfg(test)]
@@ -161,6 +158,6 @@ mod tests {
         // 100% slippage
         assert_eq!(apply_slippage(1000, 10000), 0);
         // overflow protection
-        assert_eq!(apply_slippage(u64::MAX, 500), u64::MAX / 10000 * 9500);
+        assert_eq!(apply_slippage(u64::MAX, 500), (u64::MAX as u128 * 9500 / 10000) as u64);
     }
 }

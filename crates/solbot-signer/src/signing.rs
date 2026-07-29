@@ -1,6 +1,5 @@
 use anyhow::Result;
 use solana_sdk::signature::Keypair;
-use solana_sdk::signer::Signer;
 use solana_sdk::transaction::Transaction;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 

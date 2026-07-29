@@ -1,27 +1,130 @@
+//! Pump.fun bonding curve and migration listener.
+//!
+//! Subscribes to Pump.fun program account updates and logs
+//! to detect new token launches and Raydium migration events.
+
 use solbot_common::types::Signal;
-use tracing::{debug, info};
+use anyhow::{Context, Result};
+use chrono::Utc;
+use futures_util::StreamExt;
+use solana_client::nonblocking::pubsub_client::PubsubClient;
+use solana_client::rpc_config::{RpcAccountInfoConfig, RpcProgramAccountsConfig};
+use solana_account_decoder::UiAccountEncoding;
+use solana_sdk::pubkey::Pubkey;
+use std::str::FromStr;
+use std::time::Duration;
+use tokio::sync::mpsc;
+use tracing::{info, warn};
 
-const PUMP_FUN_PROGRAM: &str = "6EF8rrecthR5Dkjon8nkgc4mhnLMm6RjgoVhyypRtD";
+pub const PUMP_FUN_PROGRAM: &str = "6EF8rrecthR5Dkzon8Nwu78hRvfX4LctQnUBjWdK8nN2";
 
-pub struct PumpFunListener;
+pub struct PumpFunListener {
+    ws_url: String,
+}
 
 impl PumpFunListener {
     pub fn new() -> Self {
-        Self
+        let ws_url = std::env::var("SOLANA_WS_URL")
+            .unwrap_or_else(|_| "wss://api.mainnet-beta.solana.com".to_string());
+        Self { ws_url }
     }
 
-    pub async fn subscribe_to_bonding_curve(&self) -> anyhow::Result<tokio::sync::mpsc::Receiver<Signal>> {
-        let (_tx, rx) = tokio::sync::mpsc::channel(100);
-        
+    pub fn with_url(ws_url: String) -> Self {
+        Self { ws_url }
+    }
+
+    /// Subscribe to new bonding curve creation events.
+    pub async fn subscribe_to_bonding_curve(
+        &self,
+    ) -> Result<mpsc::Receiver<Signal>> {
+        let (tx, rx) = mpsc::channel(100);
+        let ws_url = self.ws_url.clone();
+
         tokio::spawn(async move {
-            info!("Starting Pump.fun bonding curve subscription (placeholder)");
-            
+            info!(ws_url = %ws_url, "Starting Pump.fun bonding curve listener");
+            let mut backoff = Duration::from_secs(1);
+
             loop {
-                tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
-                debug!("Pump.fun listener polling (placeholder implementation)");
+                match Self::run_subscription_loop(&ws_url, tx.clone()).await {
+                    Ok(()) => {
+                        info!("Pump.fun subscription loop ended, restarting...");
+                        backoff = Duration::from_secs(1);
+                    }
+                    Err(e) => {
+                        warn!(error = %e, backoff_secs = backoff.as_secs(), "Pump.fun subscription error, reconnecting...");
+                        tokio::time::sleep(backoff).await;
+                        backoff = (backoff * 2).min(Duration::from_secs(60));
+                    }
+                }
             }
         });
 
         Ok(rx)
     }
+
+    async fn run_subscription_loop(
+        ws_url: &str,
+        tx: mpsc::Sender<Signal>,
+    ) -> Result<()> {
+        let pubsub = PubsubClient::new(ws_url)
+            .await
+            .context("Failed to connect to WebSocket endpoint")?;
+
+        let program_id = Pubkey::from_str(PUMP_FUN_PROGRAM)?;
+
+        let config = RpcProgramAccountsConfig {
+            filters: None,
+            account_config: RpcAccountInfoConfig {
+                encoding: Some(UiAccountEncoding::Base64),
+                data_slice: None,
+                commitment: Some(solana_sdk::commitment_config::CommitmentConfig::confirmed()),
+                min_context_slot: None,
+            },
+            with_context: Some(true),
+        };
+
+        let (mut stream, _unsub) = pubsub
+            .program_subscribe(&program_id, Some(config))
+            .await
+            .context("Failed to subscribe to Pump.fun program accounts")?;
+
+        info!("Successfully subscribed to Pump.fun program accounts");
+
+        while let Some(response) = stream.next().await {
+            let slot = response.context.slot;
+            let account_pubkey = response.value.pubkey;
+
+            if let Some(account) = response.value.account.decode::<solana_sdk::account::Account>() {
+                let account_data = account.data;
+                // Pump.fun bonding curve data starts with discriminator + mint pubkey (32 bytes)
+                if account_data.len() >= 8 + 32 + 8 * 5 + 1 {
+                    if let Ok(mint) = read_pubkey_bytes(&account_data, 8) {
+                        let signal = Signal {
+                            mint: mint.to_string(),
+                            pool_address: account_pubkey.clone(),
+                            dex_program: PUMP_FUN_PROGRAM.to_string(),
+                            signal_source: "geyser_ws".to_string(),
+                            slot,
+                            received_at: Utc::now().timestamp_millis() as u64,
+                        };
+
+                        if tx.send(signal).await.is_err() {
+                            info!("Receiver dropped, closing Pump.fun listener loop");
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
+
+fn read_pubkey_bytes(data: &[u8], offset: usize) -> Result<Pubkey> {
+    if offset + 32 > data.len() {
+        anyhow::bail!("Pubkey offset out of bounds");
+    }
+    let bytes: [u8; 32] = data[offset..offset + 32].try_into()?;
+    Ok(Pubkey::new_from_array(bytes))
 }

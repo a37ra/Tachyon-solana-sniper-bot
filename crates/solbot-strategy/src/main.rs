@@ -11,7 +11,7 @@ pub mod startup;
 pub mod state;
 pub mod wsol;
 pub mod pnl;
-
+pub mod tx_builder;
 use actor::{ActorConfig, ActorRegistry};
 use signal::dedup::DedupFilter;
 use signal::dex_listeners::{meteora::MeteoraListener, pump_fun::PumpFunListener, raydium::RaydiumListener};

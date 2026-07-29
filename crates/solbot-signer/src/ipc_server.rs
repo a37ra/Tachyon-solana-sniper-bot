@@ -10,7 +10,6 @@
 //! - The keypair never leaves this process
 
 use chrono::Utc;
-use solana_sdk::signature::Keypair;
 use std::sync::Arc;
 use tonic::{Request, Response, Status};
 
@@ -21,7 +20,7 @@ use crate::sequence_ledger::SequenceLedger;
 use crate::signing::sign_transaction;
 use crate::validation::{validate_intent, RejectionReason};
 use solbot_common::types::dex::DexProgram;
-use solbot_common::types::intent::{IntentType, SignerIntentRequest, VerdictStatus};
+use solbot_common::types::intent::{IntentType, SignerIntentRequest};
 
 pub mod signer_proto {
     tonic::include_proto!("signer");
@@ -115,8 +114,28 @@ impl TransactionSignerService for SignerService {
             .and_then(|s| s.parse().ok())
             .unwrap_or(10_000_000_000); // 10 SOL default
 
-        let validation_result =
-            validate_intent(&internal_req, last_seq, max_size_absolute, allowed_programs);
+        // hard_cap_bps limit from config (default 5000 = 50%)
+        let hard_cap_bps_limit: u32 = std::env::var("SOLBOT_HARD_CAP_BPS_LIMIT")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(5000);
+
+        // Destination whitelist from env (comma-separated) — empty = allow all
+        let dest_whitelist_str = std::env::var("SOLBOT_DEST_WHITELIST").unwrap_or_default();
+        let dest_whitelist: Vec<&str> = if dest_whitelist_str.is_empty() {
+            vec![]
+        } else {
+            dest_whitelist_str.split(',').collect()
+        };
+
+        let validation_result = validate_intent(
+            &internal_req,
+            last_seq,
+            max_size_absolute,
+            allowed_programs,
+            &dest_whitelist,
+            hard_cap_bps_limit,
+        );
         let rate_ok = self.compromise_detection.check_signing_rate();
 
         // Determine verdict
