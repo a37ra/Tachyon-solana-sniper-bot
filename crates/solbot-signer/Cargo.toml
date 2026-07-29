@@ -20,6 +20,11 @@ solana-sdk = "1.18"
 libc = "0.2"
 base64 = "0.21"
 bincode = "1.3"
+aes-gcm = "0.10"
+argon2 = "0.5"
+zeroize = { version = "1.7", features = ["derive"] }
+rand = "0.8"
+rlimit = "0.10"
 
 [build-dependencies]
 tonic-build = { workspace = true }
