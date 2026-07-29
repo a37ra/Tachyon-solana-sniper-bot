@@ -1,0 +1,69 @@
+syntax = "proto3";
+
+package signer;
+
+// Тип намерения для подписи
+enum IntentType {
+    INTENT_TYPE_UNSPECIFIED = 0;
+    INTENT_TYPE_BUY = 1;
+    INTENT_TYPE_SELL = 2;       // Take profit / Stop loss
+    INTENT_TYPE_EMERGENCY = 3;  // Экстренный выход (circuit breaker, stuck)
+}
+
+// Запрос от solbot-strategy к solbot-signer
+message SignerIntentRequest {
+    // Уникальный контекстный ключ для anti-replay (например, "mint:pool")
+    string context_key = 1;
+    
+    // Монотонный счетчик, должен быть строго больше last_ipc_seq(context_key)
+    uint64 ipc_seq = 2;
+    
+    // Время создания intent'а, для проверки возраста (<500ms)
+    uint64 issued_at_unix_ms = 3;
+    
+    // Тип намерения
+    IntentType intent_type = 4;
+    
+    // Сырая транзакция в base64 (неподписанная, Message)
+    string unsigned_transaction_base64 = 5;
+    
+    // Дополнительные параметры для валидации signer'ом (чтобы стратегия не могла обмануть signer)
+    
+    // Адрес программы (DEX), на которую отправляется транзакция (для allowlist'а)
+    string program_id = 6;
+    
+    // Абсолютный потолок размера сделки в lamports
+    uint64 max_size_lamports = 7;
+    
+    // Жесткий потолок проскальзывания (basis points)
+    uint32 hard_cap_bps = 8;
+    
+    // Адреса назначения (для детекции unexpected_destination, 3.3)
+    repeated string destination_addresses = 9;
+}
+
+// Статус проверки
+enum VerdictStatus {
+    VERDICT_UNSPECIFIED = 0;
+    VERDICT_ACCEPTED = 1;
+    VERDICT_REJECTED = 2;
+}
+
+// Ответ от solbot-signer
+message SignerIntentResponse {
+    VerdictStatus status = 1;
+    
+    // В случае ACCEPTED — подписанная транзакция (готовая к Jito/RPC отправке) в base64
+    string signed_transaction_base64 = 2;
+    
+    // В случае REJECTED — причина отклонения
+    string rejection_reason = 3;
+    
+    // Последний известный ipc_seq для context_key (даже при отказе)
+    uint64 last_ipc_seq = 4;
+}
+
+// Сервис, реализуемый solbot-signer (UDS)
+service TransactionSignerService {
+    rpc SignIntent (SignerIntentRequest) returns (SignerIntentResponse);
+}
