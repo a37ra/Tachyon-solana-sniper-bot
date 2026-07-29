@@ -1,0 +1,18 @@
+[Unit]
+Description=Solana Sniper Bot Strategy Service
+After=network.target solbot-signer.service
+
+[Service]
+Type=simple
+User=solbot
+Group=solbot
+ExecStart=/usr/local/bin/solbot-strategy
+Restart=on-failure
+RestartSec=5s
+
+ProtectSystem=full
+PrivateTmp=true
+ReadWritePaths=/var/lib/solbot
+
+[Install]
+WantedBy=multi-user.target

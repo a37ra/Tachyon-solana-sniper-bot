@@ -1,0 +1,14 @@
+[Unit]
+Description=Solana Sniper Bot Telegram Service
+After=network.target solbot-notify.service
+
+[Service]
+Type=simple
+User=solbot
+Group=solbot
+ExecStart=/usr/local/bin/solbot-telegram
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target

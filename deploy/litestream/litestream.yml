@@ -1,0 +1,8 @@
+dbs:
+  - path: /var/lib/solbot/solbot.db
+    replicas:
+      - type: s3
+        bucket: solbot-db-backups
+        path: solbot.db
+        endpoint: https://s3.amazonaws.com
+        sync-interval: 1s

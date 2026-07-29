@@ -5,3 +5,7 @@ edition.workspace = true
 authors.workspace = true
 
 [dependencies]
+solbot-common = { path = "../solbot-common" }
+tokio = { workspace = true }
+serde = { workspace = true }
+tracing = "0.1"

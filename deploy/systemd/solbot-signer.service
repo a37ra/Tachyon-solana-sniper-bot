@@ -1,0 +1,23 @@
+[Unit]
+Description=Solana Sniper Bot Signer Service
+After=network.target vault.service
+
+[Service]
+Type=simple
+User=solbot
+Group=solbot
+ExecStart=/usr/local/bin/solbot-signer
+Restart=always
+RestartSec=2s
+
+# Security Hardening (Section 6 of TZ)
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+MemoryDenyWriteExecute=true
+LimitCORE=0
+ReadWritePaths=/var/lib/solbot
+
+[Install]
+WantedBy=multi-user.target
