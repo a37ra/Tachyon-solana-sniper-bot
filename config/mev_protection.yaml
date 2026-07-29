@@ -1,0 +1,152 @@
+# MEV Protection Configuration
+# Источник: ТЗ раздел 3.6
+
+# Primary Route Configuration
+primary_route:
+  type: "jito_bundle"
+  enabled: true
+  
+  # Jito Bundle Submission
+  jito:
+    # Регионы (выбираются по минимальному RTT)
+    regions:
+      - "frankfurt"
+      - "tokyo"
+      - "ashburn"
+    
+    # Tip configuration
+    tip:
+      # Базовый tip (перезаписывается tier-specific значением)
+      baseline_micro_lamports: 1000
+      
+      # Randomized micro-jitter для избежания детектируемости
+      jitter_enabled: true
+      jitter_range:
+        min_pct: 0.8  # 80% от baseline
+        max_pct: 1.2  # 120% от baseline
+    
+    # Bundle timeout
+    submission_timeout_ms: 2000
+    
+    # Retries внутри bundle submission
+    max_retries: 2
+    retry_backoff_ms: 100
+
+# Fallback Route (Degraded MEV Protection)
+fallback_route:
+  type: "public_rpc_direct_submit"
+  enabled: true
+  
+  # Условия переключения на fallback
+  trigger_conditions:
+    # Jito недоступен
+    jito_unavailable: true
+    # Jito timeout
+    jito_timeout_ms: 3000
+    # Jito error rate
+    jito_error_rate_threshold_pct: 10
+  
+  # Public RPC Configuration
+  public_rpc:
+    # Priority fee multiplier (для emergency exit escalation)
+    priority_fee_multiplier:
+      stage_1: 2.0  # ×2 от сетевой медианы
+      stage_2: 3.0  # ×3 от сетевой медианы
+    
+    # Randomized micro-jitter для избежания MEV
+    jitter_enabled: true
+    jitter_ms:
+      min: 1
+      max: 5  # tier-specific
+    
+    # Direct submit timeout
+    submission_timeout_ms: 1500
+    
+    # Retries
+    max_retries: 3
+    retry_backoff_ms:
+      - 100
+      - 200
+      - 400
+
+# Alert Rule для MEV degradation (3.6)
+alerting:
+  # Алерт если primary route недоступен > X% времени
+  primary_unavailability_threshold_pct: 15
+  
+  # Алерт если Jito bundle rejection rate > X%
+  jito_rejection_rate_threshold_pct: 20
+  
+  # Алерт если fallback используется > X% времени
+  fallback_usage_threshold_pct: 30
+  
+  # Окно мониторинга (в минутах)
+  monitoring_window_minutes: 15
+
+# MEV Protection Metrics
+metrics:
+  # Track bundle acceptance rate
+  track_jito_acceptance_rate: true
+  
+  # Track fallback usage
+  track_fallback_usage: true
+  
+  # Track slippage on primary vs fallback
+  track_slippage_comparison: true
+  
+  # Track priority fees paid
+  track_priority_fees: true
+
+# Transaction Ordering Protection
+transaction_ordering:
+  # Использовать durable nonce для critical transactions (stage 3)
+  durable_nonce_enabled: true
+  
+  # Проверка recent_blockhash валидности
+  blockhash_validation: true
+  
+  # Максимальный возраст blockhash для использования
+  max_blockhash_age_slots: 80
+
+# Slippage Protection
+slippage:
+  # Normal trading slippage
+  normal_slippage_bps: 100  # 1%
+  
+  # Emergency exit slippage (tier-specific)
+  emergency_slippage_bps: 500  # 5% baseline
+  
+  # Max slippage (stage 2 escalation)
+  max_slippage_bps: 1000  # 10%
+  
+  # Slippage tolerance для simulate_sell
+  simulate_sell_tolerance_bps: 50
+
+# Front-running Protection
+front_running_protection:
+  # Минимальная задержка между signal и execution для избежания front-running
+  min_signal_to_execution_delay_ms: 50
+  
+  # Randomize submission timing
+  randomize_submission_timing: true
+  randomization_range_ms:
+    min: 0
+    max: 20
+
+# Sandwich Attack Protection
+sandwich_protection:
+  # Детектировать подозрительные паттерны в pool
+  detect_suspicious_patterns: true
+  
+  # Отклонять если pool имеет признаки sandwich атаки
+  reject_on_suspicious_pool: true
+  
+  # Параметры детекции
+  detection:
+    # Высокая волатильность в коротком окне
+    high_volatility_window_slots: 10
+    high_volatility_threshold_pct: 5
+    
+    # Много крупных транзакций в коротком окне
+    large_tx_window_slots: 5
+    large_tx_count_threshold: 3

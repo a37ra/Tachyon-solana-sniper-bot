@@ -1,5 +1,5 @@
-use sqlx::SqlitePool;
 use anyhow::Result;
+use sqlx::SqlitePool;
 
 pub struct WalletWatchlistRepo {
     pool: SqlitePool,

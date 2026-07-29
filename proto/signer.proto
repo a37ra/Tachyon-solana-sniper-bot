@@ -40,6 +40,12 @@ message SignerIntentRequest {
     
     // Адреса назначения (для детекции unexpected_destination, 3.3)
     repeated string destination_addresses = 9;
+    
+    string dex_program_id = 10;
+    string mint = 11;
+    string pool_address = 12;
+    string position_id = 13;
+    double amount_or_pct = 14;
 }
 
 // Статус проверки
@@ -61,6 +67,9 @@ message SignerIntentResponse {
     
     // Последний известный ipc_seq для context_key (даже при отказе)
     uint64 last_ipc_seq = 4;
+    
+    // Сигнатура транзакции
+    string constructed_tx_signature = 5;
 }
 
 // Сервис, реализуемый solbot-signer (UDS)

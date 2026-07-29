@@ -1,0 +1,258 @@
+# OpenTelemetry Configuration
+# Источник: ТЗ раздел 1.3 (otel_spans)
+
+# OpenTelemetry Spans Definition
+# Каждый span соответствует независимой метрике, не перекрывающейся по смыслу с другими
+
+spans:
+  # Signal received from Geyser/RPC
+  signal_received:
+    name: "signal_received"
+    description: "Сигнал о создании пула/свопа получен от Geyser или RPC"
+    attributes:
+      - "mint"
+      - "pool_address"
+      - "dex_program"
+      - "signal_source"  # geyser, rpc
+      - "slot"
+  
+  # Risk gate start
+  risk_gate_start:
+    name: "risk_gate_start"
+    description: "Начало выполнения pre-buy checks"
+    attributes:
+      - "mint"
+      - "pool_address"
+      - "tier"
+  
+  # Risk gate end
+  risk_gate_end:
+    name: "risk_gate_end"
+    description: "Завершение pre-buy checks (успех или reject)"
+    attributes:
+      - "mint"
+      - "pool_address"
+      - "tier"
+      - "outcome"  # passed, rejected
+      - "rejection_reason"
+      - "individual_check_results"  # json с результатами каждой проверки
+  
+  # Transaction built
+  tx_built:
+    name: "tx_built"
+    description: "Транзакция собрана (compile instructions, compute budget, cached blockhash)"
+    attributes:
+      - "mint"
+      - "pool_address"
+      - "tier"
+      - "intent_type"  # buy, sell
+      - "instructions_count"
+      - "compute_budget"
+  
+  # Transaction signed
+  signed:
+    name: "signed"
+    description: "Транзакция подписана signer'ом через IPC"
+    attributes:
+      - "mint"
+      - "pool_address"
+      - "tier"
+      - "intent_type"
+      - "ipc_seq"
+      - "signer_verdict"  # accepted, rejected
+  
+  # Bundle submitted
+  bundle_submitted:
+    name: "bundle_submitted"
+    description: "Bundle/транзакция отправлена в сеть (Jito или public RPC)"
+    attributes:
+      - "mint"
+      - "pool_address"
+      - "tier"
+      - "intent_type"
+      - "route"  # jito_bundle, public_rpc
+      - "bundle_id"  # для Jito
+      - "tx_signature"
+
+# Additional Spans for Detailed Monitoring
+additional_spans:
+  # Individual pre-buy checks
+  mint_freeze_authority_check:
+    name: "mint_freeze_authority_check"
+    description: "Проверка freeze authority на mint аккаунте"
+    attributes:
+      - "mint"
+      - "outcome"
+      - "duration_ms"
+  
+  lp_lock_check:
+    name: "lp_lock_check"
+    description: "Проверка блокировки LP токенов"
+    attributes:
+      - "pool_address"
+      - "outcome"
+      - "duration_ms"
+  
+  token2022_extensions_check:
+    name: "token2022_extensions_check"
+    description: "Проверка Token-2022 extensions"
+    attributes:
+      - "mint"
+      - "extensions_found"
+      - "outcome"
+      - "duration_ms"
+  
+  simulate_sell:
+    name: "simulate_sell"
+    description: "Симуляция продажи (доминант по времени в risk_gate)"
+    attributes:
+      - "mint"
+      - "pool_address"
+      - "simulated_slippage_bps"
+      - "outcome"
+      - "duration_ms"
+  
+  # Actor processing
+  actor_processing:
+    name: "actor_processing"
+    description: "Обработка события актором (control или market_data lane)"
+    attributes:
+      - "mint"
+      - "lane"  # control, market_data
+      - "event_type"
+      - "phase"  # queue_wait, processing
+      - "deadline_exceeded"
+
+  # Signer IPC round-trip
+  signer_ipc_roundtrip:
+    name: "signer_ipc_roundtrip"
+    description: "IPC round-trip к signer'у (Unix Domain Socket)"
+    attributes:
+      - "context_key"
+      - "intent_type"
+      - "ipc_seq"
+      - "verdict"
+      - "duration_ms"
+
+  # Jito bundle submission
+  jito_bundle_submission:
+    name: "jito_bundle_submission"
+    description: "Отправка bundle в Jito block engine"
+    attributes:
+      - "bundle_id"
+      - "region"
+      - "tip_micro_lamports"
+      - "outcome"  # accepted, rejected
+      - "duration_ms"
+
+  # Public RPC submission
+  public_rpc_submission:
+    name: "public_rpc_submission"
+    description: "Отправка транзакции через public RPC"
+    attributes:
+      - "tx_signature"
+      - "priority_fee_micro_lamports"
+      - "outcome"  # submitted, failed
+      - "duration_ms"
+
+# Exporter Configuration
+exporter:
+  # OTLP over gRPC
+  otlp:
+    enabled: true
+    endpoint: "http://localhost:4317"
+    protocol: "grpc"
+    timeout_ms: 5000
+    
+    # TLS configuration (если нужно)
+    tls:
+      enabled: false
+      ca_cert_path: ""
+  
+  # Console exporter (для разработки)
+  console:
+    enabled: false
+
+# Sampling Configuration
+sampling:
+  # 100% sampling для production (критично для SLA мониторинга)
+  strategy: "always_on"
+  
+  # Альтернативно: trace_id_ratio_based для снижения нагрузки
+  # strategy: "trace_id_ratio_based"
+  # ratio: 1.0  # 100%
+
+# Resource Attributes
+resource:
+  # Service identification
+  service:
+    name: "solbot-strategy"
+    version: "0.1.0"
+    instance_id: "${HOSTNAME}"  # автозамена
+  
+  # Deployment environment
+  deployment:
+    environment: "production"
+    region: "${REGION}"  # frankfurt, tokyo, ashburn
+  
+  # Tier configuration
+  tier: "${TIER}"  # micro, small, medium, large
+
+# Batch Processing
+batch:
+  # Настройки batch processor
+  processor:
+    max_queue_size: 2048
+    scheduled_delay_ms: 5000
+    max_export_batch_size: 512
+    max_export_timeout_ms: 30000
+
+# Metrics Configuration
+metrics:
+  # Prometheus exporter (опционально)
+  prometheus:
+    enabled: false
+    port: 9090
+    path: "/metrics"
+
+# Logging Integration
+logging:
+  # Correlate logs with traces
+  correlate_logs_with_traces: true
+  
+  # Inject trace context into log records
+  inject_trace_context: true
+
+# Performance Targets (для alerting)
+performance_targets:
+  # Из ТЗ 1.3
+  latency_kpis:
+    risk_gate_latency_ms:
+      p50_target: 20
+      p99_target: 100
+    
+    submission_engine_latency_ms:
+      p50_target: 15
+      p99_target: 30
+    
+    end_to_end_latency_ms:
+      p50_target: 35
+      p99_target: 150
+      hard_ceiling_ms: 200
+
+# Alerting on OTel metrics
+alerting:
+  # Alert если span duration превышает target
+  span_duration_alerting:
+    enabled: true
+    threshold_multiplier: 1.5  # alert если > 1.5 × target
+  
+  # Alert если error rate в span > X%
+  span_error_rate_alerting:
+    enabled: true
+    error_rate_threshold_pct: 5
+  
+  # Alert если span drop rate > X% (sampling issues)
+  span_drop_rate_alerting:
+    enabled: true
+    drop_rate_threshold_pct: 1

@@ -1,0 +1,101 @@
+# Large Tier Configuration ($40,000 – $100,000)
+# Источник: ТЗ раздел 1.2, Приложение A, разделы 3.3, 3.4, 4.8
+
+tier:
+  name: "large"
+  capital_range:
+    min_usd: 40000
+    max_usd: 100000
+
+# Sizing Parameters (4.1)
+sizing:
+  # Базовый размер позиции как % от капитала
+  base_size_pct: 0.02  # 2%
+  
+  # Максимальный размер позиции в SOL
+  max_size_sol: 10.0
+  
+  # Жесткий потолок проскальзывания
+  slippage_hard_cap_bps: 800
+  
+  # Kelly Criterion параметры
+
+  kelly:
+    fraction_of_kelly: 0.25  # консервативный фракционный Kelly
+    
+  # Adaptive Sizing (4.1)
+  adaptive:
+    enabled: true
+    calibration_window_slots: 1000  # ~6-7 минут
+    min_sample_size: 30  # минимальное число закрытых позиций
+    size_max_pct: 0.03  # 3% - clamp для adaptive
+
+# Position Limits (4.8)
+position_limits:
+  # Максимальное количество одновременных позиций
+  max_concurrent_positions: 12
+  
+  # Circuit Breaker пороги (4.8)
+  circuit_breaker:
+    warning_threshold_pct: 0.08  # 8% - предупреждение
+    daily_loss_limit_pct: 0.12  # 12% - остановка новых входов
+    max_parallel_emergency_sells: 3
+
+# Hot Wallet Cap (3.4)
+hot_wallet:
+  # Рекомендованный cap для large тира
+  cap_sol: 185.0
+  
+  # Компоненты расчёта (для справки)
+  calculation:
+    exec_buffer_mult: 1.5
+    ata_rent_sol: 0.00203928
+    durable_nonce_rent_sol: 0.0015  # getMinimumBalanceForRentExemption(80)
+    fee_reserve_sol: 2.0
+
+# Compromise Detection - Signing Rate Threshold (3.3)
+compromise_detection:
+  # Порог аномальной скорости подписания (intent/5мин)
+  # Формула: ceil(max_concurrent_positions * 13.5)
+  signing_rate_threshold_5min: 162
+
+# Emergency Exit Parameters (2.3)
+emergency_exit:
+  # Slippage для emergency exit (basis points)
+  emergency_slippage_bps: 1500  # 15%
+  
+  # Priority fee baseline (micro-lamports)
+  priority_fee_baseline: 10000
+
+# MEV Protection (3.6)
+mev_protection:
+  # Jito tip baseline
+  jito_tip_baseline: 10000  # micro-lamports
+  
+  # Public RPC fallback jitter
+  public_rpc_jitter_ms:
+    min: 5
+    max: 15
+
+# Risk Gate Timing (1.3)
+risk_gate:
+  # Pre-buy checks hard timeout (1.3)
+  hard_timeout_ms: 150
+  
+  # Целевые метрики для мониторинга
+  targets:
+    risk_gate_latency_p50_ms: 20
+    risk_gate_latency_p99_ms: 100
+    submission_latency_p50_ms: 15
+    submission_latency_p99_ms: 30
+    end_to_end_latency_p50_ms: 35
+    end_to_end_latency_p99_ms: 150
+
+# Smart Money Watchlist (2.5)
+smart_money:
+  # Максимальный размер watchlist
+  max_watchlist_size: 150
+  
+  # Параметры для soft_boost режима
+  soft_boost:
+    size_multiplier: 1.08  # 8% boost при smart_money_hit

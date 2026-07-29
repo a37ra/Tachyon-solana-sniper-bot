@@ -1,0 +1,33 @@
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RpcConfig {
+    pub primary_url: String,
+    pub fallback_urls: Vec<String>,
+    pub ws_url: String,
+    pub timeout_ms: u64,
+    pub commitment: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FeaturesConfig {
+    pub smart_money_enabled: bool,
+    pub smart_money_mode: String,
+    pub circuit_breaker_enabled: bool,
+    pub mev_protection_enabled: bool,
+    pub paper_trading: PaperTradingConfig,
+    pub max_signal_age_slots: u64,
+    pub auto_unwrap_wsol: bool,
+    pub wsol_unwrap_threshold: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PaperTradingConfig {
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BaseConfig {
+    pub rpc: RpcConfig,
+    pub features: FeaturesConfig,
+}

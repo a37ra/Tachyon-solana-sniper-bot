@@ -13,7 +13,7 @@ pub enum SolbotError {
 
     #[error("Network error: {0}")]
     NetworkError(String),
-    
+
     #[error("Strategy execution error: {0}")]
     StrategyError(String),
 }

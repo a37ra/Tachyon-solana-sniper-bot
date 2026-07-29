@@ -1,0 +1,185 @@
+# Emergency Exit Escalation Configuration
+# Источник: ТЗ раздел 2.3
+
+# Unified 4-stage escalation matrix
+# Переиспользуется тремя триггерами: hard SL, on_backfill_incomplete, circuit_breaker.on_trigger
+
+escalation:
+  # Stage 0: Jito Bundle (Primary)
+  stage_0:
+    enabled: true
+    route: "jito_bundle"
+    slippage_bps: 500  # tier-specific emergency_slippage_bps
+    
+    # Tip configuration
+    tip:
+      baseline_micro_lamports: 1000  # tier-specific
+      randomized_jitter: true
+      jitter_range_pct: [0.8, 1.2]
+    
+    # Attempts (переиспользуют ОДНУ подпись)
+    attempts: 2
+    timeout_per_attempt_ms: 500
+    
+    # Backoff между попытками (без новой подписи)
+    backoff_ms: [100]
+    
+    # Переход на stage 1 если все attempts исчерпаны
+    transition_condition: "all_attempts_failed"
+
+  # Stage 1: Public RPC with 2x priority fee
+  stage_1:
+    enabled: true
+    route: "public_rpc_direct_submit"
+    slippage_bps: 500  # tier-specific emergency_slippage_bps
+    
+    # Priority fee multiplier (НОВАЯ подпись при входе в стадию)
+    priority_fee_multiplier: 2.0
+    
+    # Attempts (переиспользуют ОДНУ подпись)
+    attempts: 2
+    timeout_per_attempt_ms: 500
+    
+    # Backoff между попытками (без новой подписи)
+    backoff_ms: [200]
+    
+    # Переход на stage 2 если все attempts исчерпаны
+    transition_condition: "all_attempts_failed"
+
+  # Stage 2: Public RPC with 3x priority fee + max slippage
+  stage_2:
+    enabled: true
+    route: "public_rpc_direct_submit"
+    slippage_bps: 1000  # max_price_impact_observed (sell at any executable price)
+    
+    # Priority fee multiplier (НОВАЯ подпись при входе в стадию)
+    priority_fee_multiplier: 3.0
+    
+    # Attempts (переиспользуют ОДНУ подпись)
+    attempts: 3
+    timeout_per_attempt_ms: 500
+    
+    # Backoff между попытками (без новой подписи)
+    # Суммарно 1.4 сек — в пределах валидности recent_blockhash (~60-90с)
+    backoff_ms: [200, 400, 800]
+    
+    # Переход на stage 3 если все attempts исчерпаны
+    transition_condition: "all_attempts_failed"
+
+  # Stage 3: Durable Nonce (Stuck Manual Intervention Required)
+  stage_3:
+    enabled: true
+    route: "durable_nonce"
+    
+    # Durable nonce account (создаётся заранее для каждого hot wallet)
+    durable_nonce_account: true
+    nonce_account_size_bytes: 80
+    
+    # Slippage: max executable price
+    slippage_bps: 1000
+    
+    # Priority fee: высокая для гарантии исполнения
+    priority_fee_multiplier: 5.0
+    
+    # НОВАЯ подпись при входе в стадию
+    # Ретраи переиспользуют эту подпись бесконечно
+    transaction_reuse: true
+    
+    # Статус позиции
+    position_status: "stuck_manual_intervention_required"
+    
+    # Alerting
+    alert:
+      telegram_immediate: true
+      email_backup: true
+      include_full_context: true  # mint, pool, last known price, all tx signatures
+    
+    # Side effect: pause new entries для этого dex_program_id
+    pause_new_entries_for_dex: true
+    pause_duration_minutes: 30
+    
+    # Background retry (каждые 5с бесконечно)
+    background_retry:
+      enabled: true
+      interval_ms: 5000
+      max_duration_minutes: null  # бесконечно до success или manual override
+    
+    # Manual override через CLI
+    manual_override_command: "solbot-cli position force-close <id>"
+
+# Escalation Triggers
+triggers:
+  # Hard Stop Loss (4.4)
+  hard_stop_loss:
+    enabled: true
+    trigger_pct: -50  # -50% от entry price
+    use_escalation: true
+  
+  # Backfill Incomplete (2.4)
+  backfill_incomplete:
+    enabled: true
+    trigger_condition: "backfill_failed_after_startup"
+    use_escalation: true
+  
+  # Circuit Breaker (4.8)
+  circuit_breaker:
+    enabled: true
+    trigger_condition: "daily_loss_limit_exceeded"
+    use_escalation: true
+
+# Escalation State Machine
+state_machine:
+  # Единственная точка правды для эскалации
+  unified_implementation: true
+  
+  # Стадии
+  stages:
+    - "Stage0Jito"
+    - "Stage1PublicRpc2x"
+    - "Stage2PublicRpc3xMaxSlippage"
+    - "Stage3DurableNonceStuck"
+  
+  # Переходы только вперёд (нельзя вернуться на предыдущую стадию)
+  forward_only: true
+  
+  # Сохранение состояния в SQLite
+  persist_state: true
+  state_table: "emergency_exit_state"
+
+# Signature Reuse Rule (критично для 3.3 signing-rate threshold)
+signature_reuse:
+  # Правило: повторные попытки внутри стадии переиспользуют ОДНУ подпись
+  rule: "reuse_within_stage"
+  
+  # Новая подпись только при переходе между стадиями
+  new_signature_on_stage_transition: true
+  
+  # Это ограничивает нагрузку на signer предсказуемым числом подписей
+  # вместо одной подписи на каждую сетевую попытку
+  justification: "Ретрай внутри стадии — для ловли транзитного сбоя доставки, а не для пересчёта комиссии/slippage"
+
+# Infrastructure Requirements
+infrastructure:
+  # Durable nonce account на каждый hot wallet
+  durable_nonce_accounts:
+    create_on_deploy: true
+    rent_exemption:
+      use_getMinimumBalance: true  # не хардкодить, сеть периодически пересматривает
+      account_size_bytes: 80
+  
+  # System Program nonce account
+  nonce_program_id: "11111111111111111111111111111111"
+
+# Monitoring
+monitoring:
+  # Track escalation stage changes
+  track_stage_transitions: true
+  
+  # Track time spent in each stage
+  track_stage_duration: true
+  
+  # Track final outcome (success, stuck, manual_override)
+  track_final_outcome: true
+  
+  # Alert if stuck in stage 3 > X минут
+  stage_3_stuck_alert_minutes: 5

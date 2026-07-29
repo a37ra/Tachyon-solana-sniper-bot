@@ -1,5 +1,5 @@
-use sqlx::{SqlitePool, Transaction, Sqlite};
 use anyhow::Result;
+use sqlx::{Sqlite, SqlitePool, Transaction};
 
 pub struct AuditLog {
     pool: SqlitePool,
@@ -17,26 +17,35 @@ impl AuditLog {
         context_key: &str,
         intent_type: &str,
         ipc_seq: u64,
+        position_id: Option<&str>,
         verdict: &str,
         rejection_reason: Option<&str>,
-        tx_signature: Option<&str>,
-        timestamp: u64
+        constructed_tx_signature: Option<&str>,
+        issued_at_unix_ms: u64,
+        received_at_utc: u64,
     ) -> Result<()> {
         let ipc_seq = ipc_seq as i64;
-        let timestamp = timestamp as i64;
+        let issued_at_unix_ms = issued_at_unix_ms as i64;
+        let received_at_utc = received_at_utc as i64;
         sqlx::query!(
             r#"
-            INSERT INTO signer_audit_log (id, context_key, intent_type, ipc_seq, verdict, rejection_reason, tx_signature, timestamp)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO signer_audit_log (
+                id, context_key, intent_type, ipc_seq, position_id, 
+                verdict, rejection_reason, constructed_tx_signature, 
+                issued_at_unix_ms, received_at_utc
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
             id,
             context_key,
             intent_type,
             ipc_seq,
+            position_id,
             verdict,
             rejection_reason,
-            tx_signature,
-            timestamp
+            constructed_tx_signature,
+            issued_at_unix_ms,
+            received_at_utc
         )
         .execute(&mut **tx)
         .await?;

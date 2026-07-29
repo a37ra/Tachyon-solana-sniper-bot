@@ -1,0 +1,126 @@
+# Risk Gate Configuration
+# Источник: ТЗ раздел 4.2, 1.3 (latency KPI)
+
+# Pre-buy Checks Configuration
+pre_buy_checks:
+  # Жёсткий таймаут для всего блока проверок (1.3)
+  # При превышении -> reject_buy, заявка НЕ идёт на submission
+  hard_timeout_ms: 150
+  
+  # Параллельное выполнение проверок
+  parallel_execution: true
+  
+  # Проверки включённые по умолчанию
+  checks:
+    mint_freeze_authority:
+      enabled: true
+      timeout_ms: 20
+      description: "Проверка freeze authority на mint аккаунте"
+    
+    lp_lock_check:
+      enabled: true
+      timeout_ms: 30
+      description: "Проверка блокировки LP токенов"
+    
+    token2022_extensions:
+      enabled: true
+      timeout_ms: 25
+      description: "Проверка Token-2022 extensions (transfer_fee, permanent_delegate, transfer_hook)"
+      allowlist:
+        - "interest_bearing"
+        - "confidential_transfer"
+      blocklist:
+        - "transfer_fee"
+        - "permanent_delegate"
+        - "transfer_hook"
+    
+    simulate_sell:
+      enabled: true
+      timeout_ms: 80  # доминант по времени (1.3)
+      description: "Симуляция продажи перед покупкой для оценки slippage"
+      # simulate_sell идёт параллельно с другими проверками, но является доминантом по времени
+
+# Целевые метрики для мониторинга (1.3)
+performance_targets:
+  risk_gate_latency_ms:
+    p50_target: 20
+    p99_target: 100
+    # hard_timeout_ms: 150 (см. выше)
+  
+  # Отдельные проверки (для детального мониторинга)
+  individual_checks:
+    mint_freeze_authority:
+      p50_target: 2
+      p99_target: 10
+    
+    lp_lock_check:
+      p50_target: 3
+      p99_target: 15
+    
+    token2022_extensions:
+      p50_target: 2
+      p99_target: 12
+    
+    simulate_sell:
+      p50_target: 10
+      p99_target: 80
+
+# Alerting на деградацию
+alerting:
+  # Алерт если P99 превышает target на X%
+  p99_degradation_threshold_pct: 50
+  
+  # Алерт если hard timeout срабатывает чаще X% запросов
+  timeout_rate_threshold_pct: 5
+  
+  # Алерт если отдельная проверка consistently медленная
+  slow_check_threshold_ms: 50
+
+# Кэширование аккаунтов для ускорения
+caching:
+  enabled: true
+  # Кэш mint аккаунтов
+  mint_accounts:
+    ttl_seconds: 60
+    max_size: 1000
+  
+  # Кэш LP аккаунтов
+  lp_accounts:
+    ttl_seconds: 30
+    max_size: 500
+  
+  # Кэш Token-2022 metadata
+  token_metadata:
+    ttl_seconds: 300
+    max_size: 200
+
+# Scam Blacklist Integration
+scam_blacklist:
+  enabled: true
+  # Проверка mint в blacklist
+  check_mint: true
+  # Проверка pool address в blacklist
+  check_pool: true
+  # Reject если найден в blacklist
+  reject_on_blacklist: true
+
+# Whitelist для program_id (3.2)
+allowlist_program_ids:
+  # Raydium
+  - "675kPX9MHTjS2zt1qf1iYN7YueoXxFrM2XJSVwvBc8s"  # Raydium AMM v4
+  - "CAMMCzo5YL8w4VFF8KVHpbKw4jJ5uXWZJ9fXFZ1Lbsk"  # Raydium CP-MM
+  - "E6v2U7edAv8xXwQqJhihvCZgDqYV3XWkHP9CDkRZfQf"  # Raydium CLMM
+  
+  # Meteora
+  - "metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s"  # Meteora DLMM
+  - "LBUZKhRxPF3XUpBCjp4Y3WqaANZm86RnB6xDj2vLJQ"  # Meteora Dynamic AMM
+  
+  # Pump.fun
+  - "6EF8rrecthR5Dkzig8kJ4pDf6eyTt23EVRkCzRkWPf"  # Pump.fun
+
+# Hard cap на размер сделки (3.2)
+max_size_absolute:
+  # Абсолютный максимум в SOL (превышает tier-specific max_size_sol)
+  max_sol: 100.0
+  
+  # Проверяется signer'ом независимо от расчётов стратегии

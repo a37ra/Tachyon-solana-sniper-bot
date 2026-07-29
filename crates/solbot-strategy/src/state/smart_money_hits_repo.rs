@@ -1,5 +1,5 @@
-use sqlx::SqlitePool;
 use anyhow::Result;
+use sqlx::SqlitePool;
 
 pub struct SmartMoneyHitsRepo {
     pool: SqlitePool,
@@ -10,7 +10,14 @@ impl SmartMoneyHitsRepo {
         Self { pool }
     }
 
-    pub async fn insert_hit(&self, id: &str, wallet_address: &str, mint: &str, tx_signature: &str, detected_at_slot: u64) -> Result<()> {
+    pub async fn insert_hit(
+        &self,
+        id: &str,
+        wallet_address: &str,
+        mint: &str,
+        tx_signature: &str,
+        detected_at_slot: u64,
+    ) -> Result<()> {
         let detected_at_slot = detected_at_slot as i64;
         sqlx::query!(
             r#"

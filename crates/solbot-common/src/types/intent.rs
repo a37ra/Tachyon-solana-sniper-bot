@@ -18,9 +18,14 @@ pub struct SignerIntentRequest {
     pub intent_type: IntentType,
     pub unsigned_transaction_base64: String,
     pub program_id: String,
+    pub dex_program_id: String,
     pub max_size_lamports: u64,
     pub hard_cap_bps: u32,
     pub destination_addresses: Vec<String>,
+    pub mint: String,
+    pub pool_address: String,
+    pub position_id: Option<String>,
+    pub amount_or_pct: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -33,6 +38,7 @@ pub enum VerdictStatus {
 pub struct SignerIntentResponse {
     pub status: VerdictStatus,
     pub signed_transaction_base64: Option<String>,
+    pub constructed_tx_signature: Option<String>,
     pub rejection_reason: Option<String>,
     pub last_ipc_seq: u64,
 }

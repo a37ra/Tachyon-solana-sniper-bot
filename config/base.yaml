@@ -1,0 +1,135 @@
+# Базовая конфигурация Solana Sniper Bot
+# Источник: ТЗ разделы 1.1-1.3, 2.2, 3.6
+
+# RPC Endpoints - co-located инфраструктура для минимальной задержки
+rpc:
+  # Primary RPC - должен быть co-located с Jito block engine
+  primary_url: "https://api.mainnet-beta.solana.com"
+  # Fallback RPC для degraded режима
+  fallback_urls:
+    - "https://solana-api.projectserum.com"
+    - "https://rpc.ankr.com/solana"
+  
+  # WebSocket для Geyser подписки
+  ws_url: "wss://api.mainnet-beta.solana.com"
+  
+  # Таймауты
+  timeout_ms: 5000
+  commitment: "confirmed"
+
+# Jito Block Engine Configuration
+jito:
+  # Регионы block engine - выбираются по близости к RPC
+  regions:
+    - name: "frankfurt"
+      endpoint: "https://frankfurt.block-engine.jito.wtf"
+      uuid: "JitoFRANKFURT"
+    - name: "tokyo"
+      endpoint: "https://tokyo.block-engine.jito.wtf"
+      uuid: "JitoTOKYO"
+    - name: "ashburn"
+      endpoint: "https://ashburn.block-engine.jito.wtf"
+      uuid: "JitoASHBURN"
+  
+  # Выбор региона по умолчанию (автоматически по минимальному RTT)
+  auto_select_region: true
+  
+  # Bundle submission timeout
+  bundle_timeout_ms: 2000
+
+# OpenTelemetry Exporter Configuration
+otel:
+  # Экспортёр трассировок
+  exporter:
+    type: "otlp"  # OTLP over gRPC
+    endpoint: "http://localhost:4317"  # OpenTelemetry Collector
+    protocol: "grpc"
+  
+  # Sampling - 100% для production мониторинга
+  sampling:
+    type: "always_on"
+  
+  # Resource attributes
+  resource:
+    service.name: "solbot-strategy"
+    service.version: "0.1.0"
+    deployment.environment: "production"
+  
+  # Batch processing
+  batch:
+    max_queue_size: 2048
+    scheduled_delay_ms: 5000
+    max_export_batch_size: 512
+
+# Database Configuration
+database:
+  # SQLite путь
+  path: "./solbot.db"
+  
+  # Connection pool
+  pool_size: 5
+  
+  # Timeout для запросов
+  query_timeout_ms: 10000
+  
+  # Litestream репликация (если включена)
+  litestream_enabled: false
+  litestream_config_path: "./deploy/litestream/litestream.yml"
+
+# Logging Configuration
+logging:
+  level: "info"  # debug, info, warn, error
+  format: "json"  # json or text
+  
+  # Логи в файлы
+  file:
+    enabled: true
+    path: "./logs/solbot.log"
+    max_size_mb: 100
+    max_files: 10
+  
+  # Структурированные поля
+  structured_fields:
+    - "tier"
+    - "mint"
+    - "position_id"
+    - "tx_signature"
+
+# Network Configuration
+network:
+  # Unix Domain Socket для signer IPC
+  signer_socket_path: "/tmp/solbot-signer.sock"
+  
+  # Event bus socket для notify
+  notify_socket_path: "/tmp/solbot-notify.sock"
+  
+  # Anti-replay по возрасту
+  max_intent_age_ms: 500
+  
+  # TCP порты для внешних сервисов (если нужны)
+  metrics_port: 9090
+  health_check_port: 8080
+
+# Feature Flags
+features:
+  # Smart Money Watchlist (2.5)
+  smart_money_enabled: true
+  smart_money_mode: "tag_only"  # tag_only, soft_boost, hard_gate
+  
+  # Circuit Breaker (4.8)
+  circuit_breaker_enabled: true
+  
+  # MEV Protection (3.6)
+  mev_protection_enabled: true
+  
+  # Paper Trading Mode (7.4)
+  paper_trading:
+    enabled: false
+    # paper-режим собирает статистику для adaptive sizing, не тратя реальный SOL
+  
+  # Защита от stale сигналов
+  max_signal_age_slots: 30
+  
+  # Auto-unwrap WSOL (4.7)
+  auto_unwrap_wsol: true
+  wsol_unwrap_threshold: 0.1  # SOL
