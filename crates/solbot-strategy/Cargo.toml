@@ -3,6 +3,14 @@ name = "solbot-strategy"
 version = "0.1.0"
 edition = "2021"
 
+[[bin]]
+name = "solbot-strategy"
+path = "src/main.rs"
+
+[[bin]]
+name = "solbot-benchmark"
+path = "src/bin/benchmark.rs"
+
 [dependencies]
 solbot-common = { path = "../solbot-common" }
 tokio = { workspace = true }

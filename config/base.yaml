@@ -7,29 +7,35 @@ rpc:
   primary_url: "https://api.mainnet-beta.solana.com"
   # Fallback RPC для degraded режима
   fallback_urls:
-    - "https://solana-api.projectserum.com"
     - "https://rpc.ankr.com/solana"
+    - "https://solana-mainnet.rpc.extrnode.com"
   
   # WebSocket для Geyser подписки
   ws_url: "wss://api.mainnet-beta.solana.com"
   
   # Таймауты
   timeout_ms: 5000
-  commitment: "confirmed"
+  commitment: "processed"
 
 # Jito Block Engine Configuration
 jito:
   # Регионы block engine - выбираются по близости к RPC
   regions:
     - name: "frankfurt"
-      endpoint: "https://frankfurt.block-engine.jito.wtf"
+      endpoint: "https://frankfurt.mainnet.block-engine.jito.wtf"
       uuid: "JitoFRANKFURT"
     - name: "tokyo"
-      endpoint: "https://tokyo.block-engine.jito.wtf"
+      endpoint: "https://tokyo.mainnet.block-engine.jito.wtf"
       uuid: "JitoTOKYO"
     - name: "ashburn"
-      endpoint: "https://ashburn.block-engine.jito.wtf"
+      endpoint: "https://ashburn.mainnet.block-engine.jito.wtf"
       uuid: "JitoASHBURN"
+    - name: "amsterdam"
+      endpoint: "https://amsterdam.mainnet.block-engine.jito.wtf"
+      uuid: "JitoAMSTERDAM"
+    - name: "ny"
+      endpoint: "https://ny.mainnet.block-engine.jito.wtf"
+      uuid: "JitoNY"
   
   # Выбор региона по умолчанию (автоматически по минимальному RTT)
   auto_select_region: true
@@ -128,7 +134,7 @@ features:
     # paper-режим собирает статистику для adaptive sizing, не тратя реальный SOL
   
   # Защита от stale сигналов
-  max_signal_age_slots: 30
+  max_signal_age_slots: 2
   
   # Auto-unwrap WSOL (4.7)
   auto_unwrap_wsol: true

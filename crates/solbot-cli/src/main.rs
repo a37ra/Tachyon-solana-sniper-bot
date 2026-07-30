@@ -26,6 +26,10 @@ enum Commands {
         #[arg(default_value = "status")]
         action: String,
     },
+    Bench {
+        #[arg(default_value = "all")]
+        test: String,
+    },
 }
 
 #[tokio::main]
@@ -42,6 +46,14 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::CircuitBreaker { action } => {
             commands::circuit_breaker::execute(&action).await?;
+        }
+        Commands::Bench { test } => {
+            println!("Running latency benchmark test: {}", test);
+            // Execute solbot-benchmark binary logic
+            let mut child = tokio::process::Command::new("cargo")
+                .args(["run", "--bin", "solbot-benchmark", "--", &test])
+                .spawn()?;
+            child.wait().await?;
         }
     }
 

@@ -10,7 +10,7 @@ use dashmap::DashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-pub const DEFAULT_MAX_SIGNAL_AGE_SLOTS: u64 = 30;
+pub const DEFAULT_MAX_SIGNAL_AGE_SLOTS: u64 = 2;
 
 #[derive(Clone)]
 pub struct SignalFilter {
@@ -81,7 +81,7 @@ mod tests {
 
     #[test]
     fn test_slot_age_filtering() {
-        let filter = SignalFilter::new(30, 60);
+        let filter = SignalFilter::new(2, 60);
         let signal = Signal {
             mint: "mint1".to_string(),
             pool_address: "pool1".to_string(),
@@ -91,10 +91,10 @@ mod tests {
             received_at: 1000,
         };
 
-        // Fresh signal
-        assert!(filter.is_valid_signal(&signal, 120));
+        // Fresh signal (1 slot old)
+        assert!(filter.is_valid_signal(&signal, 101));
 
-        // Stale signal (> 30 slots old)
+        // Stale signal (> 2 slots old)
         let stale_signal = Signal {
             mint: "mint2".to_string(),
             pool_address: "pool2".to_string(),
@@ -103,7 +103,7 @@ mod tests {
             slot: 100,
             received_at: 1000,
         };
-        assert!(!filter.is_valid_signal(&stale_signal, 135));
+        assert!(!filter.is_valid_signal(&stale_signal, 105));
     }
 
     #[test]
