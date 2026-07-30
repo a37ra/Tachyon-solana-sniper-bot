@@ -30,6 +30,11 @@ jobs:
           target
         key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y protobuf-compiler libsqlite3-dev
+
     - name: Run Cargo Check
       run: cargo check --workspace --all-targets
 
