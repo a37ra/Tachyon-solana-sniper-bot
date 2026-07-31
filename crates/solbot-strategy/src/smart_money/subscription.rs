@@ -4,6 +4,12 @@ use tokio::sync::mpsc;
 
 pub struct SmartMoneySubscriptionManager;
 
+impl Default for SmartMoneySubscriptionManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SmartMoneySubscriptionManager {
     pub fn new() -> Self {
         Self

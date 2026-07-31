@@ -24,12 +24,11 @@
 //! 17. `[signer]` User owner (wallet)
 
 use super::{ata, SwapDirection, SwapInstructions, SwapParams};
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{anyhow, bail, Result};
 use solana_sdk::{
     instruction::{AccountMeta, Instruction},
     pubkey::Pubkey,
 };
-use std::str::FromStr;
 
 /// Raydium AMM v4 program ID.
 pub const RAYDIUM_AMM_V4_PROGRAM: Pubkey = solana_sdk::pubkey!("675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8");
@@ -80,7 +79,7 @@ impl RaydiumAmmV4PoolState {
         Ok(Self {
             // Status (8 bytes) + nonce (8) + max_order (8) + depth (8) + ...
             // Pubkeys start at various offsets in the AMM layout
-            amm_id: read_pubkey(data, 0 + 8)?,       // offset after status
+            amm_id: read_pubkey(data, 8)?,       // offset after status
             amm_authority: Pubkey::default(),          // derived PDA
             amm_open_orders: read_pubkey(data, 72)?,
             amm_target_orders: read_pubkey(data, 104)?,

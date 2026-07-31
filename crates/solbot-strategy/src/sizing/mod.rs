@@ -20,7 +20,7 @@ pub struct TradeResult {
 
 pub fn compute_position_size(
     capital: f64,
-    tier: CapitalTier,
+    _tier: CapitalTier,
     tier_params: &TierParams,
     stats: Option<&TradeStats>,
 ) -> f64 {

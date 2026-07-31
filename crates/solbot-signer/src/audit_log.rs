@@ -1,6 +1,7 @@
 use anyhow::Result;
 use sqlx::{Sqlite, SqlitePool, Transaction};
 
+#[allow(dead_code)]
 pub struct AuditLog {
     pool: SqlitePool,
 }
@@ -10,6 +11,7 @@ impl AuditLog {
         Self { pool }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn insert_tx<'a>(
         &self,
         tx: &mut Transaction<'a, Sqlite>,

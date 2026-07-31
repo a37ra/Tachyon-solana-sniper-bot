@@ -70,7 +70,7 @@ pub fn build_swap(
     let mut setup_instructions = Vec::new();
     let mut cleanup_instructions = Vec::new();
 
-    let is_mint_a = params.mint == pool_state.token_a_mint;
+    let _is_mint_a = params.mint == pool_state.token_a_mint;
 
     // Setup ATAs
     let (user_source_ata, user_dest_ata) = match params.direction {

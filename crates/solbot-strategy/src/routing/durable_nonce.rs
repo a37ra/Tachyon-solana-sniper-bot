@@ -2,6 +2,7 @@ use super::SubmitResult;
 use anyhow::Result;
 use std::time::Duration;
 
+#[allow(dead_code)]
 pub struct DurableNonceClient {
     nonce_account: String,
     nonce_authority: String,

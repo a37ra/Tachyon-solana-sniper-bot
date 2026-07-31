@@ -23,6 +23,12 @@ pub struct MeteoraListener {
     ws_url: String,
 }
 
+impl Default for MeteoraListener {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MeteoraListener {
     pub fn new() -> Self {
         let ws_url = std::env::var("SOLANA_WS_URL")

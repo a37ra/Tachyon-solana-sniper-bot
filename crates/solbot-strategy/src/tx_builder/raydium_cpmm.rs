@@ -42,8 +42,8 @@ impl CpmmPoolState {
 
         let offset = 8; // skip anchor discriminator
         Ok(Self {
-            pool_id: read_pubkey(data, offset + 32 * 0)?,
-            authority: read_pubkey(data, offset + 32 * 1)?,
+            pool_id: read_pubkey(data, offset)?,
+            authority: read_pubkey(data, offset + 32)?,
             token_0_mint: read_pubkey(data, offset + 32 * 2)?,
             token_1_mint: read_pubkey(data, offset + 32 * 3)?,
             token_0_vault: read_pubkey(data, offset + 32 * 4)?,

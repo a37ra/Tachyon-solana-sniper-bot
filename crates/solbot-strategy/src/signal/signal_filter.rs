@@ -31,8 +31,8 @@ impl SignalFilter {
     /// Check if a signal is valid (fresh and not a duplicate).
     pub fn is_valid_signal(&self, signal: &Signal, current_slot: u64) -> bool {
         // 1. Check slot age if slot info is available
-        if current_slot > 0 && signal.slot > 0 {
-            if current_slot.saturating_sub(signal.slot) > self.max_age_slots {
+        if current_slot > 0 && signal.slot > 0
+            && current_slot.saturating_sub(signal.slot) > self.max_age_slots {
                 tracing::warn!(
                     mint = %signal.mint,
                     signal_slot = signal.slot,
@@ -42,7 +42,6 @@ impl SignalFilter {
                 );
                 return false;
             }
-        }
 
         // 2. Check deduplication
         let now = Utc::now().timestamp_millis() as u64;

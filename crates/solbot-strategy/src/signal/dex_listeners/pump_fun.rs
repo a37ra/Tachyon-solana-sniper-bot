@@ -22,6 +22,12 @@ pub struct PumpFunListener {
     ws_url: String,
 }
 
+impl Default for PumpFunListener {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PumpFunListener {
     pub fn new() -> Self {
         let ws_url = std::env::var("SOLANA_WS_URL")
@@ -97,7 +103,7 @@ impl PumpFunListener {
             if let Some(account) = response.value.account.decode::<solana_sdk::account::Account>() {
                 let account_data = account.data;
                 // Pump.fun bonding curve data starts with discriminator + mint pubkey (32 bytes)
-                if account_data.len() >= 8 + 32 + 8 * 5 + 1 {
+                if account_data.len() > 8 + 32 + 8 * 5 {
                     if let Ok(mint) = read_pubkey_bytes(&account_data, 8) {
                         let signal = Signal {
                             mint: mint.to_string(),
