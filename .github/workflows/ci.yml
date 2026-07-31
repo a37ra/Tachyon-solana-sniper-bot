@@ -1,45 +1,36 @@
 name: CI Pipeline
-
 on:
   push:
     branches: [ main, master ]
   pull_request:
     branches: [ main, master ]
-
 env:
   CARGO_TERM_COLOR: always
-
+  SQLX_OFFLINE: "true"
 jobs:
   build_and_test:
     runs-on: ubuntu-latest
-
     steps:
-    - uses: actions/checkout@v3
-
-    - name: Set up Rust toolchain
-      uses: dtolnay/rust-toolchain@stable
-      with:
-        components: clippy, rustfmt
-
-    - name: Cache cargo registry & index
-      uses: actions/cache@v3
-      with:
-        path: |
-          ~/.cargo/registry
-          ~/.cargo/git
-          target
-        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-
-    - name: Install system dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y protobuf-compiler libsqlite3-dev
-
-    - name: Run Cargo Check
-      run: cargo check --workspace --all-targets
-
-    - name: Run Cargo Clippy
-      run: cargo clippy --workspace -- -D warnings
-
-    - name: Run Cargo Test
-      run: cargo test --workspace
+      - uses: actions/checkout@v3
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - name: Cache cargo registry & index
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler libsqlite3-dev
+      - name: Run Cargo Check
+        run: cargo check --workspace --all-targets
+      - name: Run Cargo Clippy
+        run: cargo clippy --workspace -- -D warnings
+      - name: Run Cargo Test
+        run: cargo test --workspace
