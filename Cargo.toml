@@ -23,7 +23,34 @@ anyhow = "1.0"
 sqlx = { version = "0.6", default-features = false, features = ["sqlite", "runtime-tokio-rustls", "uuid", "chrono", "macros"] }
 uuid = { version = "1.6", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
-tonic = "0.11"
-prost = "0.12"
-tonic-build = "0.11"
+
+# Solana 2.0+ core crates
+solana-pubkey = "2.2"
+solana-signer = "2.2"
+solana-keypair = "2.2"
+solana-signature = "2.2"
+solana-transaction = "2.2"
+solana-message = "2.2"
+solana-instruction = "2.2"
+solana-rpc-client = "2.0"
+solana-rpc-client-api = "2.0"
+solana-transaction-error = "2.2"
+solana-account-decoder = "2.0"
+solana-transaction-status = "2.0"
+solana-compute-budget = "2.2"
+solana-program = "2.2"
+
+# SPL crates
+spl-token = "6.0"
+spl-associated-token-account = "4.0"
+spl-pod = "0.3"
+
+# Yellowstone gRPC
+yellowstone-grpc-client = "7.0"
+yellowstone-grpc-proto = "7.0"
+tonic = "0.12"
+tonic-health = "0.12"
+prost = "0.13"
+tonic-build = "0.12"
+prost-build = "0.13"
 

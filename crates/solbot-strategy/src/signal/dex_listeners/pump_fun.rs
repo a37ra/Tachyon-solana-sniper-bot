@@ -1,25 +1,21 @@
 //! Pump.fun bonding curve and migration listener.
 //!
-//! Subscribes to Pump.fun program account updates and logs
+//! Subscribes to Pump.fun program account updates via Geyser gRPC
 //! to detect new token launches and Raydium migration events.
 
 use solbot_common::types::Signal;
+use crate::signal::geyser_client::{GeyserClient, GeyserConfig, AccountUpdate};
 use anyhow::{Context, Result};
 use chrono::Utc;
-use futures_util::StreamExt;
-use solana_client::nonblocking::pubsub_client::PubsubClient;
-use solana_client::rpc_config::{RpcAccountInfoConfig, RpcProgramAccountsConfig};
-use solana_account_decoder::UiAccountEncoding;
-use solana_sdk::pubkey::Pubkey;
+use solana_pubkey::Pubkey;
 use std::str::FromStr;
-use std::time::Duration;
 use tokio::sync::mpsc;
-use tracing::{info, warn};
+use tracing::{info};
 
 pub const PUMP_FUN_PROGRAM: &str = "6EF8rrecthR5Dkzon8Nwu78hRvfX4LctQnUBjWdK8nN2";
 
 pub struct PumpFunListener {
-    ws_url: String,
+    geyser_config: GeyserConfig,
 }
 
 impl Default for PumpFunListener {
@@ -30,13 +26,15 @@ impl Default for PumpFunListener {
 
 impl PumpFunListener {
     pub fn new() -> Self {
-        let ws_url = std::env::var("SOLANA_WS_URL")
-            .unwrap_or_else(|_| "wss://api.mainnet-beta.solana.com".to_string());
-        Self { ws_url }
+        Self {
+            geyser_config: GeyserConfig::default(),
+        }
     }
 
-    pub fn with_url(ws_url: String) -> Self {
-        Self { ws_url }
+    pub fn with_geyser_config(config: GeyserConfig) -> Self {
+        Self {
+            geyser_config: config,
+        }
     }
 
     /// Subscribe to new bonding curve creation events.
@@ -44,22 +42,24 @@ impl PumpFunListener {
         &self,
     ) -> Result<mpsc::Receiver<Signal>> {
         let (tx, rx) = mpsc::channel(100);
-        let ws_url = self.ws_url.clone();
+        let geyser_config = self.geyser_config.clone();
+
+        let program_ids = vec![Pubkey::from_str(PUMP_FUN_PROGRAM)?];
+
+        let geyser_client = GeyserClient::new(geyser_config);
+        let mut account_updates = geyser_client
+            .subscribe_to_programs(program_ids, None, false)
+            .await
+            .context("Failed to subscribe to Geyser gRPC")?;
 
         tokio::spawn(async move {
-            info!(ws_url = %ws_url, "Starting Pump.fun bonding curve listener");
-            let mut backoff = Duration::from_secs(1);
+            info!("Starting Pump.fun bonding curve listener via Geyser gRPC");
 
-            loop {
-                match Self::run_subscription_loop(&ws_url, tx.clone()).await {
-                    Ok(()) => {
-                        info!("Pump.fun subscription loop ended, restarting...");
-                        backoff = Duration::from_secs(1);
-                    }
-                    Err(e) => {
-                        warn!(error = %e, backoff_secs = backoff.as_secs(), "Pump.fun subscription error, reconnecting...");
-                        tokio::time::sleep(backoff).await;
-                        backoff = (backoff * 2).min(Duration::from_secs(60));
+            while let Some(update) = account_updates.recv().await {
+                if let Some(signal) = Self::parse_pump_fun_account(update) {
+                    if tx.send(signal).await.is_err() {
+                        info!("Receiver dropped, closing Pump.fun listener loop");
+                        break;
                     }
                 }
             }
@@ -68,62 +68,25 @@ impl PumpFunListener {
         Ok(rx)
     }
 
-    async fn run_subscription_loop(
-        ws_url: &str,
-        tx: mpsc::Sender<Signal>,
-    ) -> Result<()> {
-        let pubsub = PubsubClient::new(ws_url)
-            .await
-            .context("Failed to connect to WebSocket endpoint")?;
+    /// Parse Pump.fun account update to extract bonding curve signal.
+    fn parse_pump_fun_account(update: AccountUpdate) -> Option<Signal> {
+        let account_data = update.data;
 
-        let program_id = Pubkey::from_str(PUMP_FUN_PROGRAM)?;
-
-        let config = RpcProgramAccountsConfig {
-            filters: None,
-            account_config: RpcAccountInfoConfig {
-                encoding: Some(UiAccountEncoding::Base64),
-                data_slice: None,
-                commitment: Some(solana_sdk::commitment_config::CommitmentConfig::confirmed()),
-                min_context_slot: None,
-            },
-            with_context: Some(true),
-        };
-
-        let (mut stream, _unsub) = pubsub
-            .program_subscribe(&program_id, Some(config))
-            .await
-            .context("Failed to subscribe to Pump.fun program accounts")?;
-
-        info!("Successfully subscribed to Pump.fun program accounts");
-
-        while let Some(response) = stream.next().await {
-            let slot = response.context.slot;
-            let account_pubkey = response.value.pubkey;
-
-            if let Some(account) = response.value.account.decode::<solana_sdk::account::Account>() {
-                let account_data = account.data;
-                // Pump.fun bonding curve data starts with discriminator + mint pubkey (32 bytes)
-                if account_data.len() > 8 + 32 + 8 * 5 {
-                    if let Ok(mint) = read_pubkey_bytes(&account_data, 8) {
-                        let signal = Signal {
-                            mint: mint.to_string(),
-                            pool_address: account_pubkey.clone(),
-                            dex_program: PUMP_FUN_PROGRAM.to_string(),
-                            signal_source: "geyser_ws".to_string(),
-                            slot,
-                            received_at: Utc::now().timestamp_millis() as u64,
-                        };
-
-                        if tx.send(signal).await.is_err() {
-                            info!("Receiver dropped, closing Pump.fun listener loop");
-                            break;
-                        }
-                    }
-                }
+        // Pump.fun bonding curve data starts with discriminator + mint pubkey (32 bytes)
+        if account_data.len() > 8 + 32 + 8 * 5 {
+            if let Ok(mint) = read_pubkey_bytes(&account_data, 8) {
+                return Some(Signal {
+                    mint: mint.to_string(),
+                    pool_address: update.account.to_string(),
+                    dex_program: update.owner.to_string(),
+                    signal_source: "geyser_grpc".to_string(),
+                    slot: update.slot,
+                    received_at: Utc::now().timestamp_millis() as u64,
+                });
             }
         }
 
-        Ok(())
+        None
     }
 }
 

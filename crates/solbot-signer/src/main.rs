@@ -18,7 +18,7 @@ use tonic::transport::Server;
 
 use crate::audit_log::AuditLog;
 use crate::compromise_detection::CompromiseDetection;
-use crate::ipc_server::{signer_proto::transaction_signer_service_server::TransactionSignerServiceServer, SignerService};
+use crate::ipc_server::SignerService;
 use crate::key_material::mlock::{enforce_no_core_dumps, GuardedKeypair};
 use crate::key_material::vault_kms_client::load_keypair;
 use crate::sequence_ledger::SequenceLedger;
@@ -84,6 +84,7 @@ async fn main() -> Result<()> {
 
     tracing::info!(socket = %socket_path, "Signer listening");
     
+    use crate::ipc_server::signer_proto::transaction_signer_service_server::TransactionSignerServiceServer;
     Server::builder()
         .add_service(TransactionSignerServiceServer::new(service))
         .serve_with_incoming(stream)

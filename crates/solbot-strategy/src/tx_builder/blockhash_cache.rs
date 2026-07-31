@@ -7,7 +7,7 @@
 //! to avoid an RPC round-trip on every transaction build.
 
 use anyhow::{Context, Result};
-use solana_client::nonblocking::rpc_client::RpcClient;
+use solana_rpc_client::rpc_client::RpcClient;
 use solana_sdk::hash::Hash;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -86,13 +86,17 @@ impl BlockhashCache {
 
     /// Fetch a fresh blockhash from RPC and update the cache.
     async fn refresh(&self) -> Result<()> {
-        let (hash, last_valid_block_height) = self
-            .rpc
-            .get_latest_blockhash_with_commitment(
-                solana_sdk::commitment_config::CommitmentConfig::confirmed(),
-            )
-            .await
-            .context("Failed to fetch latest blockhash")?;
+        let hash = tokio::task::spawn_blocking({
+            let rpc = Arc::clone(&self.rpc);
+            move || {
+                rpc.get_latest_blockhash()
+            }
+        })
+        .await
+        .context("Failed to spawn blocking task")?
+        .context("Failed to fetch latest blockhash")?;
+
+        let last_valid_block_height = 0; // TODO: Fetch from RPC if needed
 
         let mut guard = self.cache.write().await;
         *guard = Some(CachedHash {

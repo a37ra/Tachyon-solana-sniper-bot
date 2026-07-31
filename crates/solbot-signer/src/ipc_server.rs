@@ -27,8 +27,6 @@ pub mod signer_proto {
     tonic::include_proto!("signer");
 }
 
-use signer_proto::transaction_signer_service_server::TransactionSignerService;
-
 pub struct SignerService {
     ledger: Arc<SequenceLedger>,
     audit_log: Arc<AuditLog>,
@@ -66,7 +64,7 @@ impl SignerService {
 }
 
 #[tonic::async_trait]
-impl TransactionSignerService for SignerService {
+impl signer_proto::transaction_signer_service_server::TransactionSignerService for SignerService {
     async fn sign_intent(
         &self,
         request: Request<signer_proto::SignerIntentRequest>,

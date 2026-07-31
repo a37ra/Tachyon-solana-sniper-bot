@@ -7,8 +7,8 @@
 //! on construction and unlocked + zeroized on drop.
 
 use anyhow::{anyhow, Result};
-use solana_sdk::signature::Keypair;
-use solana_sdk::signer::Signer;
+use solana_keypair::Keypair;
+use solana_signer::Signer;
 use std::ops::Deref;
 
 /// A keypair whose underlying memory is mlock'd and excluded from core dumps.
