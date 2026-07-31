@@ -1,6 +1,6 @@
 use anyhow::Result;
-use solana_sdk::signature::Keypair;
-use solana_sdk::transaction::Transaction;
+use solana_keypair::Keypair;
+use solana_transaction::Transaction;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 
 pub fn sign_transaction(unsigned_tx_base64: &str, keypair: &Keypair) -> Result<(String, String)> {

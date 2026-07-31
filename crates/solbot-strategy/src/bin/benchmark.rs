@@ -1,5 +1,5 @@
 use anyhow::Result;
-use solana_sdk::pubkey::Pubkey;
+use solana_pubkey::Pubkey;
 use solbot_common::types::Signal;
 use solbot_strategy::pipeline_bench::{PhaseTimer, PipelineMetrics};
 use solbot_strategy::risk_gate::RiskGateConfig;

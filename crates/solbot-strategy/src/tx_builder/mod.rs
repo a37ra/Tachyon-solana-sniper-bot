@@ -17,11 +17,9 @@ pub mod raydium_clmm;
 pub mod raydium_cpmm;
 
 use anyhow::Result;
-use solana_sdk::{
-    instruction::Instruction,
-    pubkey::Pubkey,
-    transaction::Transaction,
-};
+use solana_instruction::Instruction;
+use solana_pubkey::Pubkey;
+use solana_transaction::Transaction;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 
 /// Direction of a swap from the bot's perspective.

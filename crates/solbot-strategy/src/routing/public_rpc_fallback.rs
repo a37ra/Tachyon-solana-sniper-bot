@@ -1,6 +1,6 @@
 use super::SubmitResult;
 use anyhow::Result;
-use solana_client::nonblocking::rpc_client::RpcClient;
+use solana_rpc_client::rpc_client::RpcClient;
 use std::time::Duration;
 
 #[allow(dead_code)]

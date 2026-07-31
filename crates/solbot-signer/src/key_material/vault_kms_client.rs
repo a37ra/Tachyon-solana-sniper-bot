@@ -17,8 +17,8 @@ use aes_gcm::{
 };
 use anyhow::{anyhow, bail, Context, Result};
 use argon2::Argon2;
-use solana_sdk::signature::Keypair;
-use solana_sdk::signer::Signer;
+use solana_keypair::Keypair;
+use solana_signer::Signer;
 use zeroize::Zeroize;
 
 /// Nonce length for AES-256-GCM (96 bits).

@@ -7,15 +7,11 @@
 //! - WSOL wrapping/unwrapping for native SOL swaps
 
 use anyhow::Result;
-use solana_sdk::{
-    instruction::Instruction,
-    pubkey::Pubkey,
-    system_instruction,
-};
-use spl_associated_token_account::{
-    get_associated_token_address,
-    instruction::create_associated_token_account,
-};
+use solana_instruction::Instruction;
+use solana_pubkey::Pubkey;
+use solana_sdk::system_instruction;
+use spl_associated_token_account::get_associated_token_address;
+use spl_associated_token_account::instruction::create_associated_token_account;
 
 /// Native SOL mint (Wrapped SOL / WSOL).
 pub const WSOL_MINT: Pubkey = spl_token::native_mint::id();
@@ -95,7 +91,7 @@ pub fn ensure_token_ata_instructions(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use solana_sdk::pubkey::Pubkey;
+    use solana_pubkey::Pubkey;
 
     #[test]
     fn test_derive_ata_deterministic() {

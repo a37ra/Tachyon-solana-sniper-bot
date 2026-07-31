@@ -1,6 +1,6 @@
 use super::{CheckResult, RiskGateConfig};
-use solana_client::rpc_client::RpcClient;
-use solana_sdk::pubkey::Pubkey;
+use solana_rpc_client::rpc_client::RpcClient;
+use solana_pubkey::Pubkey;
 use std::time::Duration;
 
 const TOKEN2022_PROGRAM_ID: &str = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";

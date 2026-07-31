@@ -13,15 +13,13 @@
 
 use super::{ata, SwapDirection, SwapInstructions, SwapParams};
 use anyhow::{anyhow, bail, Result};
-use solana_sdk::{
-    instruction::{AccountMeta, Instruction},
-    pubkey::Pubkey,
-    system_program,
-    sysvar,
-};
+use solana_instruction::{AccountMeta, Instruction};
+use solana_pubkey::Pubkey;
+use solana_sdk::system_program;
+use solana_sdk::sysvar;
 
 pub const PUMP_FUN_PROGRAM: Pubkey =
-    solana_sdk::pubkey!("6EF8rrecthR5Dkzon8Nwu78hRvfX4LctQnUBjWdK8nN2");
+    solana_pubkey::pubkey!("6EF8rrecthR5Dkzon8Nwu78hRvfX4LctQnUBjWdK8nN2");
 
 /// Global state account (PDA).
 const GLOBAL_SEED: &[u8] = b"global";
@@ -31,7 +29,7 @@ const BONDING_CURVE_SEED: &[u8] = b"bonding-curve";
 
 /// Fee recipient for Pump.fun (known address).
 pub const PUMP_FUN_FEE_RECIPIENT: Pubkey =
-    solana_sdk::pubkey!("CebN5WGQ4jvEPvsVU4EoHEpgzq1VV7AbCJ7hziqrBnDY");
+    solana_pubkey::pubkey!("CebN5WGQ4jvEPvsVU4EoHEpgzq1VV7AbCJ7hziqrBnDY");
 
 /// Buy instruction discriminator.
 const BUY_DISCRIMINATOR: [u8; 8] = [0x66, 0x06, 0x3d, 0x12, 0x01, 0xda, 0xeb, 0xea];

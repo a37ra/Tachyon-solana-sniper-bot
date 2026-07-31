@@ -1,6 +1,6 @@
 use super::CheckResult;
-use solana_client::rpc_client::RpcClient;
-use solana_sdk::pubkey::Pubkey;
+use solana_rpc_client::rpc_client::RpcClient;
+use solana_pubkey::Pubkey;
 use solana_sdk::program_pack::Pack;
 use std::time::Duration;
 

@@ -7,10 +7,8 @@
 //! These MUST be the first two instructions in the transaction
 //! for Solana's fee prioritization to work correctly.
 
-use solana_sdk::{
-    compute_budget::ComputeBudgetInstruction,
-    instruction::Instruction,
-};
+use solana_instruction::Instruction;
+use solana_sdk::compute_budget::ComputeBudgetInstruction;
 
 /// Default compute units for a typical AMM swap.
 /// Raydium AMM v4 ~150k, CLMM ~300k, Meteora DLMM ~250k.
