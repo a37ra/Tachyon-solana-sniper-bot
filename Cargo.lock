@@ -1508,6 +1508,9 @@ name = "either"
 version = "1.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9e5e8f6c15a24b9a3ee5efec809ccd006d3b30e8b3bb63c39af737c7f87daa1d"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "encode_unicode"
@@ -5183,6 +5186,7 @@ dependencies = [
  "percent-encoding",
  "rustls 0.20.9",
  "rustls-pemfile",
+ "serde",
  "sha2 0.10.9",
  "smallvec",
  "sqlformat",
@@ -5204,9 +5208,12 @@ dependencies = [
  "dotenvy",
  "either",
  "heck 0.4.1",
+ "hex",
  "once_cell",
  "proc-macro2",
  "quote",
+ "serde",
+ "serde_json",
  "sha2 0.10.9",
  "sqlx-core",
  "sqlx-rt",

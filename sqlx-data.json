@@ -1,3 +1,113 @@
 {
-  "db": "SQLite"
+  "db": "SQLite",
+  "0a67b706740320765916ca923d71fb6c507faaec7553584aec1cc464d58f7d45": {
+    "describe": {
+      "columns": [],
+      "nullable": [],
+      "parameters": {
+        "Right": 3
+      }
+    },
+    "query": "\n            INSERT INTO ipc_sequence_ledger (context_key, last_ipc_seq, updated_at)\n            VALUES (?, ?, ?)\n            ON CONFLICT(context_key) DO UPDATE SET\n                last_ipc_seq = excluded.last_ipc_seq,\n                updated_at = excluded.updated_at\n            "
+  },
+  "1347e9d93649d7bea74293cc81865a4d7e1ed8006e1faa2b5643bfccd529526b": {
+    "describe": {
+      "columns": [],
+      "nullable": [],
+      "parameters": {
+        "Right": 3
+      }
+    },
+    "query": "\n            UPDATE positions SET status = ?, closed_at_utc = ? WHERE position_id = ?\n            "
+  },
+  "23ab216cad9baef088bc911d5e12eb0a60bb66faad1fe47fcefad1d64db6e5cf": {
+    "describe": {
+      "columns": [
+        {
+          "name": "status",
+          "ordinal": 0,
+          "type_info": "Text"
+        }
+      ],
+      "nullable": [
+        false
+      ],
+      "parameters": {
+        "Right": 1
+      }
+    },
+    "query": "\n            SELECT status FROM wallet_watchlist WHERE wallet_address = ?\n            "
+  },
+  "32f2332598f8eb25a3528816003a96063dc30e8eb5bf54b3d22471c3b66c4c18": {
+    "describe": {
+      "columns": [],
+      "nullable": [],
+      "parameters": {
+        "Right": 5
+      }
+    },
+    "query": "\n            INSERT INTO smart_money_hits (id, wallet_address, mint, tx_signature, detected_at_slot)\n            VALUES (?, ?, ?, ?, ?)\n            "
+  },
+  "38117483a9df03ad87d7aee3d9ab70a7d3a21a7fe959a9f897d6208b8e3fc5d6": {
+    "describe": {
+      "columns": [
+        {
+          "name": "context_key",
+          "ordinal": 0,
+          "type_info": "Text"
+        },
+        {
+          "name": "last_ipc_seq",
+          "ordinal": 1,
+          "type_info": "Int64"
+        }
+      ],
+      "nullable": [
+        true,
+        false
+      ],
+      "parameters": {
+        "Right": 0
+      }
+    },
+    "query": "\n            SELECT context_key, last_ipc_seq FROM ipc_sequence_ledger\n            "
+  },
+  "92cfc9085490c62ebbc8a8b586ff1defbad897b635bdf1c28df4222f84031475": {
+    "describe": {
+      "columns": [],
+      "nullable": [],
+      "parameters": {
+        "Right": 10
+      }
+    },
+    "query": "\n            INSERT INTO signer_audit_log (\n                id, context_key, intent_type, ipc_seq, position_id, \n                verdict, rejection_reason, constructed_tx_signature, \n                issued_at_unix_ms, received_at_utc\n            )\n            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)\n            "
+  },
+  "b75603cfac6ff6e1f1cf87fce348ba6a3f22831090bdbf17514b2e1d8f01be20": {
+    "describe": {
+      "columns": [],
+      "nullable": [],
+      "parameters": {
+        "Right": 16
+      }
+    },
+    "query": "\n            INSERT INTO positions (position_id, mint, pool_address, dex_program_id, tier, status, size_sol, entry_price_sol, size_pct_of_capital, remaining_token_pct, hard_sl_price_sol, trailing_active, trailing_high_water_sol, realized_pnl_net_sol, opened_at_utc, closed_at_utc)\n            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)\n            "
+  },
+  "c82bb17cf47eb2e7e74b69c9b1d787c51782f3ddbae6a145251d43e39428bd23": {
+    "describe": {
+      "columns": [
+        {
+          "name": "exists!",
+          "ordinal": 0,
+          "type_info": "Int"
+        }
+      ],
+      "nullable": [
+        false
+      ],
+      "parameters": {
+        "Right": 1
+      }
+    },
+    "query": "\n            SELECT 1 as \"exists!\" FROM scam_blacklist WHERE mint = ?\n            "
+  }
 }
