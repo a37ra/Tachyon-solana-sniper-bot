@@ -7,7 +7,7 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::validation::{validate_intent, RejectionReason};
+    use crate::validation::validate_intent;
     use solbot_common::types::intent::{IntentType, SignerIntentRequest};
     use chrono::Utc;
     use rand::Rng;
@@ -157,7 +157,7 @@ mod tests {
                     // Note: may still fail due to random seq being <= last_seq
                     // That's OK — the important thing is no panic
                 }
-                Some(expected_reason) => {
+                Some(_expected_reason) => {
                     // For mutations where seq is explicitly set valid,
                     // we expect the specific rejection
                     match &result {

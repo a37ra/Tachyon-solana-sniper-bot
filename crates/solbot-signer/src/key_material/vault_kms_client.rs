@@ -193,7 +193,6 @@ pub async fn encrypt_keypair_to_file(
 mod tests {
     use super::*;
     use tempfile::NamedTempFile;
-    use std::io::Write;
 
     #[tokio::test]
     async fn test_encrypt_decrypt_roundtrip() {
