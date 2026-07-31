@@ -3,7 +3,7 @@ pub mod trailing_stop;
 pub mod hard_stop_loss;
 pub mod escalation;
 
-use solbot_common::types::position::Position;
+use solbot_common::types::position::{Position, PositionStatus};
 
 /// Represents a specific take-profit level in the TP ladder.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
