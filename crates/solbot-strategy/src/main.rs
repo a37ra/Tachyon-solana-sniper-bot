@@ -108,7 +108,7 @@ async fn process_signals(
             // 3. Tx Build & Sign Intent
             let timer3 = PhaseTimer::start();
             let _cu_ixs = compute_budget::create_compute_budget_instructions(200_000, 100_000);
-            let user_ata = ata::derive_ata(&_user_key, &_mint_key);
+            let _user_ata = ata::derive_ata(&_user_key, &_mint_key);
             let swap_params = solbot_strategy::tx_builder::SwapParams {
                 wallet: _user_key,
                 mint: _mint_key,

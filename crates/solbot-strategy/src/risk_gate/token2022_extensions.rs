@@ -35,15 +35,14 @@ pub async fn check(mint: &str, rpc_url: &str, config: &RiskGateConfig) -> CheckR
             
             let owner = account_info.owner.to_string();
             
-            if owner == TOKEN2022_PROGRAM_ID {
-                if !allowlist.is_empty() {
+            if owner == TOKEN2022_PROGRAM_ID
+                && !allowlist.is_empty() {
                     return CheckResult {
                         passed: false,
                         reason: Some("Token2022 not in allowlist".to_string()),
                         duration_ms: elapsed.as_millis() as u64,
                     };
                 }
-            }
             
             CheckResult {
                 passed: true,

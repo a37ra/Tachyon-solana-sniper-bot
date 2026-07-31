@@ -2,7 +2,7 @@ use anyhow::Result;
 use solana_sdk::pubkey::Pubkey;
 use solbot_common::types::Signal;
 use solbot_strategy::pipeline_bench::{PhaseTimer, PipelineMetrics};
-use solbot_strategy::risk_gate::{run_pre_buy_checks, RiskGateConfig};
+use solbot_strategy::risk_gate::RiskGateConfig;
 use solbot_strategy::routing::jito_bundle::JitoClient;
 use solbot_strategy::tx_builder::{ata, compute_budget, pump_fun};
 use std::env;

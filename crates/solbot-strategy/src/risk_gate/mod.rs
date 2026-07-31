@@ -29,7 +29,7 @@ pub async fn run_pre_buy_checks(
     let (freeze_result, lp_result, token2022_result, simulate_result) = tokio::join!(
         mint_freeze_authority::check(&signal.mint, &config.rpc_url),
         lp_lock_check::check(&signal.pool_address, &config.rpc_url),
-        token2022_extensions::check(&signal.mint, &config.rpc_url, &config),
+        token2022_extensions::check(&signal.mint, &config.rpc_url, config),
         simulate_sell::check(&signal.mint, &signal.pool_address, config.simulate_size_lamports, &config.rpc_url)
     );
     

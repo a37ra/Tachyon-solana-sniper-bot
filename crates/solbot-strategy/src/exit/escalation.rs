@@ -1,7 +1,5 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use solbot_common::config::escalation_config::EscalationConfig;
-use std::time::Instant;
 
 /// 4-stage forward-only escalation state machine (from ТЗ 2.3).
 ///

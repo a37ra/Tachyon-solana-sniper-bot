@@ -12,10 +12,9 @@ use solana_client::rpc_config::{RpcAccountInfoConfig, RpcProgramAccountsConfig};
 use solana_account_decoder::UiAccountEncoding;
 use solana_sdk::pubkey::Pubkey;
 use std::str::FromStr;
-use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 
 pub const RAYDIUM_AMM_V4_PROGRAM: &str = "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8";
 pub const RAYDIUM_CPMM_PROGRAM: &str = "CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C";
@@ -23,6 +22,12 @@ pub const RAYDIUM_CLMM_PROGRAM: &str = "CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKg
 
 pub struct RaydiumListener {
     ws_url: String,
+}
+
+impl Default for RaydiumListener {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl RaydiumListener {

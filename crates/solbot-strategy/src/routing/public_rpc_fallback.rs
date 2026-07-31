@@ -3,6 +3,7 @@ use anyhow::Result;
 use solana_client::nonblocking::rpc_client::RpcClient;
 use std::time::Duration;
 
+#[allow(dead_code)]
 pub struct PublicRpcClient {
     rpc_client: RpcClient,
 }

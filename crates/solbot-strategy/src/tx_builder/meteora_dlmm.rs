@@ -100,7 +100,7 @@ pub fn build_swap(
             let (token_ata, token_ixs) = ata::ensure_token_ata_instructions(wallet, &params.mint);
             setup_instructions.extend(token_ixs);
             cleanup_instructions.push(ata::close_wsol_account_instruction(wallet)?);
-            if swap_for_y { (wsol_ata, token_ata) } else { (wsol_ata, token_ata) }
+            if swap_for_y { (wsol_ata, token_ata) } else { (token_ata, wsol_ata) }
         }
         SwapDirection::Sell => {
             let token_ata = ata::derive_ata(wallet, &params.mint);

@@ -3,6 +3,7 @@ pub mod ipc_seq_counter;
 use anyhow::Result;
 use solbot_common::types::intent::{SignerIntentRequest, SignerIntentResponse};
 
+#[allow(dead_code)]
 pub struct SignerClient {
     socket_path: String,
     seq_counter: ipc_seq_counter::IpcSeqCounter,

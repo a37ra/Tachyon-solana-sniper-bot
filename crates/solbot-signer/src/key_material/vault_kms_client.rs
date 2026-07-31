@@ -114,6 +114,7 @@ async fn load_from_encrypted_file(path: &str, password: &[u8]) -> Result<Keypair
         .map_err(|e| anyhow!("AES-256-GCM init failed: {e}"))?;
     derived_key.zeroize();
 
+    #[allow(deprecated)]
     let nonce = Nonce::from_slice(nonce_bytes);
     let mut plaintext = cipher
         .decrypt(nonce, ciphertext)
@@ -141,6 +142,7 @@ async fn load_from_encrypted_file(path: &str, password: &[u8]) -> Result<Keypair
 }
 
 /// Encrypt a keypair and write to file. Used by `solbot-cli wallet encrypt`.
+#[allow(dead_code)]
 pub async fn encrypt_keypair_to_file(
     keypair: &Keypair,
     path: &str,
@@ -165,6 +167,7 @@ pub async fn encrypt_keypair_to_file(
         .map_err(|e| anyhow!("AES-256-GCM init failed: {e}"))?;
     derived_key.zeroize();
 
+    #[allow(deprecated)]
     let nonce = Nonce::from_slice(&nonce_bytes);
     let mut plaintext = keypair.to_bytes().to_vec();
     let ciphertext = cipher

@@ -13,6 +13,7 @@ pub struct JitoRegionPingResult {
     pub error: Option<String>,
 }
 
+#[allow(dead_code)]
 pub struct JitoClient {
     endpoint: String,
     timeout_ms: u64,

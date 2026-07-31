@@ -15,7 +15,7 @@ impl MarketDataLane {
 
     pub fn send(&mut self, event: MarketDataEvent) {
         if let Err(e) = self.tx.try_send(event) {
-            if let Some(dropped) = self.rx.try_recv().ok() {
+            if let Ok(dropped) = self.rx.try_recv() {
                 tracing::debug!("Dropped oldest market data event: {:?}", dropped);
             }
             let _ = self.tx.try_send(e.into_inner());
