@@ -3,7 +3,7 @@ pub mod trailing_stop;
 pub mod hard_stop_loss;
 pub mod escalation;
 
-use solbot_common::types::position::{Position, PositionStatus};
+use solbot_common::types::position::Position;
 
 /// Represents a specific take-profit level in the TP ladder.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -136,6 +136,7 @@ fn compute_sell_fraction_of_remaining(tp_level: &TpLevel, position: &Position) -
 #[cfg(test)]
 mod tests {
     use super::*;
+    use solbot_common::types::position::PositionStatus;
     use solbot_common::types::tier::CapitalTier;
 
     fn make_position(entry_price: f64, status: PositionStatus, remaining_pct: f64) -> Position {
