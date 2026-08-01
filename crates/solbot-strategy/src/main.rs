@@ -11,6 +11,7 @@ use tokio::sync::mpsc;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    dotenvy::dotenv().ok();
     tracing_subscriber::fmt::init();
 
     let is_paper = env::args().any(|a| a == "--paper")

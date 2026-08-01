@@ -27,7 +27,17 @@ pub struct PaperTradingConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GeyserConfig {
+    pub endpoint: String,
+    pub x_token: String,
+    pub commitment: String,
+    pub backfill_rpc_url: String,
+    pub max_backfill_slots: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BaseConfig {
     pub rpc: RpcConfig,
+    pub geyser: GeyserConfig,
     pub features: FeaturesConfig,
 }

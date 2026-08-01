@@ -5,17 +5,20 @@
 
 use solbot_common::types::Signal;
 use crate::signal::geyser_client::{GeyserClient, GeyserConfig, AccountUpdate};
+use crate::signal::signal_validator::SignalValidator;
 use anyhow::{Context, Result};
 use chrono::Utc;
 use solana_pubkey::Pubkey;
 use std::str::FromStr;
+use std::sync::Arc;
 use tokio::sync::mpsc;
-use tracing::{info};
+use tracing::{info, warn};
 
 pub const PUMP_FUN_PROGRAM: &str = "6EF8rrecthR5Dkzon8Nwu78hRvfX4LctQnUBjWdK8nN2";
 
 pub struct PumpFunListener {
     geyser_config: GeyserConfig,
+    signal_validator: Arc<SignalValidator>,
 }
 
 impl Default for PumpFunListener {
@@ -28,12 +31,21 @@ impl PumpFunListener {
     pub fn new() -> Self {
         Self {
             geyser_config: GeyserConfig::default(),
+            signal_validator: Arc::new(SignalValidator::with_default()),
         }
     }
 
     pub fn with_geyser_config(config: GeyserConfig) -> Self {
         Self {
             geyser_config: config,
+            signal_validator: Arc::new(SignalValidator::with_default()),
+        }
+    }
+
+    pub fn with_validator(config: GeyserConfig, validator: Arc<SignalValidator>) -> Self {
+        Self {
+            geyser_config: config,
+            signal_validator: validator,
         }
     }
 
@@ -52,14 +64,34 @@ impl PumpFunListener {
             .await
             .context("Failed to subscribe to Geyser gRPC")?;
 
+        let validator = self.signal_validator.clone();
+
         tokio::spawn(async move {
             info!("Starting Pump.fun bonding curve listener via Geyser gRPC");
 
             while let Some(update) = account_updates.recv().await {
+                // Update current slot from account update
+                validator.update_current_slot(update.slot);
+
                 if let Some(signal) = Self::parse_pump_fun_account(update) {
-                    if tx.send(signal).await.is_err() {
-                        info!("Receiver dropped, closing Pump.fun listener loop");
-                        break;
+                    // Validate signal age
+                    match validator.validate_signal(&signal) {
+                        Ok(true) => {
+                            if tx.send(signal).await.is_err() {
+                                info!("Receiver dropped, closing Pump.fun listener loop");
+                                break;
+                            }
+                        }
+                        Ok(false) => {
+                            warn!(
+                                mint = %signal.mint,
+                                slot = signal.slot,
+                                "Signal filtered by validator (too old)"
+                            );
+                        }
+                        Err(e) => {
+                            warn!(error = %e, mint = %signal.mint, "Error validating signal");
+                        }
                     }
                 }
             }
@@ -72,17 +104,39 @@ impl PumpFunListener {
     fn parse_pump_fun_account(update: AccountUpdate) -> Option<Signal> {
         let account_data = update.data;
 
-        // Pump.fun bonding curve data starts with discriminator + mint pubkey (32 bytes)
-        if account_data.len() > 8 + 32 + 8 * 5 {
-            if let Ok(mint) = read_pubkey_bytes(&account_data, 8) {
-                return Some(Signal {
-                    mint: mint.to_string(),
-                    pool_address: update.account.to_string(),
-                    dex_program: update.owner.to_string(),
-                    signal_source: "geyser_grpc".to_string(),
-                    slot: update.slot,
-                    received_at: Utc::now().timestamp_millis() as u64,
-                });
+        // Pump.fun bonding curve data structure:
+        // discriminator(8) + mint(32) + reserves(8*5) + complete(1) = 8 + 32 + 40 + 1 = 81 bytes minimum
+        if account_data.len() > 72 {
+            // Check for migration event (complete field at offset 72)
+            let is_complete = account_data[72] != 0;
+
+            if is_complete {
+                // Token has migrated to Raydium!
+                // Extract mint to track the Raydium pool
+                if let Ok(mint) = read_pubkey_bytes(&account_data, 8) {
+                    return Some(Signal {
+                        mint: mint.to_string(),
+                        pool_address: update.account.to_string(),
+                        dex_program: update.owner.to_string(),
+                        signal_source: "pump_fun_migration".to_string(),
+                        slot: update.slot,
+                        received_at: Utc::now().timestamp_millis() as u64,
+                    });
+                }
+            }
+
+            // New bonding curve creation (complete == false)
+            if !is_complete && account_data.len() > 8 + 32 + 8 * 5 {
+                if let Ok(mint) = read_pubkey_bytes(&account_data, 8) {
+                    return Some(Signal {
+                        mint: mint.to_string(),
+                        pool_address: update.account.to_string(),
+                        dex_program: update.owner.to_string(),
+                        signal_source: "geyser_grpc".to_string(),
+                        slot: update.slot,
+                        received_at: Utc::now().timestamp_millis() as u64,
+                    });
+                }
             }
         }
 
