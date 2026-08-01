@@ -17,6 +17,23 @@ rpc:
   timeout_ms: 5000
   commitment: "processed"
 
+# Geyser gRPC Configuration (Helius/Yellowstone)
+geyser:
+  # Geyser endpoint - Helius или собственный Yellowstone
+  endpoint: "https://mainnet.helius-rpc.com"
+  
+  # Helius API key (или x-token для Yellowstone)
+  x_token: "f22a2b7e-479a-4040-847e-66337dc830e4"
+  
+  # Commitment level для подписки
+  commitment: "confirmed"  # processed, confirmed, finalized
+  
+  # RPC URL для backfill пропущенных слотов
+  backfill_rpc_url: "https://api.mainnet-beta.solana.com"
+  
+  # Максимальное количество слотов для backfill при переподключении
+  max_backfill_slots: 150
+
 # Jito Block Engine Configuration
 jito:
   # Регионы block engine - выбираются по близости к RPC

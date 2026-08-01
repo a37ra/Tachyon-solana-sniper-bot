@@ -39,6 +39,7 @@ solana-account-decoder = "2.0"
 solana-transaction-status = "2.0"
 solana-compute-budget = "2.2"
 solana-program = "2.2"
+solana-pubsub-client = "2.0"
 
 # SPL crates
 spl-token = "6.0"
@@ -48,7 +49,7 @@ spl-pod = "0.3"
 # Yellowstone gRPC
 yellowstone-grpc-client = "7.0"
 yellowstone-grpc-proto = "7.0"
-tonic = "0.12"
+tonic = { version = "0.12", features = ["tls", "tls-native-roots", "transport"] }
 tonic-health = "0.12"
 prost = "0.13"
 tonic-build = "0.12"

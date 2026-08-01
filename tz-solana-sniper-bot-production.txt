@@ -1,0 +1,774 @@
+# ТЗ: Solana Sniper Bot — Production Specification
+
+Автоматическая торговая система для Solana: полностью безучастное человека исполнение сделок (buy/sell) по внешнему сигнальному источнику, с раздельным управлением капиталом (hot/cold), многоуровневой защитой от компрометации ключа и формальными SLA на каждый сегмент торгового пайплайна. Каждый количественный параметр в документе сопровождается выводом (формула + допущения), а не задаётся произвольно.
+
+---
+
+## 1. Общие сведения и бизнес-требования
+
+### 1.1. Область применения, допущения, non-goals
+
+**В рамках ТЗ:** инфраструктура автоматической торговли на Solana без участия человека на каждую отдельную сделку; разделение капитала на hot wallet (рабочий, подписывает сделки) и cold reserve (недоступен для автоматического исполнения); поддержка диапазона капитала $300–$100 000 на инстанс.
+
+**Вне рамок:** альфа-стратегия отбора входных токенов/пулов (что считать «хорошим» сигналом) — документ описывает исполнение, а не источник сигнала; GUI как отдельный продукт (только Admin CLI); юридическая и финансовая консультация.
+
+**Явное исключение из non-goals — smart money watchlist (2.5).** В отличие от общей альфа-стратегии, список отслеживаемых кошельков — это не алгоритм, который документ проектирует и калибрует (как Kelly-сайзинг в 4.1), а конечный, человеком курируемый список адресов с документированной процедурой ревью. Документ описывает только *механизм потребления* этого списка ботом (подписка на транзакции, дедупликация, встраивание в существующий pre-buy pipeline) — не то, как оператор решает, какие кошельки в него добавить. Выбор осознанно сделан в пользу ручной курации без платных сторонних API (см. 2.5, Приложение B) — это ограничивает охват и скорость реакции на новые «умные» кошельки, но убирает зависимость от недокументированных сторонних сервисов и любую стоимость данных.
+
+**Допущение о количественных моделях:** все модели риска в Разделе 4 (Kelly-сайзинг, daily loss limit) — это framework, а не гарантия доходности. Входные параметры (win rate, payoff ratio) — иллюстративные и обязаны быть заменены на статистику по реальным исполненным сделкам до перехода в `live` режим (см. 4.1, 7.4).
+
+### 1.2. Capital Tiers
+
+| Тир | Диапазон капитала |
+|---|---|
+| micro | $300 – $2 000 |
+| small | $2 000 – $10 000 |
+| medium | $10 000 – $40 000 |
+| large | $40 000 – $100 000 |
+
+Каждый количественный параметр риска и лимитов в документе задан индивидуально по тиру (Приложение A) — плоские значения на все тиры признаны некорректными везде, где worst-case экспозиция от тира к тиру нелинейна (см. 3.3, 3.4, 4.8).
+
+### 1.3. Критерии приемки (KPI/SLA)
+
+Торговый пайплайн измеряется тремя независимыми, не перекрывающимися по смыслу метриками, каждая со своим OpenTelemetry span. Это принципиально: «весь путь от сигнала до исполнения» и «бюджет проверок риска внутри этого пути» — разные величины, и путать их в одном числе методологически неверно.
+
+#### Waterfall-вывод (допущение: co-located инфраструктура, тот же дата-центр, что и Jito block engine)
+
+| Стадия | Допущение | Медиана | P99 (tail) |
+|---|---|---|---|
+| Geyser/gRPC delivery → actor dispatch | Локальный unix-socket/in-memory mpsc | 0.1–1 мс | 2 мс |
+| Pre-buy checks (параллельно simulate_sell) — mint/freeze authority, LP lock, Token-2022 extensions | Кэш аккаунтов, cold-путь через RPC | 2–8 мс | 20 мс |
+| `simulate_sell_before_buy` (доминирующий член группы — остальные проверки идут параллельно ему) | `simulateTransaction` co-located RPC | 10–20 мс | 80 мс |
+| Tx build (compile instructions, compute budget, cached blockhash) | Чистый CPU | 1–2 мс | 3 мс |
+| Signer IPC round-trip (Unix Domain Socket + Ed25519 sign) | Локальный сокет | 1–2 мс | 3 мс |
+| Jito bundle submission RTT | Co-located block engine (Frankfurt/Tokyo/Ashburn) | 5–15 мс | 40 мс |
+
+Группа pre-buy checks идёт параллельно `simulate_sell_before_buy`, поэтому её длительность **не суммируется** с ним — группа ограничена максимумом из параллельных ветвей, но абсолютно — жёстким `hard_timeout_ms`, который является независимым, не выводимым из суммы отдельных стадий предохранителем.
+
+```yaml
+latency_kpis:
+  risk_gate_latency_ms:              # весь блок pre-buy checks, доминанта — simulate_sell
+    p50_target: 20
+    p99_target: 100
+    hard_timeout_ms: 150             # при превышении -> reject_buy; заявка НЕ идёт на submission
+  submission_engine_latency_ms:      # build + sign + submit, БЕЗ risk-gate
+    p50_target: 15
+    p99_target: 30
+  end_to_end_latency_ms:             # signal_received -> bundle_submitted; только для заявок, прошедших risk_gate
+    p50_target: 35                   # ≈ geyser p50(0.5) + risk_gate p50(20) + submission p50(15)
+    p99_target: 150                  # ≈ geyser p99(2) + risk_gate p99(100) + submission p99(30), округлено
+    hard_ceiling_ms: 200             # теоретический абсолютный максимум для ОТПРАВЛЕННОЙ (не отклонённой) заявки:
+                                      # geyser(2) + risk_gate hard_timeout(150) + build(3) + signer(3) + jito_rtt(40) ≈ 198 → округлено до 200
+  otel_spans:
+    - "signal_received"
+    - "risk_gate_start"
+    - "risk_gate_end"
+    - "tx_built"
+    - "signed"
+    - "bundle_submitted"
+```
+
+`p99_target` и `hard_ceiling_ms` — разные по смыслу величины: первая — статистическое ожидание типичного «плохого» случая (сумма P99 по стадиям), вторая — абсолютный потолок, который в принципе не может быть превышен для транзакции, дошедшей до отправки, потому что `risk_gate_latency_ms.hard_timeout_ms` физически отсекает всё, что длится дольше 150 мс, ещё до стадии submission. Оба числа нужны отдельно: p99 — для алертинга на деградацию в норме, hard_ceiling — для честной документации абсолютного худшего случая при построении SLA перед третьими сторонами.
+
+| KPI | Порог | Способ проверки |
+|---|---|---|
+| Сохранность состояния при аварии | 0 потерь позиций при 100× SIGKILL | Chaos suite (7.3) |
+| Изоляция ключа | 100% отбраковка невалидных IPC intent | Property-fuzzing `signer.proto` |
+| Rent reclamation | 100% закрытие пустых Token Accounts | Баланс hot wallet после 50 циклов buy/sell |
+| P&L Net accuracy | Погрешность < 0.0001 SOL | Сверка `positions.realized_pnl_net_sol` с on-chain |
+| RTO | < 10 сек полная гидратация | Замер под нагрузкой 12 активных позиций |
+| Nonce/sequence durability | 0 повторного использования `ipc_seq` после рестарта signer | Chaos test: `kill -9` signer → restart → property fuzz |
+| Durable-nonce reuse (stage 3) | 0 новых signer-вызовов при retry >60 сек в рамках одной эскалации | Chaos test (7.3) |
+
+---
+
+## 2. Архитектура и обработка состояний
+
+### 2.1. Модель владения состоянием — Two-Lane Actor
+
+Один актор на mint (`concurrency: 1 Actor per Mint`), канал которого разделён на два lane с разным приоритетом и разным drop-поведением — событие миграции Pump.fun или kill-switch не должно быть вытеснено следующим price-тиком того же mint'а, поскольку это события принципиально разного класса важности.
+
+```yaml
+actor_model:
+  concurrency: "1 Actor per Mint"
+  channels:
+    control_lane:
+      type: "mpsc, backlog cap = 64 (предохранительный клапан, НЕ drop-политика)"
+      carries:
+        - "migration_event"          # Pump.fun graduation
+        - "kill_switch"
+        - "tp_trigger_recompute"
+        - "sl_trigger_recompute"
+        - "manual_cli_command"
+      on_backlog_full: "blocking send с timeout 500ms; срабатывание timeout -> control_lane_send_timeout_total (критический алерт, вероятная потеря control-события) + control_lane_saturated_total"
+    market_data_lane:
+      type: "mpsc bounded capacity = 1"
+      carries: ["price_tick", "liquidity_update"]
+      backpressure_policy: "drop_oldest_keep_latest"   # приемлемо — это просто следующая точка цены
+  select_policy: "tokio::select! biased — control_lane опрашивается первым в каждой итерации"
+  deadlines:
+    control_queue_wait_deadline_ms: 500         # время от попытки отправки до постановки в очередь актора (ограничено blocking-send timeout выше)
+    control_event_processing_deadline_ms: 10    # время от dequeue актором до завершения обработки — ЧИСТЫЙ compute-бюджет, без учёта времени в очереди
+    market_data_processing_deadline_ms: 50
+    on_deadline_exceeded: "increment actor_deadline_exceeded_total{lane, phase=\"queue_wait\"|\"processing\"}"
+```
+
+Эти два дедлайна измеряют принципиально разные фазы и никогда не складываются в одну метрику: `control_queue_wait_deadline_ms` — это поведение продюсера при насыщении очереди (редкая, аномальная ситуация), `control_event_processing_deadline_ms` — поведение актора после того, как событие уже получено (нормальный рабочий бюджет). Смешение их в одну проверку сделало бы алерт `actor_deadline_exceeded_total` бесполезным как сигнал аномалии — он бы срабатывал при любом легитимном насыщении очереди, а не только при реальном превышении бюджета обработки.
+
+Обоснование разделения lane: `control_lane` события — по построению редкие (одна миграция на токен, один kill-switch), поэтому backlog cap=64 практически никогда не будет исчерпан легитимным трафиком; исчерпание само по себе — сигнал аномалии (например, шторм фиктивных kill-команд), поэтому и алертится, а не молча дропается.
+
+### 2.2. Signal Source Interface
+
+Актор подписывается на события создания пула/первого свопа по следующему списку программ DEX: Raydium AMM v4, Raydium CP-MM, Raydium CLMM (tick arrays), Meteora DLMM (bin arrays), Meteora Dynamic AMM, Pump.fun (bonding curve + событие миграции на Raydium).
+
+```yaml
+signal_source:
+  max_signal_age_slots: 30            # ~12-18 сек при 400-600мс/слот; сигнал старше отбрасывается как неактуальный
+  deduplication_key: "(mint, pool_address)"   # защита от дублей при нескольких источниках Geyser/RPC
+```
+
+### 2.3. Реконсиляция и обработка разрывов связи — эскалационная матрица
+
+Любой экстренный выход из позиции (вызванный разрывом backfill, hard SL, circuit breaker или compromise detection) проходит через единую 4-стадийную эскалацию. Ни одна стадия не завершается «молчанием» — терминальное состояние всегда видимо оператору.
+
+**Правило переиспользования подписи внутри стадии:** повторные попытки (`attempts`) внутри одной стадии переотправляют **один и тот же** уже подписанный transaction — без обращения к signer'у. Это осознанное архитектурное решение: ретрай внутри стадии существует для того, чтобы поймать транзитный сбой доставки (пропущенный leader-слот, потерянный пакет), а не для того, чтобы пересчитать комиссию или slippage — эти параметры фиксируются один раз при входе в стадию. Эскалация комиссии/slippage происходит только **между** стадиями (stage_0 → stage_1 → stage_2), каждая из которых — действительно новая, отдельно подписанная транзакция. Это ограничивает нагрузку на signer во время экстренного выхода предсказуемым числом подписей вместо одной подписи на каждую сетевую попытку.
+
+```yaml
+emergency_exit_escalation:
+  stage_0:
+    route: "jito_bundle"
+    slippage: "emergency_slippage_bps[tier]"
+    tip: "randomized micro-jitter, фиксируется один раз при входе в стадию"
+    attempts: 2                        # оба переиспользуют одну подпись
+    timeout_per_attempt_ms: 500
+  stage_1:                                   # если Stage 0 исчерпан
+    route: "public_rpc_direct_submit"
+    priority_fee_multiplier: 2.0             # относительно текущей сетевой медианы; новая подпись при входе в стадию
+    slippage: "emergency_slippage_bps[tier]"
+    attempts: 2                        # оба переиспользуют одну подпись
+    timeout_per_attempt_ms: 500
+  stage_2:                                   # если Stage 1 исчерпан
+    route: "public_rpc_direct_submit"
+    priority_fee_multiplier: 3.0             # дальнейшая эскалация; новая подпись при входе в стадию
+    slippage: "max_price_impact_observed"    # фактически: sell at any executable price
+    attempts: 3                        # все три переиспользуют одну подпись
+    backoff_ms: [200, 400, 800]              # суммарно 1.4 сек — заведомо в пределах валидности recent_blockhash (~60-90с), доп. подпись не требуется
+  stage_3:                                   # если Stage 2 исчерпан (~1.5-2.0 сек с начала эскалации)
+    action: "position.status = 'stuck_manual_intervention_required'"
+    transaction: "новая подпись при входе в стадию, построенная на durable nonce account (не recent_blockhash) — ретраи каждые 5с могут продолжаться неограниченно долго и превышают срок жизни обычного blockhash; durable nonce делает переотправку идентичной, уже подписанной транзакции валидной сколь угодно долго без повторных обращений к signer'у"
+    alert: "telegram_immediate + email_backup с полным контекстом (mint, pool, последняя известная цена, все tx signatures попыток)"
+    side_effect: "pause_new_entries для dex_program_id этого mint'а (локальный circuit-breaker)"
+    retry: "фоновый ретрай каждые 5с бесконечно, пока не succeed либо manual override (`solbot-cli position force-close`)"
+```
+
+Эта же матрица переиспользуется как реакция на `on_backfill_incomplete` (2.4) и на срабатывание `circuit_breaker.on_trigger` (4.8) — единая точка правды для «как боту выходить из позиции, когда штатный путь не работает».
+
+**Инфраструктурное требование:** на каждый hot wallet заранее создаётся один durable nonce account (System Program, 80 байт). Rent-exempt минимум для него на момент деплоя должен быть получен через `getMinimumBalanceForRentExemption`, а не захардкожен — сеть периодически пересматривает параметры ренты. Учтён как отдельный компонент в 3.4.
+
+### 2.4. Восстановление после сбоев (Crash recovery & Startup order)
+
+Порядок гидратации при рестарте:
+
+1. **Загрузка `ipc_sequence_ledger`** — восстановление `last_ipc_seq` по каждому `context_key` ДО приёма любых intent'ов. Иначе anti-replay защита обнуляется после рестарта.
+2. Запуск изолированного процесса `solbot-signer`.
+3. Загрузка позиций из SQLite (`startup_hydration`), сверка с on-chain балансом token accounts.
+4. Проверка статуса `sending`-транзакций (in-flight check за последние 150 слотов — окно валидности обычного `recent_blockhash`).
+5. Backfill пропущенных слотов через `extended_history_provider`.
+6. Возобновление подписки на RPC/GeyserWebSocket.
+
+### 2.5. Smart Money Watchlist — дополнительный сигнальный источник
+
+**Мотивация и явное ограничение подхода.** Сигнал «создан новый пул» (2.2) сам по себе несёт околонулевую информацию о качестве токена. Сигнал «этот пул купил кошелёк с историей стабильно положительных исходов» — качественно другой уровень фильтрации. Документ сознательно выбирает **ручную курацию списка адресов** вместо платного стороннего API (GMGN, Birdeye и т.п.) или собственного индексатора PnL по всей сети — это устраняет денежные затраты и зависимость от недокументированных внешних сервисов (см. Приложение B), ценой того, что охват ограничен размером списка, который поддерживает оператор, а не автоматическим обнаружением новых прибыльных кошельков по всей сети.
+
+**Принципиальное отличие от Kelly-модели (4.1).** Параметры Kelly-сайзинга калибруются ботом автоматически на собственных исполненных сделках. Watchlist не калибруется автоматически — состав списка целиком является решением оператора, принятым по документированному чек-листу (ниже), на основе бесплатных публичных дашбордов (GMGN, Axiom, Birdeye — веб-интерфейс, не API). Бот не пытается сам оценивать «прибыльность» произвольного адреса.
+
+**Чек-лист ревью кошелька перед добавлением/сохранением в watchlist:**
+
+| № | Критерий | На что смотреть |
+|---|---|---|
+| 1 | Длина истории | ≥ 2–3 месяца, включая просадочные/боковые периоды — не один «идеальный» месяц |
+| 2 | Реализованный vs бумажный PnL | Приоритет — `realized_pnl`; `unrealized_pnl` не в счёт как доказательство |
+| 3 | Распределение исходов сделок | Важнее, где стоит потолок убытка (`< -50%` доля), чем итоговый win rate |
+| 4 | Частота торговли | Если кошелёк совершает сотни сделок/день — это, вероятно, бот/скальпер; его edge может быть в скорости, которую внешний копи-трейдинг не воспроизводит |
+| 5 | Соотношение buys:sells | Сильный перекос (напр. >2:1) — повод вручную проверить историю по нескольким токенам на предмет round-trip накрутки объёма |
+| 6 | Масштаб типичной позиции | Должен быть соразмерен `max_size_sol` вашего тира (Приложение A) — иначе сигнал есть, а воспроизвести исполнение с сопоставимым прайс-импактом нельзя |
+| 7 | Источник обнаружения | Публичный лидерборд по построению показывает кошельки с недавним хорошим перформансом — сам факт «найден в топе» не заменяет пункты 1–6 |
+
+```yaml
+watchlist_review:
+  cadence: "еженедельно вручную оператором"
+  action_on_review:
+    - "add"       # прошёл чек-лист, добавлен активным
+    - "keep"      # остаётся активным
+    - "pause"     # временно снят (напр. пропала консистентность) без удаления истории
+    - "remove"    # исключён окончательно
+  min_checklist_items_passed: 5   # из 7; ниже — не добавляется/приостанавливается
+```
+
+**Механизм потребления (единственная часть, которую строит бот):**
+
+```yaml
+smart_money_watchlist:
+  data_source: "ручной список адресов, без сторонних платных API"
+  subscription: "переиспользует существующий Geyser/RPC-фид (2.2) — подписка на транзакции N конкретных адресов, N — размер watchlist (десятки, не тысячи), стоимость по трафику пренебрежима"
+  dedup_key: "(wallet_address, mint, tx_signature)"   # тот же кошелёк может купить один mint дважды разными транзакциями — это НЕ дубликат сигнала
+  max_signal_age_slots: 30           # тот же принцип свежести, что в 2.2 — стухший сигнал не имеет смысла копировать
+  event_emitted: "smart_money_hit { wallet_address, mint, pool_address, tx_signature, detected_at_slot }"
+```
+
+**Встраивание в существующий pre-buy pipeline (4.2).** `smart_money_hit` — это дополнительный вход в риск-гейт, а не замена существующих проверок (mint/freeze authority, LP lock, simulate_sell) — они выполняются независимо от того, купил ли токен кошелёк из watchlist. Режим влияния конфигурируется явно и по умолчанию — самый осторожный:
+
+```yaml
+smart_money_mode:
+  tag_only:      "по умолчанию. Событие только логируется и попадает в Telegram-уведомление (см. 6, 7.1) как контекст; не влияет на решение о входе"
+  soft_boost:    "не гейт, а модификатор — при наличии smart_money_hit допустимо ослабление некритичных порогов сайзинга в пределах существующего клэмпа size_max_pct (4.1); критические pre-buy проверки (4.2) не ослабляются никогда"
+  hard_gate:     "вход в позицию требует smart_money_hit по данному mint; включается оператором вручную ТОЛЬКО после накопления статистики в paper-режиме (см. 7.4, п.4 — тот же принцип min_sample_size, что и для adaptive_sizing)"
+default: "tag_only"
+```
+
+Причина консервативного дефолта: watchlist не откалиброван на исполненных сделках этого конкретного бота — то, что кошелёк был прибылен сам по себе, не гарантирует, что *копирование* его входа с задержкой на детект транзакции + собственный risk-gate останется прибыльным после вашего проскальзывания и комиссий. `hard_gate` включается только после того же порога `min_sample_size: 30` закрытых позиций, что уже используется для `adaptive_sizing` (4.1) — по аналогии, не отдельным произвольным числом.
+
+---
+
+## 3. Безопасность и управление ключами
+
+### 3.1. Изоляция процессов
+
+Приватный ключ hot wallet существует исключительно в памяти процесса `solbot-signer` — по возможности `mlock`'нутой, чтобы исключить попадание в swap. `solbot-strategy` (стратегия, расчёт сигналов, построение неподписанных транзакций) — отдельный процесс без какого-либо доступа к ключевому материалу; единственный канал взаимодействия — Unix Domain Socket с протоколом `signer.proto` (5.2). Ни при каких условиях байты ключа не должны попадать в логи, трейсы или сообщения об ошибках ни одного из процессов.
+
+> **Терминологическая заметка.** В документе встречаются два разных понятия «nonce», которые нельзя путать:
+> - **`ipc_seq`** (Раздел 3.2, 5.1, 5.2) — монотонный прикладной счётчик anti-replay защиты для IPC-протокола signer'а. Хранится в `ipc_sequence_ledger`.
+> - **Durable nonce account** (Раздел 2.3) — нативный механизм Solana (System Program), заменяющий `recent_blockhash` в транзакции, чтобы она оставалась валидной сколь угодно долго. Используется только в stage_3 эскалации.
+>
+> Это независимые механизмы на разных уровнях стека.
+
+### 3.2. Протокол Signer IPC
+
+Проверки при приёме intent'а:
+
+- Allowlist `program_id` — intent на неизвестную DEX-программу отклоняется.
+- `max_size_absolute` — абсолютный потолок размера сделки в SOL, не зависящий от расчётов стратегии.
+- `hard_cap_bps` — жёсткий потолок slippage, отдельный от расчётного.
+- **Монотонность `ipc_seq`.** `last_ipc_seq` персистится в SQLite (`ipc_sequence_ledger`, 5.1) на каждое принятое (`accepted`) решение — не в памяти. При старте signer обязан прочитать это состояние до первого intent'а (см. 2.4, шаг 1).
+- **Возраст intent'а.** Поле `issued_at_unix_ms` в `SignerIntentRequest` (5.2); если `now - issued_at_unix_ms > max_intent_age_ms (500)`, intent отклоняется как потенциальный replay/stale.
+
+Итоговое условие отбраковки: `reject`, если `ipc_seq <= last_ipc_seq(context_key)` **или** `now_ms - issued_at_unix_ms > 500`.
+
+### 3.3. Детекция компрометации — signing-rate anomaly
+
+Порог аномальной скорости подписания должен быть выведен из максимального **легитимного** числа сигнатур на позицию за её жизненный цикл, а не задан произвольным диапазоном — иначе property-тест не может ни принять, ни отклонить конкретное число.
+
+**Вывод формулы.**
+
+Число подписей на полный жизненный цикл одной позиции в худшем легитимном случае:
+
+| Событие | Подписей | Почему |
+|---|---|---|
+| Buy | 1 | Одна транзакция открытия |
+| TP ladder (уровни 1–3) | 3 | Каждый уровень — отдельная частичная продажа, отдельная транзакция |
+| Emergency/hard-SL exit, полная эскалация до входа в stage_3 | 4 | По одной новой подписи на stage_0 (jito), stage_1 (public RPC, fee ×2), stage_2 (public RPC, fee ×3, max slippage), stage_3-entry (durable nonce). Повторные попытки **внутри** стадии подписи не расходуют (2.3). |
+| **Итого на полный цикл** | **8** | |
+
+В худшем легитимном сценарии (резкий обвал рынка) все `max_concurrent_positions` открытых позиций тира одновременно проходят полный цикл выхода (8 подписей каждая), **и** одновременно освобождённые слоты тут же заполняются новыми входами (ещё +1 подпись на слот) в течение одного 5-минутного окна:
+
+```
+normal_peak_5min = max_concurrent_positions * (8 + 1) = max_concurrent_positions * 9
+```
+
+Порог аномалии устанавливается с запасом безопасности ×1.5 над этим легитимным пиком:
+
+```
+signing_rate_threshold_5min = ceil(max_concurrent_positions * 9 * 1.5)
+                             = ceil(max_concurrent_positions * 13.5)
+```
+
+**Итоговые пороги по тирам:**
+
+| Тир | max_concurrent | Порог intent/5мин |
+|---|---|---|
+| micro | 5 | 68 |
+| small | 8 | 108 |
+| medium | 10 | 135 |
+| large | 12 | 162 |
+
+```yaml
+compromise_detection:
+  triggers:
+    - name: "unexpected_destination"
+      condition: "Исходящая транзакция на адрес вне whitelist"
+      action: "emergency_drain_to_cold_reserve + kill_switch + telegram_immediate"
+    - name: "signing_rate_anomaly"
+      condition: "intents_5min > max_concurrent_positions_for_tier * 13.5"
+      action: "raise_alert + pause_new_entries"
+```
+
+### 3.4. Hot Wallet Cap
+
+```
+hot_wallet_cap_sol = (max_concurrent_positions * max_size_sol * exec_buffer_mult)
+                    + (max_concurrent_positions * ata_rent_sol)
+                    + durable_nonce_rent_sol
+                    + fee_reserve_sol
+
+exec_buffer_mult      = 1.5      # запас на slippage + priority fees + Jito tips
+ata_rent_sol          = 0.00203928
+durable_nonce_rent_sol = "getMinimumBalanceForRentExemption(80) на момент деплоя (порядка 0.0015 SOL) — не хардкодить, сеть периодически пересматривает параметры ренты"
+```
+
+`fee_reserve_sol` — фиксированный резерв под всплески priority fee / серию emergency-exit попыток (растёт с тиром, т.к. в large-тире эскалация 2.3 дороже в абсолюте).
+
+| Тир | Расчёт (буфер 1.5×) | + rent (n×0.00204) | + nonce rent | + fee_reserve | Итого (raw) | Рекомендованный cap |
+|---|---|---|---|---|---|---|
+| micro | 5×0.5×1.5=3.75 | 0.010 | 0.0015 | 0.3 | 4.06 | **4.1 SOL** |
+| small | 8×2.0×1.5=24.0 | 0.016 | 0.0015 | 0.5 | 24.52 | **25 SOL** |
+| medium | 10×5.0×1.5=75.0 | 0.020 | 0.0015 | 1.0 | 76.02 | **78 SOL** |
+| large | 12×10×1.5=180.0 | 0.024 | 0.0015 | 2.0 | 182.02 | **185 SOL** |
+
+Оператор может добавить дополнительный волатильностный буфер поверх рекомендованного значения — база для этого прозрачна и выведена, а не округлена произвольно.
+
+### 3.5. Управление секретами и ротация ключей
+
+Ключевой материал hot wallet хранится в Vault/KMS зашифрованным на диске и расшифровывается только в память `solbot-signer` при старте (systemd-зависимость гарантирует доступность Vault/KMS до запуска signer'а, см. 6). Ротация вспомогательных секретов (токен Telegram-бота, API-ключи RPC-провайдеров, ключи авторизации Jito) выполняется по расписанию через тот же Vault-механизм; там, где клиент это поддерживает — без рестарта процесса (перечитывание секретов по сигналу). Резервный канал алертов — SMTP/email, чтобы недоступность или rate-limit Telegram API не создавали единой точки отказа для критичных уведомлений.
+
+### 3.6. MEV / защита приватного мемпула
+
+```yaml
+mev_protection:
+  primary_route: "jito_bundle"     # приватный мемпул — транзакция не видна публично до включения в блок
+  fallback_route: "public_rpc_priority_fee"
+  fallback_semantics:
+    protection_level: "degraded"   # транзакция видна в публичном мемпуле ДО подтверждения — открыта для front-run/sandwich
+    mitigations:
+      - "randomized micro-jitter приоритетной комиссии/tip'а — фиксируется один раз при входе в stage_0/stage_1, избегает круглых чисел, упрощающих копирование транзакции ботами-паразитами"
+      - "эскалация fee/tip МЕЖДУ стадиями эскалации (2.3), а не при каждой сетевой попытке внутри стадии"
+  observability:
+    metric: "fallback_route_used_total"
+    alert_rule: "fallback_route_used_total / total_submissions > 10% за 15 минут -> alert (может означать деградацию Jito или таргетированную цензуру эндпоинта)"
+```
+
+---
+
+## 4. Риск-менеджмент и стратегия торговли (количественная модель)
+
+### 4.1. Sizing — Kelly-обоснование и адаптивная калибровка
+
+**Оговорка:** `p` (win rate) и `b` (payoff ratio) ниже — **иллюстративные допущения**, не результат бэктеста. Формула Kelly показана, чтобы (а) объяснить происхождение `base_size_pct` и (б) задать процедуру, которой бот пересчитывает эти параметры на реальных данных. Это не гарантия доходности.
+
+```
+f* = p - (1-p)/b
+```
+
+где `b` = средний выигрыш / средний проигрыш (net of costs).
+
+Из структуры Exit Strategy (4.4): при иллюстративных `p = 0.40`, среднем выигрыше ≈ +110% (взвешенно по TP-ladder), среднем проигрыше ≈ -55% (hard SL с учётом slippage) → `b = 110/55 = 2.0`:
+
+```
+f* = 0.40 - 0.60/2.0 = 0.10   →  10% капитала — полный Kelly
+```
+
+Полный Kelly избыточно рискован при неточной оценке `p`/`b` (типично для нового сигнального источника). Используется **дробный Kelly** (¼–½):
+
+```
+quarter_kelly = 0.10 * 0.25 = 2.5%
+half_kelly    = 0.10 * 0.50 = 5.0%
+```
+
+`base_size_pct` по тирам (5% / 4% / 3% / 2%) укладываются в диапазон ¼–½ Kelly при этих иллюстративных `p`/`b` — то есть значения не противоречат риск-модели, но их обоснованность **целиком зависит от того, насколько верны допущения `p=0.40`, `b=2.0`** на реальном сигнале.
+
+```yaml
+adaptive_sizing:
+  calibration_window: "последние 100 закрытых позиций ИЛИ последние 30 дней (что меньше по выборке)"
+  min_sample_size: 30              # ниже этого — используются статические base_size_pct из таблицы, адаптация выключена
+  recompute_frequency: "ежедневно (00:05 UTC, после reset circuit breaker)"
+  fraction_of_kelly: 0.25           # консервативный старт; может быть поднят до 0.5 после накопления ≥300 сделок
+  clamp: "recomputed_size_pct ограничивается [size_min_pct, size_max_pct] по тиру; size_max_pct = base_size_pct * 1.5"
+```
+
+Важно: клэмп `size_max_pct = base_size_pct * 1.5` — не просто ограничитель на бумаге, он напрямую участвует в выводе worst-case экспозиции circuit breaker'а (4.8): раз адаптивный размер физически может дойти до этого потолка одновременно на всех открытых позициях тира (пересчёт — раз в день на весь тир, а не per-position), модель риска обязана исходить именно из него, а не из `base_size_pct`.
+
+### 4.2. Pre-buy checks
+
+Группа проверок перед покупкой, выполняемых параллельно (кроме `simulate_sell_before_buy`, который доминирует по длительности — см. 1.3):
+
+- Проверка отозванности mint authority и freeze authority.
+- Проверка LP lock/burn (ликвидность заблокирована или сожжена, а не выводима создателем пула).
+- Token-2022 extensions — allowlist/blocklist конкретных расширений (например, `transfer_fee`, `permanent_delegate`, `transfer_hook` отклоняются по умолчанию, если явно не разрешены).
+- `simulate_sell_before_buy` — симуляция продажи размера будущей позиции ДО покупки, чтобы поймать honeypot-токены и токены с аномально высоким налогом на продажу.
+
+Таймаут группы и SLA — см. 1.3 (`risk_gate_latency_ms`, `hard_timeout_ms: 150`).
+
+### 4.3. Landing транзакций
+
+Отправка через Jito bundle как основной путь; конфигурация retry, потолков slippage и `tx_expiry_slots` для happy-path идентична параметрам stage_0 эскалационной матрицы (2.3). Fallback-путь при недоступности Jito описан в 3.6 с точки зрения деградации MEV-защиты и переиспользует эскалационную матрицу 2.3 в экстренных сценариях.
+
+### 4.4. Exit Strategy — вывод «безрискового пола» после ladder
+
+```yaml
+exit_strategy:
+  take_profit_ladder:
+    - { level: 1, trigger_pct: 50,  sell_pct_initial: 30 }
+    - { level: 2, trigger_pct: 100, sell_pct_initial: 30 }
+    - { level: 3, trigger_pct: 200, sell_pct_initial: 20 }
+  trailing_stop:
+    activation_trigger: "Срабатывание TP1 (+50%)"
+    trail_pct: 25
+    applies_to: "Остаток позиции (20% moon bag после всех TP)"
+  hard_stop_loss:
+    trigger_pct: -50
+    sell_pct: 100
+  emergency_slippage_bps:
+    micro: 3000
+    small: 2500
+    medium: 2000
+    large: 1500
+```
+
+**Вывод безрискового пола.** Нормируем позицию к 100% токенов = 100% вложенного капитала. Кумулятивный возврат капитала после уровня `n` ladder:
+
+```
+recovered(n) = Σ[i=1..n] sell_pct_i * (1 + trigger_pct_i)
+```
+
+- После TP1 (30% продано по +50%): `recovered(1) = 0.30 * 1.50 = 0.45` (45% капитала).
+- После TP2 (ещё 30% по +100%): `recovered(2) = 0.45 + 0.30 * 2.00 = 1.05` (**105% капитала — уже выше точки безубыточности**, после продажи всего 60% токенов).
+
+Как только срабатывает TP2, оставшиеся 40% токенов (TP3 + trailing moon bag) становятся математически «free roll» — даже если их цена уйдёт в ноль, gross P&L позиции уже гарантированно положителен (+5% до вычета издержек). Это формальное обоснование, почему activation trailing-stop привязан именно к TP1, а не раньше: до TP1 позиция ещё не защищена и остаётся под защитой только hard SL.
+
+- После TP3 (ещё 20% по +200%): `recovered(3) = 1.05 + 0.20 * 3.00 = 1.65` — оставшиеся 20% moon bag под 25%-trailing защищают уже 165%-й признанный доход.
+
+### 4.5. Финансовый учёт (P&L Net)
+
+`pnl_net_sol` считается с вычетом priority fees, Jito tips, ATA rent/refund — на каждую закрытую позицию, сверяется с on-chain состоянием (см. KPI в 1.3).
+
+### 4.6. DEX Routing & Edge Cases
+
+- Raydium AMM v4 / CP-MM / CLMM — для CLMM учитывается пересечение tick arrays при построении маршрута.
+- Meteora DLMM (bin arrays) / Dynamic AMM (variable fees) — комиссия читается динамически перед построением транзакции, не кэшируется дольше одного цикла проверки.
+- Pump.fun — состояние `MIGRATING_PAUSE` при graduation обрабатывается как временная блокировка на вход/выход, а не как ошибка.
+
+### 4.7. Управление WSOL & Rent Exemption
+
+Авто-unwrap WSOL при балансе > 0.1 SOL. Rent reclamation через `CloseAccount` при обнулении позиции — освобождённая рента возвращается на hot wallet и учитывается в P&L Net (4.5).
+
+### 4.8. Circuit Breaker — двухуровневый per-tier daily limit
+
+Плоский лимит на все тиры некорректен по построению: worst-case экспозиция при синхронном срабатывании SL по всем открытым позициям тира зависит от `max_concurrent_positions`, размера позиции и hard SL — эти параметры разные по тирам, значит и порог обязан быть разным.
+
+Кроме того, единственный порог, выведенный из «типичного» размера позиции (`base_size_pct`) без учёта того, что (а) адаптивный сайзинг может довести размер до клэмпа `base_size_pct * 1.5` (4.1) и (б) реализованный убыток при экстренном выходе включает не только движение цены до триггера, но и slippage самого исполнения (до `emergency_slippage_bps`, 4.4) — недооценивает истинный потолок риска. Поэтому используется два порога с разным назначением.
+
+**Уровень 1 — раннее предупреждение (`warning_threshold_pct`).** Не останавливает торговлю, только алертит и переводит `adaptive_sizing` в консервативный режим (`fraction_of_kelly` временно снижается). Выведен из типичного сценария — все позиции при базовом (не адаптивно увеличенном) размере одновременно бьют hard SL по цене триггера, без учёта дополнительного slippage исполнения:
+
+```
+warning_threshold_pct[tier] = max_concurrent_positions * base_size_pct * |hard_stop_loss_pct|
+```
+
+| Тир | max_concurrent | base_size_pct | warning_threshold_pct |
+|---|---|---|---|
+| micro | 5 | 5% | 5×0.05×0.50 = **12.5%** |
+| small | 8 | 4% | 8×0.04×0.50 = **16.0%** |
+| medium | 10 | 3% | 10×0.03×0.50 = **15.0%** |
+| large | 12 | 2% | 12×0.02×0.50 = **12.0%** |
+
+**Уровень 2 — жёсткий breaker (`daily_limit_pct`).** Останавливает новые входы и запускает эскалацию экстренного выхода (2.3) по всем открытым позициям тира. Выведен из истинного теоретического потолка: адаптивный размер на клэмпе `size_max_pct = base_size_pct * 1.5`, и реализованная потеря на исполнении экстренного выхода включает slippage до максимально разрешённого:
+
+```
+size_max_pct[tier]        = base_size_pct * 1.5
+effective_loss_pct[tier]  = 1 - (1 + hard_stop_loss_pct) * (1 - emergency_slippage_bps/10000)
+                           = 1 - 0.5 * (1 - emergency_slippage_bps/10000)
+
+tail_worst_case_pct[tier] = max_concurrent_positions * size_max_pct[tier] * effective_loss_pct[tier]
+
+daily_limit_pct[tier]     = 0.8 * tail_worst_case_pct[tier]
+```
+
+`effective_loss_pct` — это доля капитала позиции, теряемая при реальном исполнении hard SL: после падения цены на 50% (триггер) от позиции остаётся 50% номинальной стоимости, а фактическое исполнение по эскалационной матрице (2.3) может состояться по цене, которая хуже ещё на всю величину `emergency_slippage_bps` — то есть реализуется не -50%, а заметно больше.
+
+| Тир | size_max_pct | emergency_slippage_bps | effective_loss_pct | tail_worst_case_pct | daily_limit_pct (0.8×) |
+|---|---|---|---|---|---|
+| micro | 7.5% | 3000 (30%) | 1-0.5×0.70=65.0% | 5×0.075×0.65=**24.4%** | **19.5%** |
+| small | 6.0% | 2500 (25%) | 1-0.5×0.75=62.5% | 8×0.06×0.625=**30.0%** | **24.0%** |
+| medium | 4.5% | 2000 (20%) | 1-0.5×0.80=60.0% | 10×0.045×0.60=**27.0%** | **21.6%** |
+| large | 3.0% | 1500 (15%) | 1-0.5×0.85=57.5% | 12×0.03×0.575=**20.7%** | **16.6%** |
+
+Множитель 0.8 оставляет запас именно на случай, когда кластерное событие («все позиции разом ударяются в SL») разворачивается не мгновенно, а поэтапно: если брейкер срабатывает раньше, чем реализуется полный теоретический worst-case, он успевает остановить новые входы и запустить экстренный выход по ещё не закрывшимся позициям тира, а не просто фиксирует уже случившийся максимальный убыток постфактум.
+
+```yaml
+circuit_breaker:
+  reset_time_utc: "00:00:00"
+  warning_threshold_pct:
+    micro: 12.5
+    small: 16.0
+    medium: 15.0
+    large: 12.0
+  daily_limit_pct:
+    micro: 19.5
+    small: 24.0
+    medium: 21.6
+    large: 16.6
+  on_warning:
+    action: "alert только; adaptive_sizing переходит на консервативный fraction_of_kelly до конца текущих суток"
+    alert: "telegram_immediate"
+  on_daily_limit_trigger:
+    action: "Отмена новых входов + запуск emergency_exit_escalation (2.3) для всех открытых позиций тира"
+    max_parallel_emergency_sells: 3
+    alert: "telegram_immediate + email_backup"
+```
+
+---
+
+## 5. Схемы данных и IPC-контракты
+
+### 5.1. DDL SQLite
+
+```sql
+-- 0001_core_schema.sql
+
+CREATE TABLE IF NOT EXISTS positions (
+    position_id              TEXT PRIMARY KEY,
+    mint                      TEXT NOT NULL,
+    pool_address              TEXT NOT NULL,
+    dex_program_id            TEXT NOT NULL,
+    tier                      TEXT NOT NULL CHECK (tier IN ('micro','small','medium','large')),
+    status                    TEXT NOT NULL CHECK (status IN (
+                                  'opening','open','tp1_filled','tp2_filled','tp3_filled',
+                                  'closing','closed','stuck_manual_intervention_required'
+                              )),
+    entry_price_sol           REAL NOT NULL,
+    size_sol                  REAL NOT NULL,
+    size_pct_of_capital       REAL NOT NULL,
+    remaining_token_pct       REAL NOT NULL DEFAULT 1.0,
+    hard_sl_price_sol         REAL NOT NULL,
+    trailing_active           INTEGER NOT NULL DEFAULT 0,
+    trailing_high_water_sol   REAL,
+    realized_pnl_net_sol      REAL NOT NULL DEFAULT 0,
+    opened_at_utc             DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    closed_at_utc             DATETIME
+);
+
+CREATE TABLE IF NOT EXISTS state_transitions (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    position_id        TEXT NOT NULL REFERENCES positions(position_id),
+    from_status         TEXT,
+    to_status           TEXT NOT NULL,
+    reason              TEXT,
+    tx_signature         TEXT,
+    created_at_utc        DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS signer_audit_log (
+    id                          INTEGER PRIMARY KEY AUTOINCREMENT,
+    ipc_seq                      INTEGER NOT NULL,
+    context_key                   TEXT NOT NULL,
+    intent_type                   TEXT NOT NULL,
+    position_id                    TEXT,
+    verdict                        TEXT NOT NULL CHECK (verdict IN ('accepted','rejected')),
+    rejection_reason                TEXT,
+    constructed_tx_signature         TEXT,
+    issued_at_unix_ms                 INTEGER NOT NULL,
+    received_at_utc                    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS scam_blacklist (
+    mint         TEXT PRIMARY KEY,
+    reason        TEXT NOT NULL,
+    source         TEXT,     -- 'manual' | 'auto:freeze_authority' | 'auto:honeypot_sim'
+    added_at_utc    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS wallet_watchlist (
+    wallet_address            TEXT PRIMARY KEY,
+    label                     TEXT,                 -- произвольная заметка оператора (напр. "GMGN top 30d leaderboard")
+    status                    TEXT NOT NULL CHECK (status IN ('active','paused','removed')),
+    checklist_items_passed    INTEGER NOT NULL,      -- 0-7, см. чек-лист 2.5
+    added_at_utc              DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    last_reviewed_at_utc      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    review_notes              TEXT
+);
+
+CREATE TABLE IF NOT EXISTS smart_money_hits (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    wallet_address       TEXT NOT NULL REFERENCES wallet_watchlist(wallet_address),
+    mint                  TEXT NOT NULL,
+    pool_address           TEXT NOT NULL,
+    tx_signature             TEXT NOT NULL,
+    detected_at_slot           INTEGER NOT NULL,
+    created_at_utc               DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (wallet_address, mint, tx_signature)   -- dedup_key из 2.5
+);
+
+CREATE TABLE IF NOT EXISTS ipc_sequence_ledger (
+    context_key      TEXT PRIMARY KEY NOT NULL,   -- напр. wallet pubkey, либо (wallet||':'||mint)
+    last_ipc_seq       INTEGER NOT NULL DEFAULT 0,
+    updated_at_utc        DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+Обновление `ipc_sequence_ledger` для каждой ACCEPTED-транзакции обязано быть атомарным с записью в `signer_audit_log` (одна SQLite-транзакция на оба INSERT/UPDATE) — иначе возможен рассинхрон при крэше между двумя операциями.
+
+### 5.2. Protobuf-контракт (`signer.proto`)
+
+```protobuf
+syntax = "proto3";
+
+package solbot.signer.v1;
+
+service TransactionSignerService {
+  rpc RequestSignature (SignerIntentRequest) returns (SignerIntentResponse);
+}
+
+enum IntentType {
+  INTENT_TYPE_UNSPECIFIED = 0;
+  INTENT_TYPE_BUY = 1;
+  INTENT_TYPE_SELL = 2;
+  INTENT_TYPE_EMERGENCY_DRAIN = 3;
+}
+
+message SignerIntentRequest {
+  IntentType intent_type = 1;
+  string mint = 2;
+  string pool_address = 3;
+  double amount_or_pct = 4;
+  uint32 max_slippage_bps = 5;
+  string position_id = 6;
+  uint64 ipc_seq = 7;                // монотонный anti-replay счётчик per context_key — НЕ Solana durable nonce (см. 3.1)
+  string dex_program_id = 8;
+  int64 issued_at_unix_ms = 9;       // анти-replay по возрасту intent'а
+}
+
+enum Verdict {
+  VERDICT_UNSPECIFIED = 0;
+  VERDICT_ACCEPTED = 1;
+  VERDICT_REJECTED = 2;
+}
+
+message SignerIntentResponse {
+  Verdict verdict = 1;
+  string rejection_reason = 2;
+  string signed_transaction_base64 = 3;
+  string constructed_tx_signature = 4;
+}
+```
+
+Логика валидации на стороне signer'а: `reject`, если `ipc_seq <= last_ipc_seq(context_key)` (из `ipc_sequence_ledger`, гидратированного при старте) **или** `now_ms - issued_at_unix_ms > 500`.
+
+---
+
+## 6. Инфраструктура и DevOps
+
+**Аппаратные требования:** 8 cores / 32GB ECC RAM / NVMe / 10Gbps, co-located в том же дата-центре, что и целевой Jito block engine (Frankfurt / Tokyo / Ashburn — выбор по географии основного объёма сигналов и ликвидности).
+
+**Сетевой тюнинг** (`/etc/sysctl.d/99-solbot.conf`):
+
+```
+net.core.rmem_max = 26214400
+net.core.wmem_max = 26214400
+net.ipv4.tcp_rmem = 4096 87380 26214400
+net.ipv4.tcp_wmem = 4096 65536 26214400
+net.core.netdev_max_backlog = 5000
+net.ipv4.tcp_congestion_control = bbr
+net.ipv4.tcp_fastopen = 3
+net.core.busy_poll = 50
+net.core.busy_read = 50
+vm.swappiness = 1
+kernel.numa_balancing = 0
+```
+
+**Systemd hardening для `solbot-signer`** (наиболее чувствительный процесс — держит ключ в памяти):
+
+```ini
+[Service]
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+MemoryDenyWriteExecute=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictRealtime=true
+LockPersonality=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+UMask=0077
+LimitCORE=0                    # запрет core dump — исключает утечку ключевого материала на диск при крэше
+ReadWritePaths=/var/lib/solbot
+```
+
+`solbot-strategy` получает аналогичный, но менее строгий профиль (не держит секретов, но должен быть изолирован от файловой системы за пределами своей рабочей директории).
+
+**Admin CLI (`solbot-cli`):**
+
+- `solbot-cli kill-switch [on|off]`
+- `solbot-cli position [list|show <id>|force-close <id>]`
+- `solbot-cli circuit-breaker [status|reset]`
+- `solbot-cli mode [paper|live]`
+- `solbot-cli wallet [balance|rotate]`
+
+**Disaster Recovery (Litestream):** непрерывная репликация WAL SQLite в объектное хранилище. RPO < 1 сек, RTO < 10 сек (см. KPI в 1.3).
+
+---
+
+## 7. Observability, тестирование, калибровка
+
+### 7.1. Трейсинг и алерты
+
+Формат уведомлений — Telegram MarkdownV2 template с полным контекстом события (позиция, mint, причина, tx signatures).
+
+### 7.2. Метрики
+
+```
+actor_deadline_exceeded_total{lane="control"|"market_data", phase="queue_wait"|"processing"}
+control_lane_send_timeout_total
+control_lane_saturated_total
+signing_rate_anomaly_total{tier}
+fallback_route_used_total
+risk_gate_latency_ms (histogram)
+submission_engine_latency_ms (histogram)
+end_to_end_latency_ms (histogram)
+circuit_breaker_warning_triggered_total{tier}
+circuit_breaker_hard_triggered_total{tier}
+```
+
+### 7.3. Chaos / Property / Load
+
+- **Nonce/sequence durability:** `kill -9` на `solbot-signer` в момент обработки intent'а → рестарт → property-fuzz с заведомо старым `ipc_seq` → 100% отбраковка.
+- **Control-lane starvation test:** искусственный шторм `price_tick` событий (>10k/сек) на один mint → проверка, что `migration_event`, отправленный в этот момент, обрабатывается в пределах `control_event_processing_deadline_ms` (10мс, фаза processing, не queue_wait), а не вытесняется.
+- **Escalation matrix full-path test:** симуляция недоступности Jito + недоступности одного RPC-провайдера → проверка прохождения всех 4 стадий эскалации (2.3) и корректной установки `stuck_manual_intervention_required` на Stage 3.
+- **Durable-nonce reuse test:** симуляция stage_3 retry в течение >5 минут → проверка, что за это время в `signer_audit_log` не появляется новых записей для данной позиции (переотправка идёт без повторных обращений к signer'у).
+- **Signing-rate threshold test:** симуляция полного легитимного цикла (8 подписей/позицию, все позиции тира одновременно, +refill) → проверка, что `signing_rate_anomaly_total` НЕ инкрементируется при трафике строго ниже порога, и инкрементируется сразу при превышении.
+- SIGKILL во время sell (idempotency), fuzzing 100 000 мутированных intent'ов, load test под `max_concurrent_positions`.
+
+### 7.4. Калибровка таймингов и риск-параметров
+
+1. Замер RTT до co-located RPC (`simulateTransaction` p50/p99) — валидация waterfall из 1.3 на конкретном сервере.
+2. Замер цикла pre-buy checks под реальной нагрузкой.
+3. Получение актуального rent-exempt минимума для ATA и для durable nonce account через RPC (`getMinimumBalanceForRentExemption`) непосредственно перед деплоем — не полагаться на хардкод.
+4. Накопление ≥30 закрытых позиций в paper/live-режиме перед активацией `adaptive_sizing` (4.1) — до этого момента `fraction_of_kelly` игнорируется, используются статические `base_size_pct`.
+5. Запись результатов, снятие флага `timing_constants_not_benchmarked`.
+
+---
+
+## Приложение A. Сводная таблица всех численных параметров по тирам
+
+| Параметр | micro | small | medium | large |
+|---|---|---|---|---|
+| Диапазон капитала, $ | 300–2 000 | 2 000–10 000 | 10 000–40 000 | 40 000–100 000 |
+| base_size_pct | 5% | 4% | 3% | 2% |
+| size_max_pct (adaptive clamp) | 7.5% | 6.0% | 4.5% | 3.0% |
+| max_size_sol | 0.5 | 2.0 | 5.0 | 10.0 |
+| max_concurrent | 5 | 8 | 10 | 12 |
+| slippage_hard_cap_bps | 1500 | 1200 | 1000 | 800 |
+| emergency_slippage_bps | 3000 | 2500 | 2000 | 1500 |
+| hot_wallet_cap_sol | **4.1** | **25** | **78** | **185** |
+| signing_rate_threshold/5мин | **68** | **108** | **135** | **162** |
+| circuit_breaker.warning_threshold_pct | **12.5%** | **16.0%** | **15.0%** | **12.0%** |
+| circuit_breaker.daily_limit_pct | **19.5%** | **24.0%** | **21.6%** | **16.6%** |
+
+## Приложение B. Допущения количественной модели и ограничения ответственности
+
+- Формулы Kelly-сайзинга (4.1) и вывод breakeven TP-ladder (4.4) — математически корректны **относительно заданных входных допущений** (`p`, `b`, распределение payoff). Они не являются прогнозом реальной доходности стратегии и не заменяют бэктест на исторических данных выбранного сигнального источника.
+- Все цифры latency (1.3) — waterfall-оценка на основе типичных для co-located инфраструктуры порядков величин; обязательна калибровка на целевом сервере (7.4) перед `live`.
+- `daily_limit_pct` (4.8) выведен из теоретического потолка (все позиции тира одновременно на максимальном адаптивном размере, все одновременно бьют hard SL с максимально разрешённым slippage исполнения) — это осознанно консервативная верхняя граница, а не типичный ожидаемый убыток; для раннего сигнала о ненормальной просадке используется отдельный, более чувствительный `warning_threshold_pct`.
+- Документ описывает торговую **инфраструктуру**; логика отбора входного сигнала (что считать «хорошим» пулом) остаётся вне рамок ТЗ (см. 1.1).
+- Smart money watchlist (2.5) — человеком курируемый список, не бэктестированная модель. Прошлая прибыльность стороннего кошелька не гарантирует прибыльность копирования его сделок этим ботом (задержка детекта, собственное проскальзывание, комиссии). `hard_gate`-режим включается только после накопления `min_sample_size` закрытых позиций в paper/live — до этого watchlist работает в `tag_only` (см. 2.5).
+- Automated on-chain trading без подтверждения человеком несёт риск полной потери капитала hot wallet при компрометации ключа, ошибке в логике или экстремальной рыночной аномалии — это не заменяет консультацию с финансовым/юридическим специалистом.
