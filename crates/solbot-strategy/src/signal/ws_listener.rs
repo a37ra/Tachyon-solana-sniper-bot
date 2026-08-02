@@ -191,7 +191,7 @@ impl WsListener {
                             match message {
                                 Ok(Message::Text(text)) => {
                                     total_logs += 1;
-                                    if total_logs % 100 == 0 {
+                                    if total_logs.is_multiple_of(100) {
                                         info!(total_logs, account_updates_count, "WebSocket stream progress");
                                     }
 
@@ -207,7 +207,7 @@ impl WsListener {
                                             if let Some(signature_str) = result.get("signature").and_then(|s| s.as_str()) {
                                                 if let Ok(signature) = Signature::from_str(signature_str) {
                                                     // Extract slot from context
-                                                    let slot = json.get("params")
+                                                    let _slot = json.get("params")
                                                         .and_then(|p| p.get("result"))
                                                         .and_then(|r| r.get("context"))
                                                         .and_then(|c| c.get("slot"))
@@ -350,7 +350,6 @@ impl WsListener {
                     encoding: Some(UiTransactionEncoding::JsonParsed),
                     commitment: Some(commitment_config),
                     max_supported_transaction_version: Some(0),
-                    ..Default::default()
                 },
             )
             .context("Failed to fetch transaction")?;

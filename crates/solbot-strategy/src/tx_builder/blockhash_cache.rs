@@ -88,9 +88,7 @@ impl BlockhashCache {
     async fn refresh(&self) -> Result<()> {
         let hash = tokio::task::spawn_blocking({
             let rpc = Arc::clone(&self.rpc);
-            move || {
-                rpc.get_latest_blockhash()
-            }
+            move || rpc.get_latest_blockhash().map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
         })
         .await
         .context("Failed to spawn blocking task")?

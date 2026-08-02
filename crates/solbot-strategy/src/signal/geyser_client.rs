@@ -204,7 +204,7 @@ impl ExtendedHistoryProvider {
             // Fetch pool account via RPC
             let account_info = tokio::task::spawn_blocking({
                 let rpc = Arc::clone(&self.rpc);
-                move || rpc.get_account(&pool_pubkey)
+                move || rpc.get_account(&pool_pubkey).map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
             })
             .await;
             
@@ -309,9 +309,9 @@ impl GeyserClient {
     /// * `vote` - Whether to include vote transactions in the subscription (default: false to save credits)
     pub async fn subscribe_to_programs(
         &self,
-        program_ids: Vec<Pubkey>,
-        accounts_include: Option<Vec<Pubkey>>,
-        vote: bool,
+        _program_ids: Vec<Pubkey>,
+        _accounts_include: Option<Vec<Pubkey>>,
+        _vote: bool,
     ) -> Result<mpsc::Receiver<AccountUpdate>> {
         let (tx, rx) = mpsc::channel(1000);
         let config = self.config.clone();
@@ -496,7 +496,7 @@ impl GeyserClient {
                     match stream.next().await {
                         Some(Ok(update)) => {
                             total_updates += 1;
-                            if total_updates % 100 == 0 {
+                            if total_updates.is_multiple_of(100) {
                                 info!(total_updates, account_updates_count, "Geyser stream progress");
                             }
 

@@ -79,14 +79,14 @@ async fn run_microbenchmarking_test(iterations: usize) -> Result<()> {
         let _cu_ixs = compute_budget::create_compute_budget_instructions(200_000, 100_000);
         let _user_ata = ata::derive_ata(&user_pubkey, &mint_pubkey);
         let swap_params = solbot_strategy::tx_builder::SwapParams {
-            wallet: user_pubkey,
             mint: mint_pubkey,
             pool_address: bonding_curve,
             dex_program_id: pump_fun::PUMP_FUN_PROGRAM,
-            amount_in: 100_000_000,
-            minimum_amount_out: 500_000_000,
-            slippage_bps: 500,
+            wallet: user_pubkey,
             direction: solbot_strategy::tx_builder::SwapDirection::Buy,
+            amount_in: 1_000_000,
+            minimum_amount_out: 0,
+            slippage_bps: 100,
         };
         let dummy_curve = pump_fun::PumpFunBondingCurve {
             bonding_curve,

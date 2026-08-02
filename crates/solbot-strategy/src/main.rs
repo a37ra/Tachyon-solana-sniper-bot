@@ -110,15 +110,17 @@ async fn process_signals(
             let timer3 = PhaseTimer::start();
             let _cu_ixs = compute_budget::create_compute_budget_instructions(200_000, 100_000);
             let _user_ata = ata::derive_ata(&_user_key, &_mint_key);
+            let _pool_key = solana_sdk::pubkey::Pubkey::try_from(signal.pool_address.as_str()).unwrap_or_default();
+            let _dex_key = solana_sdk::pubkey::Pubkey::try_from(signal.dex_program.as_str()).unwrap_or_default();
             let swap_params = solbot_strategy::tx_builder::SwapParams {
-                wallet: _user_key,
                 mint: _mint_key,
-                pool_address: solana_sdk::pubkey::Pubkey::new_unique(),
-                dex_program_id: pump_fun::PUMP_FUN_PROGRAM,
-                amount_in: 100_000_000,
-                minimum_amount_out: 500_000_000,
-                slippage_bps: 500,
+                pool_address: _pool_key,
+                dex_program_id: _dex_key,
+                wallet: _user_key,
                 direction: solbot_strategy::tx_builder::SwapDirection::Buy,
+                amount_in: 1_000_000,
+                minimum_amount_out: 0,
+                slippage_bps: 100,
             };
             let dummy_curve = pump_fun::PumpFunBondingCurve {
                 bonding_curve: solana_sdk::pubkey::Pubkey::new_unique(),

@@ -6,7 +6,6 @@
 use anyhow::Result;
 use solana_pubkey::Pubkey;
 use solana_sdk::transaction::Transaction;
-use std::str::FromStr;
 
 /// Parsed DEX instruction data.
 #[derive(Debug, Clone)]
