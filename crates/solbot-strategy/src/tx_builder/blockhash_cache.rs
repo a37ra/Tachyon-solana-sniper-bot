@@ -85,10 +85,11 @@ impl BlockhashCache {
     }
 
     /// Fetch a fresh blockhash from RPC and update the cache.
+    #[allow(clippy::result_large_err)]
     async fn refresh(&self) -> Result<()> {
         let hash = tokio::task::spawn_blocking({
             let rpc = Arc::clone(&self.rpc);
-            move || rpc.get_latest_blockhash().map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
+            move || rpc.get_latest_blockhash()
         })
         .await
         .context("Failed to spawn blocking task")?
