@@ -41,6 +41,8 @@ solana-compute-budget = { workspace = true }
 solana-program = { workspace = true }
 solana-pubsub-client = { workspace = true }
 solana-sdk = "2.0"
+solana-system-interface = "2.0"
+solana-sdk-ids = "2.0"
 
 # SPL crates
 spl-token = { workspace = true }

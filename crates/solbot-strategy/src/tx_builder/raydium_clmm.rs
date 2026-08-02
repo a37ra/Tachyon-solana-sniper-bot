@@ -307,7 +307,7 @@ pub fn build_swap(
     params: &SwapParams,
     pool_state: &ClmmPoolState,
     pool_id: &Pubkey,
-    extension: Option<&TickArrayBitmapExtension>,
+    _extension: Option<&TickArrayBitmapExtension>,
 ) -> Result<SwapInstructions> {
     let wallet = &params.wallet;
     let mut setup_instructions = Vec::new();
