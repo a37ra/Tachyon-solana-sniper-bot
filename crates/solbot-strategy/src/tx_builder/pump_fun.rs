@@ -15,7 +15,7 @@ use super::{ata, SwapDirection, SwapInstructions, SwapParams};
 use anyhow::{anyhow, bail, Result};
 use solana_instruction::{AccountMeta, Instruction};
 use solana_pubkey::Pubkey;
-use solana_sdk::system_program;
+use solana_sdk_ids::system_program;
 use solana_sdk::sysvar;
 
 pub const PUMP_FUN_PROGRAM: Pubkey =

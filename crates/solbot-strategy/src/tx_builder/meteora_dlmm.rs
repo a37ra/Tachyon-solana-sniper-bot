@@ -9,7 +9,7 @@ use super::{ata, SwapDirection, SwapInstructions, SwapParams};
 use anyhow::{anyhow, bail, Result};
 use solana_instruction::{AccountMeta, Instruction};
 use solana_pubkey::Pubkey;
-use solana_sdk::system_program;
+use solana_sdk_ids::system_program;
 
 pub const METEORA_DLMM_PROGRAM: Pubkey =
     solana_pubkey::pubkey!("LBUZKhRxPF3XUpBCjp4kVn14nz88kZjgL6Xm1xS8bKp");

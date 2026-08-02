@@ -9,9 +9,9 @@
 use anyhow::Result;
 use solana_instruction::Instruction;
 use solana_pubkey::Pubkey;
-use solana_sdk::system_instruction;
+use solana_system_interface::instruction;
 use spl_associated_token_account::get_associated_token_address;
-use spl_associated_token_account::instruction::create_associated_token_account;
+use spl_associated_token_account::instruction::create_associated_token_account_idempotent;
 
 /// Native SOL mint (Wrapped SOL / WSOL).
 pub const WSOL_MINT: Pubkey = spl_token::native_mint::id();
@@ -30,7 +30,7 @@ pub fn create_ata_instruction_if_needed(
     wallet: &Pubkey,
     mint: &Pubkey,
 ) -> Instruction {
-    create_associated_token_account(payer, wallet, mint, &spl_token::id())
+    create_associated_token_account_idempotent(payer, wallet, mint, &spl_token::id())
 }
 
 /// Build instructions to wrap SOL into WSOL for a buy swap.
@@ -50,7 +50,7 @@ pub fn wrap_sol_instructions(
         // Create WSOL ATA if needed
         create_ata_instruction_if_needed(wallet, wallet, &WSOL_MINT),
         // Transfer SOL to WSOL ATA
-        system_instruction::transfer(wallet, &wsol_ata, amount_lamports),
+        instruction::transfer(wallet, &wsol_ata, amount_lamports),
         // Sync native balance
         spl_token::instruction::sync_native(&spl_token::id(), &wsol_ata)?,
     ];

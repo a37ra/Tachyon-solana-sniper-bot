@@ -32,7 +32,7 @@ pub enum SwapDirection {
 }
 
 /// Parameters for building a swap transaction.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct SwapParams {
     /// The token mint address being traded.
     pub mint: Pubkey,

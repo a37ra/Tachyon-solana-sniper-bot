@@ -297,24 +297,24 @@ async fn main() -> Result<()> {
             virtual_sol_reserves: 30_000_000_000,
             real_token_reserves: 500_000_000_000,
             real_sol_reserves: 15_000_000_000,
+            complete: true,
             token_total_supply: 1_000_000_000_000,
-            complete: false,
         };
-
+        
         let params = SwapParams {
             mint,
-            pool_address: bonding_curve,
-            dex_program_id: dex_program,
+            pool_address,
+            dex_program_id: Pubkey::from_str("6EF8rrecthR5Dkzon8Nwu78hRvfX4LctQnUBjWdK8nN2")?,
             wallet: wallet_pubkey,
             direction: SwapDirection::Buy,
             amount_in: TEST_AMOUNT_SOL,
-            minimum_amount_out: 0, // No slippage for test
+            minimum_amount_out: 0,
             slippage_bps: TEST_SLIPPAGE_BPS,
         };
 
         pump_fun_build_swap(&params, &mock_curve)
             .context("Failed to build Pump.fun swap instructions")?
-    } else if signal.dex_program == "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8" {
+    } else if signal.dex_program == "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM" {
         // Raydium AMM v4
         println!("  DEX: Raydium AMM v4");
 
