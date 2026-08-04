@@ -309,7 +309,7 @@ impl GeyserClient {
     /// * `vote` - Whether to include vote transactions in the subscription (default: false to save credits)
     pub async fn subscribe_to_programs(
         &self,
-        _program_ids: Vec<Pubkey>,
+        program_ids: Vec<Pubkey>,
         _accounts_include: Option<Vec<Pubkey>>,
         _vote: bool,
     ) -> Result<mpsc::Receiver<AccountUpdate>> {
@@ -443,32 +443,33 @@ impl GeyserClient {
                     }
                 }
 
-                // For Pump.fun and DEX programs, we need transaction subscriptions
-                // to catch swap instructions, not just account updates
-                // TEMPORARY: Remove filter to test if stream works at all
-                let mut transactions_map = HashMap::new();
-                transactions_map.insert(
-                    "all".to_string(),
-                    SubscribeRequestFilterTransactions {
-                        vote: Some(false), // Exclude vote transactions
-                        failed: Some(false), // Exclude failed transactions
+                // Subscribe to account updates for specific program owners (DEX programs)
+                // This filters accounts by owner (program_id) to receive all account updates
+                // owned by the specified DEX programs (Raydium, Meteora, Pump.fun, etc.)
+                let mut accounts_map = HashMap::new();
+                let owner_strings: Vec<String> = program_ids.iter().map(|p| p.to_string()).collect();
+                
+                accounts_map.insert(
+                    "dex_accounts".to_string(),
+                    SubscribeRequestFilterAccounts {
+                        owner: owner_strings,
                         ..Default::default()
                     },
                 );
 
-                let transactions_count = transactions_map.len();
+                let accounts_count = accounts_map.len();
 
                 let subscribe_request = SubscribeRequest {
-                    accounts: HashMap::new(), // Don't subscribe to accounts for DEX programs
-                    transactions: transactions_map,
+                    accounts: accounts_map,
+                    transactions: HashMap::new(), // Empty - we use account-based subscription
                     commitment: Some(config.commitment),
                     ..Default::default()
                 };
 
                 info!(
-                    transactions_count,
+                    accounts_count,
                     has_token = config.x_token.is_some(),
-                    "Creating Geyser transaction subscription"
+                    "Creating Geyser account-based subscription"
                 );
 
                 let mut stream = match client.subscribe_once(subscribe_request).await {
@@ -544,37 +545,12 @@ impl GeyserClient {
                                         }
                                     }
                                     yellowstone_grpc_proto::geyser::subscribe_update::UpdateOneof::Transaction(tx_update) => {
-                                        // Transaction updates contain the full transaction data
-                                        // For now, we'll log the transaction and create a placeholder update
-                                        // In production, you'd parse the instructions to extract relevant accounts
-                                        info!(
+                                        // Transaction updates are not used in account-based subscription
+                                        // Log for debugging purposes only
+                                        tracing::debug!(
                                             slot = tx_update.slot,
-                                            "Received transaction update"
+                                            "Received transaction update (not processed in account-based mode)"
                                         );
-
-                                        // Create a synthetic account update to signal that a transaction occurred
-                                        let account_update = AccountUpdate {
-                                            account: Pubkey::new_unique(), // Placeholder
-                                            slot: tx_update.slot,
-                                            lamports: 0,
-                                            data: vec![],
-                                            owner: Pubkey::default(),
-                                            executable: false,
-                                            rent_epoch: 0,
-                                        };
-
-                                        account_updates_count += 1;
-
-                                        // Update last seen slot
-                                        last_seen_slot.store(
-                                            tx_update.slot,
-                                            std::sync::atomic::Ordering::SeqCst,
-                                        );
-
-                                        if tx.send(account_update).await.is_err() {
-                                            info!("Receiver dropped, closing Geyser listener loop");
-                                            return;
-                                        }
                                     }
                                     _ => {} // Ignore other update types
                                 }
