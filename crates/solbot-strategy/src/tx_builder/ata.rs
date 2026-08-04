@@ -9,7 +9,7 @@
 use anyhow::Result;
 use solana_instruction::Instruction;
 use solana_pubkey::Pubkey;
-use solana_system_interface::instruction;
+use solana_program::system_instruction;
 use spl_associated_token_account::get_associated_token_address;
 use spl_associated_token_account::instruction::create_associated_token_account_idempotent;
 
@@ -50,7 +50,7 @@ pub fn wrap_sol_instructions(
         // Create WSOL ATA if needed
         create_ata_instruction_if_needed(wallet, wallet, &WSOL_MINT),
         // Transfer SOL to WSOL ATA
-        instruction::transfer(wallet, &wsol_ata, amount_lamports),
+        system_instruction::transfer(wallet, &wsol_ata, amount_lamports),
         // Sync native balance
         spl_token::instruction::sync_native(&spl_token::id(), &wsol_ata)?,
     ];

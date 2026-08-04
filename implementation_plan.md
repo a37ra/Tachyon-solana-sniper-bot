@@ -106,50 +106,50 @@
 Без этого этапа невозможна ни одна реальная транзакция.
 
 #### 1.1 Key Material — загрузка из Vault/KMS
-- [ сделано ] Реализовать `load_keypair()` с реальным Vault API (или encrypted file + env)
-- [ сделано ] Реализовать `mlock` для памяти с ключом
-- [ сделано ] Запрет core dump (systemd `LimitCORE=0` уже есть, но нужен runtime check)
+- [ ] Реализовать `load_keypair()` с реальным Vault API (или encrypted file + env)
+- [ ] Реализовать `mlock` для памяти с ключом
+- [ ] Запрет core dump (systemd `LimitCORE=0` уже есть, но нужен runtime check)
 
 #### 1.2 Transaction Builder
-- [ сделано ] Модуль построения Raydium AMM v4 swap instructions
-- [ сделано ] Модуль построения Raydium CP-MM swap instructions
-- [ сделано ] Модуль построения Raydium CLMM swap instructions (tick arrays)
-- [ сделано ] Модуль построения Meteora DLMM swap instructions (bin arrays)
-- [ сделано ] Модуль построения Meteora Dynamic AMM swap instructions
-- [ сделано ] Модуль построения Pump.fun bonding curve swap instructions
-- [ сделано ] Compute Budget Instructions (set compute units + priority fee)
-- [ сделано ] Cached blockhash provider (с автообновлением)
-- [ сделано ] ATA creation / lookup (Associated Token Account)
-- [ сделано ] Базовые интеграционные тесты на devnet
+- [ ] Модуль построения Raydium AMM v4 swap instructions
+- [ ] Модуль построения Raydium CP-MM swap instructions
+- [ ] Модуль построения Raydium CLMM swap instructions (tick arrays)
+- [ ] Модуль построения Meteora DLMM swap instructions (bin arrays)
+- [ ] Модуль построения Meteora Dynamic AMM swap instructions
+- [ ] Модуль построения Pump.fun bonding curve swap instructions
+- [ ] Compute Budget Instructions (set compute units + priority fee)
+- [ ] Cached blockhash provider (с автообновлением)
+- [ ] ATA creation / lookup (Associated Token Account)
+- [ ] Базовые интеграционные тесты на devnet
 
 #### 1.3 Signer IPC — подключение реального signing
-- [ сделано ] Заменить `"dummy_b64"/"dummy_sig"` на вызов `sign_transaction()` из `signing.rs`
-- [ сделано ] Добавить `hard_cap_bps` валидацию (разбор unsigned tx, проверка slippage)
-- [ сделано ] Добавить `destination_addresses` whitelist валидацию (unexpected_destination)
-- [ сделано ] Тест: property-fuzzing 100k мутированных intent'ов
+- [ ] Заменить `"dummy_b64"/"dummy_sig"` на вызов `sign_transaction()` из `signing.rs`
+- [ ] Добавить `hard_cap_bps` валидацию (разбор unsigned tx, проверка slippage)
+- [ ] Добавить `destination_addresses` whitelist валидацию (unexpected_destination)
+- [ ] Тест: property-fuzzing 100k мутированных intent'ов
 
 ---
 
 ### Этап 2: Signal Source — DEX Listeners (~1.5-2 недели)
 
 #### 2.1 Geyser/gRPC подписка
-- [x] Интеграция с Yellowstone/Geyser gRPC (или WebSocket)
+- [] Интеграция с Yellowstone/Geyser gRPC (или WebSocket)
     API: f22a2b7e-479a-4040-847e-66337dc830e4
-- [x] Парсинг account update notifications по program_id
-- [x] Фильтр по Raydium AMM v4 (`675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8`)
-- [x] Фильтр по Raydium CP-MM, CLMM
-- [x] Фильтр по Meteora DLMM, Dynamic AMM
-- [x] Фильтр по Pump.fun bonding curve + migration event
+- [] Парсинг account update notifications по program_id
+- [] Фильтр по Raydium AMM v4 (`675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8`)
+- [] Фильтр по Raydium CP-MM, CLMM
+- [] Фильтр по Meteora DLMM, Dynamic AMM
+- [] Фильтр по Pump.fun bonding curve + migration event
     1 миллион кредитов — это много, но если ты подпишешься на вообще все транзакции в сети, лимит сгорит за час.
 Поэтому в SubscribeRequest обязательно настрой фильтр account_include или vote: false, чтобы Helius присылал тебе только транзакции Pump.fun или Raydium, а не весь мусор сети.
 #### 2.2 Signal Parsing
-- [x] Парсинг InitializePool / Swap инструкций для каждого DEX
-- [x] Извлечение mint, pool_address, dex_program_id
-- [x] `max_signal_age_slots: 30` — проверка slot age
+- [] Парсинг InitializePool / Swap инструкций для каждого DEX
+- [] Извлечение mint, pool_address, dex_program_id
+- [] `max_signal_age_slots: 30` — проверка slot age
 
 #### 2.3 Reconnection & Backfill
-- [x] Auto-reconnect при разрыве WebSocket/gRPC
-- [x] Backfill пропущенных слотов через `extended_history_provider`
+- [] Auto-reconnect при разрыве WebSocket/gRPC
+- [] Backfill пропущенных слотов через `extended_history_provider`
 
 ---
 
@@ -355,3 +355,8 @@
 > 4. **Devnet testing**: Нужен ли отдельный devnet-профиль конфигурации?
 > 5. **Paper mode**: Реализовывать как отдельный route (без реальной отправки) или как полный mock Solana?
 > 6. **Solana SDK version**: Текущий `solana-client v1.18.26` имеет future-incompat warnings — обновлять до Agave SDK?
+
+
+
+ЗАМЕТКИ НА ПОТОМ:
+Этап 1: Единственное, что по-прежнему остаётся честной пометкой "не до конца готово" из первоначального аудита — load_keypair() использует SOLBOT_KEYPAIR_JSON (dev-режим), а не реальный Vault/KMS API. Это не блокер для Этапа 1 как такового (в плане это и было явно помечено как "или encrypted file + env" — рабочий вариант для промежуточного состояния), но для боевого прода это остаётся открытым пунктом, как и было отмечено.
