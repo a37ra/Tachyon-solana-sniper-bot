@@ -15,6 +15,10 @@ path = "src/bin/benchmark.rs"
 name = "stage_1_2_check"
 path = "src/bin/stage_1_2_check.rs"
 
+[[bin]]
+name = "devnet_roundtrip"
+path = "src/bin/devnet_roundtrip.rs"
+
 [dependencies]
 solbot-common = { path = "../solbot-common" }
 tokio = { workspace = true }
@@ -41,7 +45,7 @@ solana-compute-budget = { workspace = true }
 solana-program = { workspace = true }
 solana-pubsub-client = { workspace = true }
 solana-sdk = "2.0"
-solana-system-interface = "2.0"
+solana-system-interface = { version = "2.0", features = ["bincode"] }
 solana-sdk-ids = "2.0"
 
 # SPL crates
@@ -67,3 +71,11 @@ tokio-util = "0.7"
 tokio-stream = "0.1"
 tokio-tungstenite = { version = "0.21", features = ["native-tls"] }
 dotenvy = "0.15"
+tower = "0.4"
+hyper = "1.0"
+hyper-util = "0.1"
+http = "1.0"
+
+[build-dependencies]
+tonic-build = { workspace = true }
+prost-build = { workspace = true }

@@ -87,15 +87,32 @@ impl BlockhashCache {
     /// Fetch a fresh blockhash from RPC and update the cache.
     #[allow(clippy::result_large_err)]
     async fn refresh(&self) -> Result<()> {
-        let hash = tokio::task::spawn_blocking({
+        let (hash, last_valid_block_height) = tokio::task::spawn_blocking({
             let rpc = Arc::clone(&self.rpc);
-            move || rpc.get_latest_blockhash()
+            move || -> anyhow::Result<(Hash, u64)> {
+                use solana_sdk::commitment_config::CommitmentConfig;
+
+                // Use get_latest_blockhash_with_commitment for both hash and validity height
+                let result = rpc.get_latest_blockhash_with_commitment(
+                    CommitmentConfig::confirmed(),
+                );
+                match result {
+                    Ok((hash, height)) => Ok((hash, height)),
+                    Err(e) => {
+                        // Fallback: try simple get_latest_blockhash
+                        tracing::warn!(
+                            error = %e,
+                            "get_latest_blockhash_with_commitment failed, trying fallback"
+                        );
+                        let hash = rpc.get_latest_blockhash()?;
+                        Ok((hash, 0))
+                    }
+                }
+            }
         })
         .await
         .context("Failed to spawn blocking task")?
         .context("Failed to fetch latest blockhash")?;
-
-        let last_valid_block_height = 0; // TODO: Fetch from RPC if needed
 
         let mut guard = self.cache.write().await;
         *guard = Some(CachedHash {

@@ -388,6 +388,7 @@ fn parse_pump_fun(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::str::FromStr;
 
     #[test]
     fn test_parse_raydium_amm_v4_program_id() {

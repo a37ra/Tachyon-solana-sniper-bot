@@ -8,7 +8,7 @@ solbot-common = { path = "../solbot-common" }
 tokio = { workspace = true }
 serde = { workspace = true }
 anyhow = { workspace = true }
-sqlx = { workspace = true, default-features = false, features = ["sqlite", "runtime-tokio-rustls"] }
+sqlx = { workspace = true, default-features = false, features = ["sqlite", "runtime-tokio-rustls", "macros", "offline"] }
 uuid = { workspace = true }
 chrono = { workspace = true }
 tonic = { workspace = true }
