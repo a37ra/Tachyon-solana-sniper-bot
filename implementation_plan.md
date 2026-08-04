@@ -360,3 +360,117 @@
 
 ЗАМЕТКИ НА ПОТОМ:
 Этап 1: Единственное, что по-прежнему остаётся честной пометкой "не до конца готово" из первоначального аудита — load_keypair() использует SOLBOT_KEYPAIR_JSON (dev-режим), а не реальный Vault/KMS API. Это не блокер для Этапа 1 как такового (в плане это и было явно помечено как "или encrypted file + env" — рабочий вариант для промежуточного состояния), но для боевого прода это остаётся открытым пунктом, как и было отмечено.
+
+подтверждено лучше, чем ожидалось: max_signal_age_slots реализован дважды — в отдельном модуле signal_filter.rs (судя по doc-комментарию //! 1. max_signal_age_slots (e.g. 30 slots) — ignores signals that arrived too late) и в signal_validator.rs с явным SignalValidatorConfig { max_signal_age_slots: u64 }, дефолтным значением MAX_SIGNAL_AGE_SLOTS (наверняка = 30, как в плане) и даже есть unit-тест assert_eq!(validator.config.max_signal_age_slots, 30). Это реальная, протестированная реализация, а не мой самодельный костыль в debug-бинаре.
+
+Финальная версия заметки — готова к вставке
+markdown
+ЗАМЕТКИ НА ПОТОМ (Этап 2, DEX Listeners) — ФИНАЛЬНАЯ версия после полной проверки:
+
+1. КРИТИЧНО (единственный настоящий блокер логики) — geyser_client.rs::
+   subscribe_to_programs() игнорирует параметр program_ids на уровне 
+   построения SubscribeRequest. Комментарий в коде: "TEMPORARY: Remove 
+   filter to test if stream works at all" — SubscribeRequestFilterTransactions 
+   строится без account_include, подписка ловит ВСЕ транзакции сети без 
+   фильтра. Нарушает прямое требование исходного плана ("иначе лимит 
+   кредитов сгорит за час"). Важно: сами вызывающие (RaydiumListener, 
+   MeteoraListener, PumpFunListener в dex_listeners/) передают program_ids 
+   ПРАВИЛЬНО — баг локализован строго в geyser_client.rs, чинить нужно 
+   только его.
+
+2. КРИТИЧНО — обработка UpdateOneof::Transaction в geyser_client.rs создаёt 
+   фиктивный AccountUpdate (owner: Pubkey::default(), data: vec![], 
+   account: Pubkey::new_unique() как placeholder). Даже при рабочем 
+   фильтре эта ветка не даст dex_listeners реальных данных для парсинга. 
+   Правильный путь — скорее всего вообще не нужна transaction-ветка: 
+   dex_listeners ожидают Account-based обновления (судя по 
+   parse_raydium_account(update: AccountUpdate)), а не Transaction-based. 
+   Нужно проверить/переключить SubscribeRequest на accounts-фильтр 
+   (owner = program_id) вместо transactions-фильтра.
+
+3. ХОРОШАЯ НОВОСТЬ — сигнальная логика написана содержательно и БЕЗ 
+   mock/dummy/placeholder:
+   - dex_listeners/{raydium,meteora,pump_fun}.rs — реальные, используемые 
+     в main.rs (main.rs:5 импортирует все три). Собирают program_ids 
+     корректно (Raydium: AMM v4 + CP-MM + CLMM все три сразу в одном 
+     subscribe_to_pool_creation).
+   - max_signal_age_slots РЕАЛИЗОВАН и протестирован дважды: 
+     signal/signal_validator.rs (SignalValidatorConfig.max_signal_age_slots, 
+     дефолт = 30, есть unit-тест assert_eq!) и отдельно упомянут в 
+     signal/signal_filter.rs. validate_signal() вызывается в каждом из 
+     трёх dex_listeners с логом "Signal filtered by validator (too old)" 
+     при отбраковке.
+   - Всё это заблокировано ИСКЛЮЧИТЕЛЬНО багом #1/#2 в geyser_client.rs — 
+     сигнальный pipeline ниже по потоку готов принимать данные, просто 
+     сейчас до него ничего не доходит.
+
+4. БЛОКЕР ИНФРАСТРУКТУРЫ — используемый Helius API-ключ на Free-плане. 
+   Free-план не даёт доступа к Geyser gRPC/LaserStream (обычный JSON-RPC 
+   работает — getHealth возвращает ok). TCP/TLS/HTTP2-хендшейк к gRPC 
+   endpoint проходит успешно (соединение открывается на транспортном 
+   уровне), но реальные subscribe_update события не приходят вообще 
+   (0 за 30-120 сек прослушки на 6 самых активных mainnet DEX-программах — 
+   физически исключает версию "просто мало активности"). Открытый вопрос 
+   из исходного плана ("Yellowstone gRPC, Helius, или свой валидатор?") 
+   так и не решён — нужно либо апгрейдить тариф Helius, либо сменить 
+   провайдера.
+
+5. Инструмент для повторной проверки после фиксов: 
+   crates/solbot-strategy/src/bin/dex_listener_debug.rs — самописный 
+   debug-бинарь (не часть боевого кода), слушает все 6 DEX программ live 
+   напрямую через geyser_client, парсит через from_account_data() парсеры, 
+   проверяет slot age самостоятельно (дублирует логику SignalValidator, 
+   так как звал geyser_client напрямую, а не через dex_listeners). 
+   ПОСЛЕ починки geyser_client.rs — лучше тестировать через реальные 
+   RaydiumListener::subscribe_to_pool_creation() / 
+   PumpFunListener::subscribe_to_bonding_curve() / 
+   MeteoraListener::subscribe_to_pool_creation(), а не через мой debug-бинарь, 
+   раз боевой код уже написан правильно и использует SignalValidator.
+
+ИТОГОВЫЙ ВЫВОД: реальная готовность Этапа 2 выше первоначальной оценки. 
+Вся сигнальная логика (парсинг, дедупликация по времени, slot-age валидация) 
+написана полноценно, протестирована юнит-тестами, без заглушек. Единственная 
+точка отказа — один общий баг в geyser_client.rs (отсутствие account_include 
+фильтра при построении SubscribeRequest + бесполезная Transaction-ветка вместо 
+нужной Account-ветки), который блокирует ВСЕ три DEX-листенера разом, плюс 
+отдельный инфраструктурный блокер (тариф Helius). Оценка трудозатрат на 
+исправление geyser_client.rs — вероятно от нескольких часов до 1-2 дней 
+(нужно понять актуальный API yellowstone_grpc_proto для account_include 
+фильтра), а не недели, как можно было бы предположить по общей оценке 
+"~1.5-2 недели" в исходном плане Этапа 2.
+
+СЛЕДУЮЩИЙ ШАГ (Этап 2):
+
+1. [В РАБОТЕ] Дан промпт агенту на исправление geyser_client.rs:: 
+   subscribe_to_programs() — переключение с transactions-based на 
+   accounts-based subscription с owner-фильтром по program_ids, 
+   удаление TEMPORARY-хака и фиктивного AccountUpdate в ветке 
+   Transaction. См. diff после выполнения.
+
+2. [ЗАВТРА] Нужно сменить Geyser-провайдера — текущий Helius Free-план 
+   не даёт доступа к gRPC-стриму (подтверждено: 0 событий за 120 сек 
+   на 6 активных DEX-программах, при этом обычный JSON-RPC работает). 
+   Изученные варианты (все платные, бесплатного полноценного Geyser 
+   практически не существует на рынке):
+   - Chainstack — от $49/мес
+   - AllenHark — от $99/мес (Yellowstone gRPC), + staked RPC $49/мес
+   - Shyft — от $199/мес, но unlimited без метеринга по кредитам
+   - Helius LaserStream — нужно уточнить минимальный платный тариф
+   - QuickNode — добавка на Build/Accelerate планах, входит в Scale/Business
+   Стоит проверить, есть ли у кого-то free trial на несколько дней — 
+   этого хватит, чтобы прогнать dex_listener_debug.rs и подтвердить 
+   фикс перед принятием решения о постоянном провайдере.
+
+3. [АЛЬТЕРНАТИВА, бесплатно уже сейчас] Пока провайдер не выбран — 
+   можно временно проверить логику парсинга через публичный бесплатный 
+   WebSocket (wss://api.mainnet-beta.solana.com), не требующий ключа. 
+   В проекте уже есть рабочий WsListener (использовался в 
+   stage_1_2_check.rs), просто не подключён к dex_listeners. Это не 
+   заменит Geyser для прода (медленнее, менее надёжно — поэтому план 
+   изначально предпочитает Geyser), но подтвердит корректность 
+   SignalValidator/dedup/парсеров на живых mainnet-данных без затрат.
+
+4. После смены/подтверждения провайдера — обновить GEYSER_ENDPOINT 
+   и GEYSER_X_TOKEN на новые значения и повторить live-тест через 
+   dex_listener_debug.rs (или напрямую через RaydiumListener/
+   MeteoraListener/PumpFunListener, раз они уже написаны правильно).

@@ -26,7 +26,7 @@ use std::time::Duration;
 
 const DEVNET_RPC: &str = "https://api.devnet.solana.com";
 const SOCKET_PATH: &str = "/tmp/solbot-signer-devnet.sock";
-const DB_PATH: &str = "sqlite:/tmp/solbot_devnet_test.db";
+const DB_PATH: &str = "sqlite:data/solbot_devnet_test.db";
 
 struct SignerGuard {
     child: Child,
