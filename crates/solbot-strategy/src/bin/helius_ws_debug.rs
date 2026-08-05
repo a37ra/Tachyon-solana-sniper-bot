@@ -38,6 +38,16 @@ struct Counters {
     unparsed: u64,
     stale_dropped: u64,
     total_received: u64,
+    // Подробная статистика по программам
+    meteora_dlmm_received: u64,
+    meteora_dlmm_parsed: u64,
+    meteora_dlmm_rejected: u64,
+    meteora_dynamic_received: u64,
+    meteora_dynamic_parsed: u64,
+    meteora_dynamic_rejected: u64,
+    pump_fun_received: u64,
+    pump_fun_parsed: u64,
+    pump_fun_rejected: u64,
 }
 
 #[tokio::main]
@@ -73,9 +83,9 @@ async fn main() -> Result<()> {
         Pubkey::from_str("675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8")?, // Raydium AMM v4
         Pubkey::from_str("CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C")?, // Raydium CP-MM
         Pubkey::from_str("CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK")?, // Raydium CLMM
-        Pubkey::from_str("LBUZKhRxPF3XUpBCjp4kVn14nz88kZjgL6Xm1xS8bKp")?, // Meteora DLMM
-        Pubkey::from_str("Eo7WjKq67rjJQSZxS6z3YKapzY3eMj6Xy8X5EQVn5UaB")?, // Meteora Dynamic AMM
-        Pubkey::from_str("6EF8rrecthR5Dkzon8Nwu78hRvfX4LctQnUBjWdK8nN2")?, // Pump.fun
+        Pubkey::from_str("LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo")?, // Meteora DLMM
+        Pubkey::from_str("cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG")?, // Meteora Dynamic AMM v2
+        Pubkey::from_str("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P")?, // Pump.fun
     ];
 
     println!("Subscribing to {} program IDs:", program_ids.len());
@@ -128,6 +138,12 @@ async fn main() -> Result<()> {
 
                     let ts = chrono_now();
 
+                    // Логируем каждое событие на уровне WebSocket
+                    println!(
+                        "{} | WS_EVENT      | account={} | owner={} | slot={} | data_len={}",
+                        ts, update.account, update.owner, update.slot, update.data.len()
+                    );
+
                     // Match by owner program ID
                     let owner_str = update.owner.to_string();
                     
@@ -157,53 +173,62 @@ async fn main() -> Result<()> {
                             "{} | RaydiumCLMM   | account={} | slot={} | age={} | data_len={}",
                             ts, update.account, update.slot, age, update.data.len()
                         );
-                    } else if owner_str == "LBUZKhRxPF3XUpBCjp4kVn14nz88kZjgL6Xm1xS8bKp" {
+                    } else if owner_str == "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo" {
+                        counters.meteora_dlmm_received += 1;
                         match DlmmPoolState::from_account_data(&update.data, &update.account) {
                             Ok(pool) => {
                                 counters.meteora_dlmm += 1;
+                                counters.meteora_dlmm_parsed += 1;
                                 println!(
                                     "{} | MeteoraDLMM   | lb_pair={} | token_x={} | token_y={} | active_id={} | slot={} | age={}",
                                     ts, update.account, pool.token_x_mint, pool.token_y_mint, pool.active_id, update.slot, age
                                 );
                             }
                             Err(e) => {
+                                counters.meteora_dlmm_rejected += 1;
                                 counters.unparsed += 1;
-                                println!("{} | MeteoraDLMM   | ⚠️ parse failed: {}", ts, e);
+                                println!("{} | MeteoraDLMM   | ⚠️ parse failed: account={} reason={}", ts, update.account, e);
                             }
                         }
-                    } else if owner_str == "Eo7WjKq67rjJQSZxS6z3YKapzY3eMj6Xy8X5EQVn5UaB" {
+                    } else if owner_str == "cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG" {
+                        counters.meteora_dynamic_received += 1;
                         match DynamicAmmPoolState::from_account_data(&update.data, &update.account) {
                             Ok(pool) => {
                                 counters.meteora_dynamic += 1;
+                                counters.meteora_dynamic_parsed += 1;
                                 println!(
-                                    "{} | MeteoraDynAMM | pool={} | tokenA={} | tokenB={} | slot={} | age={}",
+                                    "{} | MeteoraDynamic | pool={} | token_a={} | token_b={} | slot={} | age={}",
                                     ts, update.account, pool.token_a_mint, pool.token_b_mint, update.slot, age
                                 );
                             }
                             Err(e) => {
+                                counters.meteora_dynamic_rejected += 1;
                                 counters.unparsed += 1;
-                                println!("{} | MeteoraDynAMM | ⚠️ parse failed: {}", ts, e);
+                                println!("{} | MeteoraDynamic | ⚠️ parse failed: account={} reason={}", ts, update.account, e);
                             }
                         }
-                    } else if owner_str == "6EF8rrecthR5Dkzon8Nwu78hRvfX4LctQnUBjWdK8nN2" {
+                    } else if owner_str == "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P" {
+                        counters.pump_fun_received += 1;
                         match PumpFunBondingCurve::from_account_data(&update.data, &update.account) {
-                            Ok(curve) => {
+                            Ok(pool) => {
                                 counters.pump_fun += 1;
+                                counters.pump_fun_parsed += 1;
                                 println!(
-                                    "{} | PumpFun       | curve={} | mint={} | complete={} | slot={} | age={}",
-                                    ts, update.account, curve.mint, curve.complete, update.slot, age
+                                    "{} | PumpFun       | bonding_curve={} | mint={} | slot={} | age={}",
+                                    ts, update.account, pool.mint, update.slot, age
                                 );
                             }
                             Err(e) => {
+                                counters.pump_fun_rejected += 1;
                                 counters.unparsed += 1;
-                                println!("{} | PumpFun       | ⚠️ parse failed: {}", ts, e);
+                                println!("{} | PumpFun       | ⚠️ parse failed: account={} reason={}", ts, update.account, e);
                             }
                         }
                     } else {
                         counters.unparsed += 1;
                         println!(
-                            "{} | UNKNOWN_OWNER | owner={} account={} slot={}",
-                            ts, update.owner, update.account, update.slot
+                            "{} | UNPARSED      | account={} | owner={} | slot={} | data_len={}",
+                            ts, update.account, update.owner, update.slot, update.data.len()
                         );
                     }
                 }
@@ -226,9 +251,12 @@ async fn main() -> Result<()> {
     println!("  Raydium AMM v4        : {}", counters.raydium_amm_v4);
     println!("  Raydium CP-MM         : {}", counters.raydium_cpmm);
     println!("  Raydium CLMM          : {}", counters.raydium_clmm);
-    println!("  Meteora DLMM          : {}", counters.meteora_dlmm);
-    println!("  Meteora Dynamic AMM   : {}", counters.meteora_dynamic);
-    println!("  Pump.fun              : {}", counters.pump_fun);
+    println!("  Meteora DLMM          : {} (received: {}, parsed: {}, rejected: {})", 
+        counters.meteora_dlmm, counters.meteora_dlmm_received, counters.meteora_dlmm_parsed, counters.meteora_dlmm_rejected);
+    println!("  Meteora Dynamic AMM   : {} (received: {}, parsed: {}, rejected: {})", 
+        counters.meteora_dynamic, counters.meteora_dynamic_received, counters.meteora_dynamic_parsed, counters.meteora_dynamic_rejected);
+    println!("  Pump.fun              : {} (received: {}, parsed: {}, rejected: {})", 
+        counters.pump_fun, counters.pump_fun_received, counters.pump_fun_parsed, counters.pump_fun_rejected);
     println!("  Unparsed/unknown      : {}", counters.unparsed);
     println!("  Dropped (stale)       : {}", counters.stale_dropped);
     println!("  Latest cached slot    : {}", latest_slot.load(Ordering::Relaxed));
