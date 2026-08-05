@@ -12,6 +12,9 @@
 
 use anyhow::Result;
 use solana_pubkey::Pubkey;
+use solana_rpc_client::rpc_client::RpcClient;
+use sqlx::SqlitePool;
+use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::time::{Duration, sleep, interval};
 use tokio_tungstenite::tungstenite::protocol::Message;
@@ -22,7 +25,7 @@ use futures_util::{StreamExt, SinkExt};
 use base64::Engine;
 
 /// Re-export AccountUpdate from geyser_client for compatibility
-pub use super::geyser_client::AccountUpdate;
+pub use super::geyser_client::{AccountUpdate, ExtendedHistoryProvider};
 
 /// Re-export ParsedSignal from logs_parser
 pub use super::logs_parser::ParsedSignal;
@@ -64,11 +67,37 @@ impl HeliusWsConfig {
 /// Helius WebSocket client with programSubscribe support.
 pub struct HeliusWsClient {
     config: HeliusWsConfig,
+    backfill_provider: Option<ExtendedHistoryProvider>,
 }
 
 impl HeliusWsClient {
     pub fn new(config: HeliusWsConfig) -> Self {
-        Self { config }
+        Self {
+            config,
+            backfill_provider: None,
+        }
+    }
+
+    pub fn with_backfill(
+        config: HeliusWsConfig,
+        rpc: Arc<RpcClient>,
+        db_pool: Arc<SqlitePool>,
+    ) -> Self {
+        let backfill_provider = ExtendedHistoryProvider::new(rpc, db_pool);
+        Self {
+            config,
+            backfill_provider: Some(backfill_provider),
+        }
+    }
+
+    pub fn with_backfill_provider(
+        config: HeliusWsConfig,
+        backfill_provider: ExtendedHistoryProvider,
+    ) -> Self {
+        Self {
+            config,
+            backfill_provider: Some(backfill_provider),
+        }
     }
 
     pub fn from_env() -> Self {
@@ -88,6 +117,7 @@ impl HeliusWsClient {
     ) -> Result<mpsc::Receiver<AccountUpdate>> {
         let (tx, rx) = mpsc::channel(1000);
         let config = self.config.clone();
+        let backfill_provider = self.backfill_provider.clone();
 
         tokio::spawn(async move {
             let mut reconnect_attempts = 0;
@@ -105,7 +135,24 @@ impl HeliusWsClient {
                 match tokio_tungstenite::connect_async(&config.ws_url).await {
                     Ok((ws_stream, _)) => {
                         info!("Connected to Helius WebSocket");
+                        let was_reconnection = reconnect_attempts > 0;
                         reconnect_attempts = 0;
+
+                        if was_reconnection {
+                            if let Some(ref backfill) = backfill_provider {
+                                info!("Performing backfill for open positions after WebSocket reconnection");
+                                match backfill.perform_backfill().await {
+                                    Ok(count) => {
+                                        info!(positions_checked = count, "WebSocket backfill completed");
+                                    }
+                                    Err(e) => {
+                                        warn!(error = %e, "WebSocket backfill failed, continuing with subscription");
+                                    }
+                                }
+                            } else {
+                                info!("No backfill provider configured for WebSocket, skipping position check");
+                            }
+                        }
 
                         let (mut write, mut read) = ws_stream.split();
 

@@ -106,57 +106,57 @@
 Без этого этапа невозможна ни одна реальная транзакция.
 
 #### 1.1 Key Material — загрузка из Vault/KMS
-- [ ] Реализовать `load_keypair()` с реальным Vault API (или encrypted file + env)
-- [ ] Реализовать `mlock` для памяти с ключом
-- [ ] Запрет core dump (systemd `LimitCORE=0` уже есть, но нужен runtime check)
+- [x] Реализовать `load_keypair()` с реальным Vault API (или encrypted file + env)
+- [x] Реализовать `mlock` для памяти с ключом
+- [x] Запрет core dump (systemd `LimitCORE=0` уже есть, но нужен runtime check)
 
 #### 1.2 Transaction Builder
-- [ ] Модуль построения Raydium AMM v4 swap instructions
-- [ ] Модуль построения Raydium CP-MM swap instructions
-- [ ] Модуль построения Raydium CLMM swap instructions (tick arrays)
-- [ ] Модуль построения Meteora DLMM swap instructions (bin arrays)
-- [ ] Модуль построения Meteora Dynamic AMM swap instructions
-- [ ] Модуль построения Pump.fun bonding curve swap instructions
-- [ ] Compute Budget Instructions (set compute units + priority fee)
-- [ ] Cached blockhash provider (с автообновлением)
-- [ ] ATA creation / lookup (Associated Token Account)
-- [ ] Базовые интеграционные тесты на devnet
+- [x] Модуль построения Raydium AMM v4 swap instructions
+- [x] Модуль построения Raydium CP-MM swap instructions
+- [x] Модуль построения Raydium CLMM swap instructions (tick arrays)
+- [x] Модуль построения Meteora DLMM swap instructions (bin arrays)
+- [x] Модуль построения Meteora Dynamic AMM swap instructions
+- [x] Модуль построения Pump.fun bonding curve swap instructions
+- [x] Compute Budget Instructions (set compute units + priority fee)
+- [x] Cached blockhash provider (с автообновлением)
+- [x] ATA creation / lookup (Associated Token Account)
+- [x] Базовые интеграционные тесты на devnet
 
 #### 1.3 Signer IPC — подключение реального signing
-- [ ] Заменить `"dummy_b64"/"dummy_sig"` на вызов `sign_transaction()` из `signing.rs`
-- [ ] Добавить `hard_cap_bps` валидацию (разбор unsigned tx, проверка slippage)
-- [ ] Добавить `destination_addresses` whitelist валидацию (unexpected_destination)
-- [ ] Тест: property-fuzzing 100k мутированных intent'ов
+- [x] Заменить `"dummy_b64"/"dummy_sig"` на вызов `sign_transaction()` из `signing.rs`
+- [x] Добавить `hard_cap_bps` валидацию (разбор unsigned tx, проверка slippage)
+- [x] Добавить `destination_addresses` whitelist валидацию (unexpected_destination)
+- [x] Тест: property-fuzzing 100k мутированных intent'ов
 
 ---
 
 ### Этап 2: Signal Source — DEX Listeners (~1.5-2 недели)
 
 #### 2.1 Geyser/gRPC подписка
-- [] Интеграция с Yellowstone/Geyser gRPC (или WebSocket)
+- [x] Интеграция с Yellowstone/Geyser gRPC (или WebSocket)
     API: f22a2b7e-479a-4040-847e-66337dc830e4
-- [] Парсинг account update notifications по program_id
-- [] Фильтр по Raydium AMM v4 (`675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8`)
-- [] Фильтр по Raydium CP-MM, CLMM
-- [] Фильтр по Meteora DLMM, Dynamic AMM
-- [] Фильтр по Pump.fun bonding curve + migration event
+- [x] Парсинг account update notifications по program_id
+- [x] Фильтр по Raydium AMM v4 (`675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8`)
+- [x] Фильтр по Raydium CP-MM, CLMM
+- [x] Фильтр по Meteora DLMM, Dynamic AMM
+- [x] Фильтр по Pump.fun bonding curve + migration event
     1 миллион кредитов — это много, но если ты подпишешься на вообще все транзакции в сети, лимит сгорит за час.
 Поэтому в SubscribeRequest обязательно настрой фильтр account_include или vote: false, чтобы Helius присылал тебе только транзакции Pump.fun или Raydium, а не весь мусор сети.
 #### 2.2 Signal Parsing
-- [] Парсинг InitializePool / Swap инструкций для каждого DEX
-- [] Извлечение mint, pool_address, dex_program_id
-- [] `max_signal_age_slots: 30` — проверка slot age
+- [x] Парсинг InitializePool / Swap инструкций для каждого DEX
+- [x] Извлечение mint, pool_address, dex_program_id
+- [x] `max_signal_age_slots: 30` — проверка slot age
 
 #### 2.3 Reconnection & Backfill
-- [] Auto-reconnect при разрыве WebSocket/gRPC
-- [] Backfill пропущенных слотов через `extended_history_provider`
+- [x] Auto-reconnect при разрыве WebSocket/gRPC
+- [x] Backfill пропущенных слотов через `extended_history_provider`
 
 ---
 
 ### Этап 3: Risk Gate — Real Pre-Buy Checks (~1-1.5 недели)
 
 #### 3.1 Mint/Freeze Authority Check
-- [ ] Реальный `getAccountInfo` → парсинг Mint account → проверка `mint_authority == None && freeze_authority == None`
+- [x] Реальный `getAccountInfo` → парсинг Mint account → проверка `mint_authority == None && freeze_authority == None`
 
 #### 3.2 LP Lock Check
 - [ ] Проверка LP token mint → owner = burn address или timelock program
