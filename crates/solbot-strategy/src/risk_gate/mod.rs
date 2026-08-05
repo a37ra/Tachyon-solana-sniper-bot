@@ -28,7 +28,7 @@ pub async fn run_pre_buy_checks(
     
     let (freeze_result, lp_result, token2022_result, simulate_result) = tokio::join!(
         mint_freeze_authority::check(&signal.mint, &config.rpc_url),
-        lp_lock_check::check(&signal.pool_address, &config.rpc_url),
+        lp_lock_check::check(&signal.pool_address, &signal.dex_program, &config.rpc_url),
         token2022_extensions::check(&signal.mint, &config.rpc_url, config),
         simulate_sell::check(&signal.mint, &signal.pool_address, config.simulate_size_lamports, &config.rpc_url)
     );
@@ -61,6 +61,38 @@ pub async fn run_pre_buy_checks(
     }
     
     RiskGateVerdict::Accept
+}
+
+/// Run pre-buy checks with a hard timeout wrapper (Risk Gate 3.5).
+///
+/// Wraps `run_pre_buy_checks` with a 150ms hard timeout.
+/// If the checks exceed this time, the signal is rejected to prevent
+/// slow RPC responses from blocking the trading pipeline.
+pub async fn run_pre_buy_checks_with_timeout(
+    signal: &Signal,
+    config: &RiskGateConfig,
+) -> RiskGateVerdict {
+    const HARD_TIMEOUT_MS: u64 = 150;
+    
+    match tokio::time::timeout(
+        std::time::Duration::from_millis(HARD_TIMEOUT_MS),
+        run_pre_buy_checks(signal, config)
+    )
+    .await
+    {
+        Ok(verdict) => verdict,
+        Err(_) => {
+            tracing::warn!(
+                mint = %signal.mint,
+                pool = %signal.pool_address,
+                "Pre-buy checks timed out after {}ms - rejecting signal",
+                HARD_TIMEOUT_MS
+            );
+            RiskGateVerdict::Reject {
+                reason: format!("Pre-buy checks timeout after {}ms", HARD_TIMEOUT_MS),
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

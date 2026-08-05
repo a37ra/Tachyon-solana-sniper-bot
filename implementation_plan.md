@@ -159,19 +159,19 @@
 - [x] Реальный `getAccountInfo` → парсинг Mint account → проверка `mint_authority == None && freeze_authority == None`
 
 #### 3.2 LP Lock Check
-- [ ] Проверка LP token mint → owner = burn address или timelock program
+- [x] Проверка LP token mint → owner = burn address или timelock program
 
 #### 3.3 Token-2022 Extensions
-- [ ] Парсинг TLV extension data из Token-2022 mint account
-- [ ] Allowlist/Blocklist matching (`transfer_fee`, `permanent_delegate`, `transfer_hook`)
+- [x] Парсинг TLV extension data из Token-2022 mint account
+- [x] Allowlist/Blocklist matching (`transfer_fee`, `permanent_delegate`, `transfer_hook`)
 
 #### 3.4 Simulate Sell Before Buy
-- [ ] Построение sell-транзакции для `simulateTransaction`
-- [ ] Парсинг result logs → детекция honeypot (revert / excessive fee / zero output)
-- [ ] Hard timeout 80ms с fallback reject
+- [x] Построение sell-транзакции для `simulateTransaction`
+- [x] Парсинг result logs → детекция honeypot (revert / excessive fee / zero output)
+- [x] Hard timeout 80ms с fallback reject
 
 #### 3.5 hard_timeout_ms: 150
-- [ ] Обёртка `tokio::time::timeout(150ms, run_pre_buy_checks())`
+- [x] Обёртка `tokio::time::timeout(150ms, run_pre_buy_checks())`
 
 ---
 
