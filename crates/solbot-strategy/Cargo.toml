@@ -27,6 +27,10 @@ path = "src/bin/helius_ws_debug.rs"
 name = "helius_logs_debug"
 path = "src/bin/helius_logs_debug.rs"
 
+[[bin]]
+name = "performance_benchmark"
+path = "src/bin/performance_benchmark.rs"
+
 [dependencies]
 solbot-common = { path = "../solbot-common" }
 tokio = { workspace = true }
