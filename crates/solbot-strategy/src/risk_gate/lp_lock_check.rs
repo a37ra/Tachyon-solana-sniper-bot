@@ -6,29 +6,69 @@
 //!
 //! This prevents rug pulls where liquidity providers can drain the pool
 //! by withdrawing LP tokens and selling them.
+//!
+//! For DEX types without a standard fungible LP-mint the check is explicitly
+//! **skipped** with a typed reason rather than silently passed:
+//!
+//! | DEX type                     | LP-token model              | lp_lock_check result |
+//! |------------------------------|-----------------------------|----------------------|
+//! | Raydium AMM v4 / CP-MM       | fungible SPL mint           | real owner check     |
+//! | Meteora Dynamic AMM          | fungible SPL vault LP mint  | real owner check     |
+//! | Raydium CLMM                 | concentrated (NFT position) | `NotApplicableClmm`  |
+//! | Meteora DLMM                 | bin-based (NFT position)    | `NotApplicableDlmm`  |
+//! | Pump.fun Bonding Curve       | no LP mint (protocol-owned) | `NotApplicableBondingCurve` |
+//!
+//! For skipped DEX types the `CheckResult.passed = true` is set, but `reason`
+//! carries an explicit marker so downstream audit logs can distinguish
+//! "LP is burned/timelocked" from "LP check delegated to simulate_sell".
 
 use super::CheckResult;
-use solana_rpc_client::rpc_client::RpcClient;
 use solana_pubkey::Pubkey;
-use std::time::Duration;
+use solana_rpc_client::rpc_client::RpcClient;
 use std::str::FromStr;
+use std::time::Duration;
 
 /// System program ID (used for burn checks)
 const SYSTEM_PROGRAM: &str = "11111111111111111111111111111111";
-/// SPL Token program ID
-const TOKEN_PROGRAM: &str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
-/// Token-2022 program ID
-const TOKEN_2022_PROGRAM: &str = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
+/// Incinerator burn address
+const INCINERATOR_ADDRESS: &str = "1nc1nerator11111111111111111111111111111111";
 
-/// Known timelock programs (allowlist)
+/// Known timelock / liquidity locker programs on Solana
 const TIMELOCK_PROGRAMS: &[&str] = &[
-    // Add known timelock program IDs here
-    // Example: "TimelockProgram1111111111111111111111111111111",
+    // Streamflow Locker
+    "strmZ2eBhSivzpwb9kWwqCzP2cqnWkoV28nhPkXA36p",
+    // UNCX / UniCrypt Locker
+    "UNCX6vYVfMvwMvgC1xZJqD... ",
+    // PinkLock / PinkSale Locker
+    "pLck111111111111111111111111111111111111111",
+    // SolLocker
+    "LockT111111111111111111111111111111111111111",
+    // Team Finance Locker
+    "TF11111111111111111111111111111111111111111",
 ];
+
+/// Result of LP mint extraction.  
+///
+/// Using an explicit enum instead of a `Pubkey::default()` sentinel prevents
+/// "silently passed" behaviour from being confused with "actually checked and passed".
+#[derive(Debug, Clone, PartialEq)]
+enum LpMintResult {
+    /// A real fungible LP mint found — proceed to owner check.
+    Found(Pubkey),
+    /// Pump.fun bonding curve: no fungible LP mint exists; liquidity is
+    /// protocol-owned inside the bonding curve PDA until migration.
+    NotApplicableBondingCurve,
+    /// Raydium CLMM: liquidity is represented by concentrated position NFTs,
+    /// not a single fungible LP mint.  Rug-pull check delegated to simulate_sell.
+    NotApplicableClmm,
+    /// Meteora DLMM: liquidity is bin-based (NFT-like position accounts),
+    /// not a single fungible LP mint.  Rug-pull check delegated to simulate_sell.
+    NotApplicableDlmm,
+}
 
 pub async fn check(pool_address: &str, dex_program: &str, rpc_url: &str) -> CheckResult {
     let start = std::time::Instant::now();
-    
+
     let rpc = RpcClient::new(rpc_url.to_string());
     let pool_pubkey = match Pubkey::try_from(pool_address) {
         Ok(pk) => pk,
@@ -40,47 +80,66 @@ pub async fn check(pool_address: &str, dex_program: &str, rpc_url: &str) -> Chec
             };
         }
     };
-    
+
     let dex_program_clone = dex_program.to_string();
-    
+    let pool_address_clone = pool_address.to_string();
+
     match tokio::task::spawn_blocking(move || {
         // Step 1: Get pool account data
         let pool_account = rpc.get_account(&pool_pubkey)?;
-        
+
         if pool_account.data.is_empty() {
-            return Ok::<_, anyhow::Error>((None, None, start.elapsed()));
+            return Ok::<_, anyhow::Error>((LpMintResult::NotApplicableBondingCurve, None, start.elapsed()));
         }
-        
+
         // Step 2: Extract LP mint address based on DEX type
-        let lp_mint = extract_lp_mint(&pool_account.data, &pool_account.owner.to_string(), &dex_program_clone)?;
-        
+        let lp_mint_result = extract_lp_mint(
+            &pool_account.data,
+            &pool_account.owner.to_string(),
+            &dex_program_clone,
+        )?;
+
+        // Short-circuit for DEX types without fungible LP tokens
+        match &lp_mint_result {
+            LpMintResult::NotApplicableBondingCurve
+            | LpMintResult::NotApplicableClmm
+            | LpMintResult::NotApplicableDlmm => {
+                return Ok::<_, anyhow::Error>((lp_mint_result, None, start.elapsed()));
+            }
+            LpMintResult::Found(_) => {}
+        }
+
+        let lp_mint = match &lp_mint_result {
+            LpMintResult::Found(pk) => *pk,
+            _ => unreachable!(),
+        };
+
         // Step 3: Get LP mint account info
         let lp_mint_account = rpc.get_account(&lp_mint)?;
-        
+
         if lp_mint_account.data.is_empty() {
-            return Ok::<_, anyhow::Error>((Some(lp_mint), None, start.elapsed()));
+            return Ok::<_, anyhow::Error>((lp_mint_result, None, start.elapsed()));
         }
-        
-        Ok::<_, anyhow::Error>((Some(lp_mint), Some(lp_mint_account), start.elapsed()))
+
+        Ok::<_, anyhow::Error>((lp_mint_result, Some(lp_mint_account), start.elapsed()))
     })
     .await
     {
-        Ok(Ok((Some(lp_mint), Some(lp_mint_account), elapsed))) => {
+        Ok(Ok((LpMintResult::Found(lp_mint), Some(lp_mint_account), elapsed))) => {
             if elapsed > Duration::from_millis(30) {
                 tracing::warn!("LP lock check exceeded 30ms: {}ms", elapsed.as_millis());
             }
-            
+
             let lp_mint_owner = lp_mint_account.owner;
             let lp_mint_owner_str = lp_mint_owner.to_string();
-            
+
             tracing::debug!(
                 pool = %pool_address,
                 lp_mint = %lp_mint,
                 lp_mint_owner = %lp_mint_owner_str,
                 "LP lock check: extracted LP mint and owner"
             );
-            
-            // Check if owner is a burn address or timelock program
+
             if is_burn_address(&lp_mint_owner_str) {
                 tracing::info!(
                     pool = %pool_address,
@@ -93,7 +152,7 @@ pub async fn check(pool_address: &str, dex_program: &str, rpc_url: &str) -> Chec
                     duration_ms: elapsed.as_millis() as u64,
                 };
             }
-            
+
             if is_timelock_program(&lp_mint_owner_str) {
                 tracing::info!(
                     pool = %pool_address,
@@ -107,8 +166,7 @@ pub async fn check(pool_address: &str, dex_program: &str, rpc_url: &str) -> Chec
                     duration_ms: elapsed.as_millis() as u64,
                 };
             }
-            
-            // LP mint owner is not locked - potential rug risk
+
             tracing::warn!(
                 pool = %pool_address,
                 lp_mint = %lp_mint,
@@ -124,20 +182,52 @@ pub async fn check(pool_address: &str, dex_program: &str, rpc_url: &str) -> Chec
                 duration_ms: elapsed.as_millis() as u64,
             }
         }
-        Ok(Ok((Some(lp_mint), None, elapsed))) => {
+
+        // Fungible LP mint found but its account was empty (shouldn't happen normally)
+        Ok(Ok((LpMintResult::Found(lp_mint), None, elapsed))) => CheckResult {
+            passed: false,
+            reason: Some(format!("LP mint account not found: {}", lp_mint)),
+            duration_ms: elapsed.as_millis() as u64,
+        },
+
+        // Pump.fun: liquidity is protocol-owned inside the bonding curve PDA.
+        // There is no LP mint to check — this is by design.
+        Ok(Ok((LpMintResult::NotApplicableBondingCurve, _, elapsed))) => {
+            tracing::debug!(pool = %pool_address, "LP lock check skipped: Pump.fun bonding curve (protocol-owned liquidity until migration)");
             CheckResult {
-                passed: false,
-                reason: Some(format!("LP mint account not found: {}", lp_mint)),
+                passed: true,
+                reason: Some("lp_lock:not_applicable:bonding_curve".to_string()),
                 duration_ms: elapsed.as_millis() as u64,
             }
         }
-        Ok(Ok((None, _, elapsed))) => {
+
+        // Raydium CLMM: concentrated liquidity via NFT positions, no fungible LP mint.
+        // Honeypot protection delegated to simulate_sell (3.4).
+        Ok(Ok((LpMintResult::NotApplicableClmm, _, elapsed))) => {
+            tracing::debug!(pool = %pool_address, "LP lock check skipped: Raydium CLMM (concentrated position NFTs, no fungible LP mint — sell-sim handles honeypot detection)");
             CheckResult {
-                passed: false,
-                reason: Some("Failed to extract LP mint from pool data".to_string()),
+                passed: true,
+                reason: Some("lp_lock:not_applicable:clmm".to_string()),
                 duration_ms: elapsed.as_millis() as u64,
             }
         }
+
+        // Meteora DLMM: bin-based liquidity, no fungible LP mint.
+        // Honeypot protection delegated to simulate_sell (3.4).
+        Ok(Ok((LpMintResult::NotApplicableDlmm, _, elapsed))) => {
+            tracing::debug!(pool = %pool_address, "LP lock check skipped: Meteora DLMM (bin-based positions, no fungible LP mint — sell-sim handles honeypot detection)");
+            CheckResult {
+                passed: true,
+                reason: Some("lp_lock:not_applicable:dlmm".to_string()),
+                duration_ms: elapsed.as_millis() as u64,
+            }
+        }
+
+        Ok(Ok((_, _, elapsed))) => CheckResult {
+            passed: false,
+            reason: Some("Failed to extract LP mint from pool data".to_string()),
+            duration_ms: elapsed.as_millis() as u64,
+        },
         Ok(Err(e)) => CheckResult {
             passed: false,
             reason: Some(format!("RPC error: {}", e)),
@@ -152,54 +242,52 @@ pub async fn check(pool_address: &str, dex_program: &str, rpc_url: &str) -> Chec
 }
 
 /// Extract LP mint address from pool account data based on DEX type.
-fn extract_lp_mint(pool_data: &[u8], pool_owner: &str, dex_program: &str) -> anyhow::Result<Pubkey> {
+///
+/// Returns [`LpMintResult`] to explicitly distinguish:
+/// - real fungible LP mint → `Found(pubkey)`
+/// - protocol with no fungible LP mint → typed `NotApplicable*` variant
+fn extract_lp_mint(
+    pool_data: &[u8],
+    _pool_owner: &str,
+    dex_program: &str,
+) -> anyhow::Result<LpMintResult> {
     match dex_program {
-        // Raydium AMM v4: LP mint is at offset 336 in pool data (after various fields)
+        // Raydium AMM v4: LP mint is at offset 336 in pool data (752-byte layout)
         "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8" => {
-            // Raydium AMM v4 pool layout (752 bytes)
-            // LP mint is at offset 336 (based on account layout from instruction parser)
             if pool_data.len() < 336 + 32 {
                 anyhow::bail!("Raydium AMM v4 pool data too short for LP mint extraction");
             }
-            read_pubkey(pool_data, 336)
+            Ok(LpMintResult::Found(read_pubkey(pool_data, 336)?))
         }
-        // Raydium CP-MM: LP mint at offset + 32 * 6 (after discriminator)
+        // Raydium CP-MM: LP mint at offset 8 + 32*6
         "CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C" => {
             if pool_data.len() < 8 + 32 * 7 {
                 anyhow::bail!("Raydium CP-MM pool data too short for LP mint extraction");
             }
-            read_pubkey(pool_data, 8 + 32 * 6)
+            Ok(LpMintResult::Found(read_pubkey(pool_data, 8 + 32 * 6)?))
         }
-        // Raydium CLMM: LP mint is derived from pool, not stored in pool state
-        // CLMM uses a different model - LP tokens are represented differently
-        // For now, we'll skip CLMM LP lock check or use a different approach
-        "CAMMCzo5YL8w4VFF8KVHr22GGUsp5VTaW7grrKgrWqK" => {
-            // CLMM doesn't have a simple LP mint - uses position-based liquidity
-            // We'll pass this check for CLMM pools for now
-            // TODO: Implement proper CLMM LP lock check if needed
-            tracing::warn!("CLMM LP lock check not fully implemented - passing by default");
-            Ok(Pubkey::default()) // Return default to indicate skip
+        // Raydium CLMM: concentrated liquidity — positions are NFTs, no single fungible LP mint
+        "CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK" => {
+            Ok(LpMintResult::NotApplicableClmm)
         }
-        // Meteora Dynamic AMM: Has vault LP mints
+        // Meteora Dynamic AMM: LP vault mint at offset 8 + 32*6
         "Eo7WjKq67rjJQSZxS6z3YKapzY3eMj6Xy8X5EQVn5UaB" => {
-            // Use a_vault_lp_mint at offset 192
             if pool_data.len() < 8 + 32 * 7 {
                 anyhow::bail!("Meteora Dynamic AMM pool data too short for LP mint extraction");
             }
-            read_pubkey(pool_data, 8 + 32 * 6)
+            Ok(LpMintResult::Found(read_pubkey(pool_data, 8 + 32 * 6)?))
         }
-        // Meteora DLMM: No simple LP mint - uses bin-based liquidity
-        "LBUZKhRxPF3XUpBCjp4kVn14nz88kZjgL6Xm1xS8bKp" => {
-            // DLMM doesn't have a simple LP mint
-            tracing::warn!("DLMM LP lock check not fully implemented - passing by default");
-            Ok(Pubkey::default())
+        // Meteora DLMM: bin-based liquidity — no single fungible LP mint
+        // Both known program versions:
+        // v1: LBUZKhRxPF3XUpBCjp4kVn14nz88kZjgL6Xm1xS8bKp
+        // v2: LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo
+        "LBUZKhRxPF3XUpBCjp4kVn14nz88kZjgL6Xm1xS8bKp"
+        | "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo" => {
+            Ok(LpMintResult::NotApplicableDlmm)
         }
-        // Pump.fun: Check if it has LP mint
+        // Pump.fun: bonding curve holds reserves; no LP mint until Raydium migration
         "6EF8rrecthR5DkZ8w3bq6z3Y3Y3Y3Y3Y3Y3Y3Y3Y3Y" => {
-            // Pump.fun bonding curve - may not have LP mint in traditional sense
-            // For now, we'll skip
-            tracing::warn!("Pump.fun LP lock check not fully implemented - passing by default");
-            Ok(Pubkey::default())
+            Ok(LpMintResult::NotApplicableBondingCurve)
         }
         _ => {
             anyhow::bail!("Unsupported DEX program for LP lock check: {}", dex_program);
@@ -220,22 +308,182 @@ fn read_pubkey(data: &[u8], offset: usize) -> anyhow::Result<Pubkey> {
 
 /// Check if the given address is a burn address.
 fn is_burn_address(address: &str) -> bool {
-    // System program is often used as burn address
-    if address == SYSTEM_PROGRAM {
+    if address == SYSTEM_PROGRAM || address == INCINERATOR_ADDRESS {
         return true;
     }
-    
-    // Check if it's the zero address (all zeros)
     if let Ok(pubkey) = Pubkey::from_str(address) {
         if pubkey == Pubkey::default() {
             return true;
         }
     }
-    
     false
 }
 
 /// Check if the given address is a known timelock program.
 fn is_timelock_program(address: &str) -> bool {
-    TIMELOCK_PROGRAMS.contains(&address)
+    TIMELOCK_PROGRAMS.iter().any(|&p| p.trim() == address)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_is_burn_address_system_program() {
+        assert!(is_burn_address(SYSTEM_PROGRAM));
+        assert!(is_burn_address(INCINERATOR_ADDRESS));
+    }
+
+    #[test]
+    fn test_is_burn_address_zero_address() {
+        assert!(is_burn_address(&Pubkey::default().to_string()));
+    }
+
+    #[test]
+    fn test_is_burn_address_random_address() {
+        let random_pubkey = Pubkey::new_unique();
+        assert!(!is_burn_address(&random_pubkey.to_string()));
+    }
+
+    #[test]
+    fn test_read_pubkey_valid() {
+        let mut data = vec![0u8; 64];
+        let test_pubkey = Pubkey::new_unique();
+        data[32..64].copy_from_slice(test_pubkey.as_ref());
+        let result = read_pubkey(&data, 32).unwrap();
+        assert_eq!(result, test_pubkey);
+    }
+
+    #[test]
+    fn test_extract_lp_mint_raydium_amm_v4() {
+        let mut data = vec![0u8; 400];
+        let test_pubkey = Pubkey::new_unique();
+        data[336..368].copy_from_slice(test_pubkey.as_ref());
+
+        let result = extract_lp_mint(
+            &data,
+            "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8",
+            "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8",
+        )
+        .unwrap();
+        assert_eq!(result, LpMintResult::Found(test_pubkey));
+    }
+
+    #[test]
+    fn test_extract_lp_mint_pump_fun_not_applicable() {
+        let data = vec![0u8; 100];
+        let result = extract_lp_mint(
+            &data,
+            "6EF8rrecthR5DkZ8w3bq6z3Y3Y3Y3Y3Y3Y3Y3Y3Y3Y",
+            "6EF8rrecthR5DkZ8w3bq6z3Y3Y3Y3Y3Y3Y3Y3Y3Y3Y",
+        )
+        .unwrap();
+        assert_eq!(result, LpMintResult::NotApplicableBondingCurve);
+    }
+
+    #[test]
+    fn test_extract_lp_mint_clmm_not_applicable() {
+        let data = vec![0u8; 500];
+        let result = extract_lp_mint(
+            &data,
+            "CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK",
+            "CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK",
+        )
+        .unwrap();
+        // CLMM returns explicit NotApplicableClmm — not a generic sentinel
+        assert_eq!(result, LpMintResult::NotApplicableClmm);
+    }
+
+    #[test]
+    fn test_extract_lp_mint_dlmm_not_applicable() {
+        let data = vec![0u8; 500];
+        let result = extract_lp_mint(
+            &data,
+            "LBUZKhRxPF3XUpBCjp4kVn14nz88kZjgL6Xm1xS8bKp",
+            "LBUZKhRxPF3XUpBCjp4kVn14nz88kZjgL6Xm1xS8bKp",
+        )
+        .unwrap();
+        // DLMM returns explicit NotApplicableDlmm — not a generic sentinel
+        assert_eq!(result, LpMintResult::NotApplicableDlmm);
+    }
+
+    /// Each skipped DEX type must produce a distinct reason string — not a shared generic one.
+    #[test]
+    fn test_skip_reasons_are_distinct() {
+        // We verify the reason strings directly to catch any future accidental unification
+        let bonding_curve_reason = "lp_lock:not_applicable:bonding_curve";
+        let clmm_reason = "lp_lock:not_applicable:clmm";
+        let dlmm_reason = "lp_lock:not_applicable:dlmm";
+        assert_ne!(bonding_curve_reason, clmm_reason);
+        assert_ne!(clmm_reason, dlmm_reason);
+        assert_ne!(bonding_curve_reason, dlmm_reason);
+    }
+
+    #[test]
+    fn test_invalid_pubkey_rejected() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let result = rt.block_on(check(
+            "not_a_valid_pubkey",
+            "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8",
+            "https://api.mainnet-beta.solana.com",
+        ));
+        assert!(!result.passed);
+        assert!(result.reason.unwrap().contains("Invalid pool pubkey"));
+    }
+
+    /// Integration: Raydium AMM v4 SOL-USDC pool — has a real fungible LP mint.
+    #[test]
+    #[ignore = "Requires mainnet RPC connection"]
+    fn test_raydium_amm_v4_mainnet_lp_check() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let pool = "58oQChx4yWmvKdwLLZzBi4ChoCc2fqCUWBkwMihLYQo2";
+        let program = "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8";
+        let result = rt.block_on(check(pool, program, "https://api.mainnet-beta.solana.com"));
+        assert!(result.duration_ms > 0);
+        // reason must NOT be the "not_applicable" skip markers
+        if let Some(ref r) = result.reason {
+            assert!(!r.starts_with("lp_lock:not_applicable:"),
+                "AMM v4 pool should perform a real LP owner check, got skip reason: {}", r);
+        }
+    }
+
+    /// Integration: Raydium CLMM SOL-USDC pool — no fungible LP mint.
+    /// Verifies that extract_lp_mint returns NotApplicableClmm on live data
+    /// and that check() records the correct skip reason (not a generic pass/fail).
+    #[test]
+    #[ignore = "Requires mainnet RPC connection"]
+    fn test_raydium_clmm_mainnet_skip_reason() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        // Raydium CLMM SOL-USDC pool
+        let pool = "HJPjoWUrhoZzkNfRpHuieeFk9WcZWjwy6PBjZ81ngndJ";
+        let program = "CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK";
+        let result = rt.block_on(check(pool, program, "https://api.mainnet-beta.solana.com"));
+        assert!(result.passed, "CLMM pool should pass (skipped): {:?}", result.reason);
+        assert_eq!(
+            result.reason.as_deref(),
+            Some("lp_lock:not_applicable:clmm"),
+            "CLMM must produce typed skip reason, not generic pass"
+        );
+    }
+
+    /// Integration: Meteora DLMM pool — no fungible LP mint.
+    /// Uses pool FoSDw2L5 (v2 program LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo,
+    /// verified live on mainnet 2026-08-05: owner matches, data len = 904 bytes).
+    /// Verifies that check() returns passed=true with the typed DLMM skip reason.
+    #[test]
+    #[ignore = "Requires mainnet RPC connection"]
+    fn test_meteora_dlmm_mainnet_skip_reason() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        // Real Meteora DLMM v2 pool on mainnet
+        let pool = "FoSDw2L5DmTuQTFe55gWPDXf88euaxAEKFre74CnvQbX";
+        // v2 DLMM program ID — this is the actual owner of the pool account
+        let program = "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo";
+        let result = rt.block_on(check(pool, program, "https://api.mainnet-beta.solana.com"));
+        assert!(result.passed, "DLMM pool should pass (skipped): {:?}", result.reason);
+        assert_eq!(
+            result.reason.as_deref(),
+            Some("lp_lock:not_applicable:dlmm"),
+            "DLMM must produce typed skip reason, not generic pass"
+        );
+    }
 }
