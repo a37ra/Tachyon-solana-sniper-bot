@@ -19,6 +19,10 @@ path = "src/bin/stage_1_2_check.rs"
 name = "devnet_roundtrip"
 path = "src/bin/devnet_roundtrip.rs"
 
+[[bin]]
+name = "helius_ws_debug"
+path = "src/bin/helius_ws_debug.rs"
+
 [dependencies]
 solbot-common = { path = "../solbot-common" }
 tokio = { workspace = true }

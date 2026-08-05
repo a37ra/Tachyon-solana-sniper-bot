@@ -5,6 +5,7 @@
 
 use solbot_common::types::Signal;
 use crate::signal::geyser_client::{GeyserClient, GeyserConfig, AccountUpdate};
+use crate::signal::helius_ws_client::{HeliusWsClient, HeliusWsConfig};
 use crate::signal::signal_validator::SignalValidator;
 use anyhow::{Context, Result};
 use chrono::Utc;
@@ -19,6 +20,8 @@ pub const METEORA_DYNAMIC_PROGRAM: &str = "Eo7WjKq67rjJQSZxS6z3YKapzY3eMj6Xy8X5E
 
 pub struct MeteoraListener {
     geyser_config: GeyserConfig,
+    helius_ws_config: HeliusWsConfig,
+    signal_source: String,
     signal_validator: Arc<SignalValidator>,
 }
 
@@ -30,22 +33,51 @@ impl Default for MeteoraListener {
 
 impl MeteoraListener {
     pub fn new() -> Self {
+        let signal_source = std::env::var("SIGNAL_SOURCE")
+            .unwrap_or_else(|_| "geyser_grpc".to_string());
+        
         Self {
             geyser_config: GeyserConfig::default(),
+            helius_ws_config: HeliusWsConfig::default(),
+            signal_source,
             signal_validator: Arc::new(SignalValidator::with_default()),
         }
     }
 
     pub fn with_geyser_config(config: GeyserConfig) -> Self {
+        let signal_source = std::env::var("SIGNAL_SOURCE")
+            .unwrap_or_else(|_| "geyser_grpc".to_string());
+        
         Self {
             geyser_config: config,
+            helius_ws_config: HeliusWsConfig::default(),
+            signal_source,
             signal_validator: Arc::new(SignalValidator::with_default()),
         }
     }
 
     pub fn with_validator(config: GeyserConfig, validator: Arc<SignalValidator>) -> Self {
+        let signal_source = std::env::var("SIGNAL_SOURCE")
+            .unwrap_or_else(|_| "geyser_grpc".to_string());
+        
         Self {
             geyser_config: config,
+            helius_ws_config: HeliusWsConfig::default(),
+            signal_source,
+            signal_validator: validator,
+        }
+    }
+
+    pub fn with_signal_source(
+        geyser_config: GeyserConfig,
+        helius_ws_config: HeliusWsConfig,
+        signal_source: String,
+        validator: Arc<SignalValidator>,
+    ) -> Self {
+        Self {
+            geyser_config,
+            helius_ws_config,
+            signal_source,
             signal_validator: validator,
         }
     }
@@ -55,6 +87,8 @@ impl MeteoraListener {
     ) -> Result<mpsc::Receiver<Signal>> {
         let (tx, rx) = mpsc::channel(100);
         let geyser_config = self.geyser_config.clone();
+        let helius_ws_config = self.helius_ws_config.clone();
+        let signal_source = self.signal_source.clone();
 
         // Collect all Meteora program IDs
         let program_ids = vec![
@@ -62,16 +96,22 @@ impl MeteoraListener {
             Pubkey::from_str(METEORA_DYNAMIC_PROGRAM)?,
         ];
 
-        let geyser_client = GeyserClient::new(geyser_config);
-        let mut account_updates = geyser_client
-            .subscribe_to_programs(program_ids, None, false)
-            .await
-            .context("Failed to subscribe to Geyser gRPC")?;
-
         let validator = self.signal_validator.clone();
 
         tokio::spawn(async move {
-            info!("Starting Meteora pool creation listener via Geyser gRPC");
+            let mut account_updates = if signal_source == "helius_ws" {
+                info!("Starting Meteora pool creation listener via Helius WebSocket");
+                let helius_client = HeliusWsClient::new(helius_ws_config);
+                helius_client.subscribe_to_programs(program_ids).await
+                    .context("Failed to subscribe to Helius WebSocket")
+                    .unwrap()
+            } else {
+                info!("Starting Meteora pool creation listener via Geyser gRPC");
+                let geyser_client = GeyserClient::new(geyser_config);
+                geyser_client.subscribe_to_programs(program_ids, None, false).await
+                    .context("Failed to subscribe to Geyser gRPC")
+                    .unwrap()
+            };
 
             while let Some(update) = account_updates.recv().await {
                 // Update current slot from account update
@@ -106,6 +146,8 @@ impl MeteoraListener {
 
     /// Parse Meteora account update to extract pool creation signal.
     fn parse_meteora_account(update: AccountUpdate) -> Option<Signal> {
+        let signal_source = std::env::var("SIGNAL_SOURCE")
+            .unwrap_or_else(|_| "geyser_grpc".to_string());
         let account_data = update.data;
         let owner_str = update.owner.to_string();
 
@@ -117,7 +159,7 @@ impl MeteoraListener {
                     mint: mint_x.to_string(),
                     pool_address: update.account.to_string(),
                     dex_program: update.owner.to_string(),
-                    signal_source: "geyser_grpc".to_string(),
+                    signal_source: signal_source.clone(),
                     slot: update.slot,
                     received_at: Utc::now().timestamp_millis() as u64,
                 });
@@ -132,7 +174,7 @@ impl MeteoraListener {
                     mint: mint_a.to_string(),
                     pool_address: update.account.to_string(),
                     dex_program: update.owner.to_string(),
-                    signal_source: "geyser_grpc".to_string(),
+                    signal_source: signal_source.clone(),
                     slot: update.slot,
                     received_at: Utc::now().timestamp_millis() as u64,
                 });

@@ -19,6 +19,7 @@ pub struct FeaturesConfig {
     pub max_signal_age_slots: u64,
     pub auto_unwrap_wsol: bool,
     pub wsol_unwrap_threshold: f64,
+    pub signal_source: String, // "geyser_grpc" or "helius_ws"
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
