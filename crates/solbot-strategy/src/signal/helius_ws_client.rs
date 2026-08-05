@@ -24,6 +24,9 @@ use base64::Engine;
 /// Re-export AccountUpdate from geyser_client for compatibility
 pub use super::geyser_client::AccountUpdate;
 
+/// Re-export ParsedSignal from logs_parser
+pub use super::logs_parser::ParsedSignal;
+
 /// Configuration for Helius WebSocket client.
 #[derive(Debug, Clone)]
 pub struct HeliusWsConfig {
@@ -198,6 +201,149 @@ impl HeliusWsClient {
                         }
                         let backoff = (base_backoff * 2u32.pow(reconnect_attempts)).min(max_backoff);
                         warn!("Reconnecting in {:?}...", backoff);
+                        sleep(backoff).await;
+                        reconnect_attempts += 1;
+                        continue;
+                    }
+                }
+            }
+        });
+
+        Ok(rx)
+    }
+
+    /// Subscribe to transaction logs for specific program IDs using logsSubscribe.
+    ///
+    /// Returns a channel that receives ParsedSignal events containing instruction-level data.
+    ///
+    /// # Arguments
+    /// * `program_ids` - List of program IDs to filter logs by involved programs
+    pub async fn subscribe_to_logs(
+        &self,
+        program_ids: Vec<Pubkey>,
+    ) -> Result<mpsc::Receiver<ParsedSignal>> {
+        let (tx, rx) = mpsc::channel(1000);
+        let config = self.config.clone();
+
+        tokio::spawn(async move {
+            let mut reconnect_attempts = 0;
+            let max_reconnect_attempts = 10;
+            let base_backoff = Duration::from_secs(1);
+            let max_backoff = Duration::from_secs(60);
+
+            loop {
+                info!(
+                    ws_url = %config.ws_url.split('?').next().unwrap_or(&config.ws_url),
+                    attempt = reconnect_attempts,
+                    "Connecting to Helius WebSocket for logsSubscribe"
+                );
+
+                match tokio_tungstenite::connect_async(&config.ws_url).await {
+                    Ok((ws_stream, _)) => {
+                        info!("Connected to Helius WebSocket for logsSubscribe");
+                        reconnect_attempts = 0;
+
+                        let (mut write, mut read) = ws_stream.split();
+
+                        // Subscribe to logsSubscribe for each program ID
+                        for program_id in &program_ids {
+                            let subscribe_msg = serde_json::json!({
+                                "jsonrpc": "2.0",
+                                "id": 1,
+                                "method": "logsSubscribe",
+                                "params": [
+                                    {
+                                        "mentions": [program_id.to_string()]
+                                    },
+                                    {
+                                        "commitment": config.commitment
+                                    }
+                                ]
+                            });
+
+                            if let Err(e) = write.send(Message::Text(subscribe_msg.to_string())).await {
+                                error!(error = %e, "Failed to send logsSubscribe request");
+                                break;
+                            }
+
+                            info!(program = %program_id, "Subscribed to logs for program");
+                        }
+
+                        // Start ping interval (every 30 seconds)
+                        let mut ping_interval = interval(Duration::from_secs(30));
+                        
+                        let mut total_logs = 0u64;
+                        let mut parsed_signals_count = 0u64;
+
+                        loop {
+                            tokio::select! {
+                                // Handle ping interval
+                                _ = ping_interval.tick() => {
+                                    if let Err(e) = write.send(Message::Ping(vec![])).await {
+                                        error!(error = %e, "Failed to send ping");
+                                        break;
+                                    }
+                                    info!("WebSocket ping sent (logsSubscribe)");
+                                }
+                                
+                                // Handle incoming messages
+                                message = read.next() => {
+                                    match message {
+                                        Some(Ok(Message::Text(text))) => {
+                                            total_logs += 1;
+                                            
+                                            // Log first 10 raw messages for debugging
+                                            if total_logs <= 10 {
+                                                info!("Raw log message {}: {}", total_logs, text);
+                                            }
+                                            
+                                            if total_logs.is_multiple_of(100) {
+                                                info!(total_logs, parsed_signals_count, "WebSocket logs stream progress");
+                                            }
+
+                                            // Parse logs message
+                                            if let Ok(signals) = crate::signal::logs_parser::parse_logs_message(&text) {
+                                                parsed_signals_count += signals.len() as u64;
+                                                
+                                                for signal in signals {
+                                                    if tx.send(signal).await.is_err() {
+                                                        info!("Receiver dropped, closing Helius WS logs listener loop");
+                                                        return;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        Some(Ok(Message::Pong(_))) => {
+                                            info!("WebSocket pong received (logsSubscribe)");
+                                        }
+                                        Some(Ok(Message::Close(_))) => {
+                                            warn!("WebSocket closed by server (logsSubscribe)");
+                                            break;
+                                        }
+                                        Some(Err(e)) => {
+                                            error!(error = %e, "WebSocket error (logsSubscribe)");
+                                            break;
+                                        }
+                                        None => {
+                                            warn!("WebSocket stream ended (logsSubscribe)");
+                                            break;
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        error!(error = %e, "Failed to connect to Helius WebSocket (logsSubscribe)");
+                        
+                        if reconnect_attempts >= max_reconnect_attempts {
+                            error!("Max reconnect attempts reached, giving up (logsSubscribe)");
+                            return;
+                        }
+                        
+                        let backoff = (base_backoff * 2u32.pow(reconnect_attempts)).min(max_backoff);
+                        warn!("Reconnecting in {:?}... (logsSubscribe)", backoff);
                         sleep(backoff).await;
                         reconnect_attempts += 1;
                         continue;
