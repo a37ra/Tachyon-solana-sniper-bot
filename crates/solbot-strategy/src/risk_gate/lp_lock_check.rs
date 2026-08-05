@@ -82,7 +82,7 @@ pub async fn check(pool_address: &str, dex_program: &str, rpc_url: &str) -> Chec
     };
 
     let dex_program_clone = dex_program.to_string();
-    let pool_address_clone = pool_address.to_string();
+    let _pool_address_clone = pool_address.to_string();
 
     match tokio::task::spawn_blocking(move || {
         // Step 1: Get pool account data
@@ -223,11 +223,6 @@ pub async fn check(pool_address: &str, dex_program: &str, rpc_url: &str) -> Chec
             }
         }
 
-        Ok(Ok((_, _, elapsed))) => CheckResult {
-            passed: false,
-            reason: Some("Failed to extract LP mint from pool data".to_string()),
-            duration_ms: elapsed.as_millis() as u64,
-        },
         Ok(Err(e)) => CheckResult {
             passed: false,
             reason: Some(format!("RPC error: {}", e)),

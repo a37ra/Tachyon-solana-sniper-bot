@@ -178,21 +178,25 @@
 ### Этап 4: Routing — Jito + Public RPC + Durable Nonce (~1-1.5 недели)
 
 #### 4.1 Jito Bundle Submission
-- [ ] HTTP/gRPC клиент к Jito block engine
-- [ ] Bundle formation (signed tx + tip instruction)
-- [ ] Randomized micro-jitter для tip
-- [ ] Bundle status polling / confirmation
-- [ ] Auto-region selection по RTT
+- [x] HTTP/gRPC клиент к Jito block engine
+- [x] Bundle formation (signed tx + tip instruction)
+- [x] Randomized micro-jitter для tip
+- [x] Bundle status polling / confirmation
+- [x] Auto-region selection по RTT
 
 #### 4.2 Public RPC Direct Submit
-- [ ] `sendTransaction` с настройкой `skipPreflight`
-- [ ] Confirmation polling (`getSignatureStatuses`)
-- [ ] Priority fee estimation (`getRecentPrioritizationFees`)
+- [x] `sendTransaction` с настройкой `skipPreflight`
+- [x] Confirmation polling (`getSignatureStatuses`)
+- [x] Priority fee estimation (`getRecentPrioritizationFees`)
 
 #### 4.3 Durable Nonce
-- [ ] Create nonce account (скрипт уже есть в `scripts/`)
-- [ ] AdvanceNonceAccount instruction в транзакцию
-- [ ] Infinite retry с переиспользованием подписи
+- [x] Create nonce account (`DurableNonceConfig` & helper client)
+- [x] AdvanceNonceAccount instruction & blockhash replacement
+- [x] Nonce account parsing and fallback execution
+
+#### 4.4 Routing Strategy
+- [x] `TransactionRouter` multi-stage pipeline (Jito → Public RPC → Durable Nonce)
+- [x] Real health checks per stage (RTT ping for Jito, RPC query for Durable Nonce)
 
 ---
 
