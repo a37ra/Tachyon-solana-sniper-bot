@@ -292,11 +292,6 @@ impl HeliusWsClient {
                                         Some(Ok(Message::Text(text))) => {
                                             total_logs += 1;
                                             
-                                            // Log first 10 raw messages for debugging
-                                            if total_logs <= 10 {
-                                                info!("Raw log message {}: {}", total_logs, text);
-                                            }
-                                            
                                             if total_logs.is_multiple_of(100) {
                                                 info!(total_logs, parsed_signals_count, "WebSocket logs stream progress");
                                             }
