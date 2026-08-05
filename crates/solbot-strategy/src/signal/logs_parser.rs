@@ -6,7 +6,6 @@
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use solana_pubkey::Pubkey;
-use std::str::FromStr;
 
 /// DEX type enum
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -115,14 +114,12 @@ pub fn parse_logs_message(text: &str) -> Result<Vec<ParsedSignal>> {
     }
     
     let mut signals = Vec::new();
-    let mut current_program_id: Option<String> = None;
     let mut current_dex: Option<DexType> = None;
     
     // Parse logs line by line
     for log in &logs {
         // Extract program ID from "Program <program_id> invoke" lines
         if let Some(program_id) = extract_program_id_from_invoke(log) {
-            current_program_id = Some(program_id.clone());
             current_dex = DexType::from_pubkey(&program_id);
         }
         
