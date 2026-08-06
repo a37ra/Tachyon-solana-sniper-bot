@@ -105,7 +105,16 @@ impl signer_proto::transaction_signer_service_server::TransactionSignerService f
 
         // --- Validation pipeline ---
 
-        let allowed_programs = DexProgram::all_program_ids();
+        // Allow System Program for testing (controlled by env var)
+        let allow_system_program = std::env::var("SOLBOT_ALLOW_SYSTEM_PROGRAM")
+            .ok()
+            .and_then(|s| s.parse::<bool>().ok())
+            .unwrap_or(false);
+        
+        let mut allowed_programs: Vec<&str> = DexProgram::all_program_ids().to_vec();
+        if allow_system_program {
+            allowed_programs.push("11111111111111111111111111111111");
+        }
 
         // max_size_absolute from tier config (env var or default 10 SOL)
         let max_size_absolute: u64 = std::env::var("SOLBOT_MAX_SIZE_LAMPORTS")
@@ -131,7 +140,7 @@ impl signer_proto::transaction_signer_service_server::TransactionSignerService f
             &internal_req,
             last_seq,
             max_size_absolute,
-            allowed_programs,
+            &allowed_programs,
             &dest_whitelist,
             hard_cap_bps_limit,
         );
