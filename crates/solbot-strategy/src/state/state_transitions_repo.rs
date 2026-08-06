@@ -17,13 +17,14 @@ impl StateTransitionsRepo {
         from_status: &str,
         to_status: &str,
         reason: &str,
-        timestamp: u64,
+        tx_signature: Option<&str>,
+        created_at_utc: u64,
     ) -> Result<()> {
-        let timestamp = timestamp as i64;
+        let created_at_utc = created_at_utc as i64;
         sqlx::query(
             r#"
-            INSERT INTO state_transitions (id, position_id, from_status, to_status, reason, timestamp)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            INSERT INTO state_transitions (id, position_id, from_status, to_status, reason, tx_signature, created_at_utc)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
             "#,
         )
         .bind(id)
@@ -31,7 +32,8 @@ impl StateTransitionsRepo {
         .bind(from_status)
         .bind(to_status)
         .bind(reason)
-        .bind(timestamp)
+        .bind(tx_signature)
+        .bind(created_at_utc)
         .execute(&self.pool)
         .await?;
 

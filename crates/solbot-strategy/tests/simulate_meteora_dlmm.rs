@@ -62,6 +62,9 @@ async fn test_meteora_dlmm_simulate_transaction() -> Result<()> {
         reserve_y: Pubkey::from_str("2FPyTwcZLUg1MDrwsyoP4D6s1tM7hAkHYftjkRVFQCEX")?,
         oracle: Pubkey::from_str("Gxb1kKW6zmUqsPL1aWuYg7eX5d4LkYQs5BZivLgPfcj")?,
         active_id: 1000,
+        reserve_x_balance: 0,
+        reserve_y_balance: 0,
+        bin_step: 1,
     };
 
     // Create swap parameters

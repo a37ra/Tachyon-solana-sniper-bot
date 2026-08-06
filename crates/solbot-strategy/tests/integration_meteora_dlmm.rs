@@ -30,6 +30,9 @@ async fn test_meteora_dlmm_swap_instruction_structure() {
         reserve_y,
         oracle,
         active_id: 1000,
+        reserve_x_balance: 0,
+        reserve_y_balance: 0,
+        bin_step: 1,
     };
 
     let params = SwapParams {
@@ -80,6 +83,9 @@ async fn test_meteora_dlmm_sell_swap_structure() {
         reserve_y,
         oracle,
         active_id: 1000,
+        reserve_x_balance: 0,
+        reserve_y_balance: 0,
+        bin_step: 1,
     };
 
     let params = SwapParams {
@@ -135,6 +141,9 @@ async fn test_meteora_dlmm_different_active_ids() {
             reserve_y,
             oracle,
             active_id,
+            reserve_x_balance: 0,
+            reserve_y_balance: 0,
+            bin_step: 1,
         };
 
         let params = SwapParams {

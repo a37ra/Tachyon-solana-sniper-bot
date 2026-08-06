@@ -122,16 +122,18 @@ impl SignerClient {
             amount_or_pct: request.amount_or_pct,
         };
 
-        // Retry loop for transient errors
+        // Retry loop for transient errors with exponential backoff
         let mut last_err = None;
         for attempt in 0..=MAX_RETRIES {
             if attempt > 0 {
+                let backoff = RETRY_DELAY * 2_u32.pow(attempt - 1);
                 tracing::warn!(
                     attempt = attempt,
+                    backoff_ms = backoff.as_millis(),
                     context_key = %request.context_key,
-                    "Retrying signer RPC call"
+                    "Retrying signer RPC call with exponential backoff"
                 );
-                tokio::time::sleep(RETRY_DELAY).await;
+                tokio::time::sleep(backoff).await;
             }
 
             match self.do_sign_intent(proto_req.clone()).await {
