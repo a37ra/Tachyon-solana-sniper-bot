@@ -152,6 +152,8 @@ impl DurableNonceClient {
     }
 
     /// Build transaction with durable nonce as recent_blockhash.
+    /// Note: AdvanceNonceAccount instruction should be added before signing,
+    /// but since we receive a pre-built transaction, we document the requirement.
     pub fn build_nonce_transaction(&self, mut transaction: Transaction) -> Result<Transaction> {
         let nonce_str = match &self.current_nonce {
             Some(n) => n.clone(),
@@ -186,6 +188,11 @@ impl DurableNonceClient {
 
         // Replace transaction blockhash with durable nonce blockhash
         transaction.message.recent_blockhash = nonce_hash;
+
+        tracing::info!(
+            nonce_account = %self.config.nonce_account,
+            "Transaction updated with durable nonce (AdvanceNonceAccount must be prepended by tx builder)"
+        );
 
         Ok(transaction)
     }
