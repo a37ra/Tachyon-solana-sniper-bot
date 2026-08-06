@@ -320,6 +320,7 @@ async fn main() -> Result<()> {
 
         // For Raydium, we'd need pool state from RPC
         // Using mock data for testing
+        use solbot_strategy::tx_builder::raydium_amm_v4::Fees;
         let mock_pool_state = RaydiumAmmV4PoolState {
             amm_id: pool_address,
             amm_authority: Pubkey::new_unique(),
@@ -337,6 +338,18 @@ async fn main() -> Result<()> {
             serum_vault_signer: Pubkey::new_unique(),
             coin_mint: mint,
             pc_mint: solana_pubkey::pubkey!("So11111111111111111111111111111111111111112"), // WSOL
+            fees: Fees {
+                min_separate_numerator: 5,
+                min_separate_denominator: 10_000,
+                trade_fee_numerator: 25,
+                trade_fee_denominator: 10_000,
+                pnl_numerator: 12,
+                pnl_denominator: 100,
+                swap_fee_numerator: 25,
+                swap_fee_denominator: 10_000,
+            },
+            coin_vault_balance: 0,
+            pc_vault_balance: 0,
         };
 
         let params = SwapParams {

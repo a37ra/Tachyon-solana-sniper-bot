@@ -5934,6 +5934,7 @@ dependencies = [
  "spl-associated-token-account 4.0.0",
  "spl-token 6.0.0",
  "sqlx",
+ "tempfile",
  "tokio",
  "tokio-stream",
  "tokio-tungstenite 0.21.0",

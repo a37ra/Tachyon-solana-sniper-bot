@@ -94,3 +94,7 @@ bs58 = "0.5"
 [build-dependencies]
 tonic-build = { workspace = true }
 prost-build = { workspace = true }
+
+[dev-dependencies]
+solbot-common = { path = "../solbot-common" }
+tempfile = "3"

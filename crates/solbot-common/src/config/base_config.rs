@@ -1,3 +1,4 @@
+use crate::types::DexLiveReadiness;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -20,6 +21,24 @@ pub struct FeaturesConfig {
     pub auto_unwrap_wsol: bool,
     pub wsol_unwrap_threshold: f64,
     pub signal_source: String, // "geyser_grpc" or "helius_ws"
+    pub dex_readiness: DexReadinessConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DexReadinessConfig {
+    pub raydium_amm_v4: DexLiveReadiness,
+    pub raydium_cpmm: DexLiveReadiness,
+    pub meteora_dlmm: DexLiveReadiness,
+}
+
+impl Default for DexReadinessConfig {
+    fn default() -> Self {
+        Self {
+            raydium_amm_v4: DexLiveReadiness::Ready,
+            raydium_cpmm: DexLiveReadiness::Ready,
+            meteora_dlmm: DexLiveReadiness::Approximate, // Single-bin approximation
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

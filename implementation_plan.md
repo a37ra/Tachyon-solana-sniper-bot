@@ -203,12 +203,12 @@
 ### Этап 5: Actor ↔ Pipeline Интеграция (~1.5-2 недели)
 
 #### 5.1 Actor Trading Loop
-- [ ] При получении нового пула → `run_pre_buy_checks()` → `sizing::compute()` → build tx → `signer_client.sign_intent()` → `routing.submit()`
-- [ ] При price tick → `exit::evaluate_exit()` → trigger TP/SL/trailing
+- [x] При получении нового пула → `run_pre_buy_checks()` → `sizing::compute()` → build tx → `signer_client.sign_intent()` → `routing.submit()`
+- [x] При price tick → `exit::evaluate_exit()` → trigger TP/SL/trailing
 
 #### 5.2 Signer Client — реальный gRPC вызов
-- [ ] `tonic` клиент через `UnixStream` к `/tmp/solbot-signer.sock`
-- [ ] Timeout, retry, error handling
+- [x] `tonic` клиент через `UnixStream` к `/tmp/solbot-signer.sock`
+- [x] Timeout, retry, error handling
 
 #### 5.3 Position Lifecycle
 - [ ] `Open → TP1_filled → TP2_filled → TP3_filled → Closed`
