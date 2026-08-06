@@ -6,7 +6,7 @@
 
 use super::{market_data_lane::MarketDataLane, ActorConfig};
 use crate::circuit_breaker::CircuitBreaker;
-use crate::exit::{self, escalation::EscalationTrigger, ExitAction};
+use crate::exit::{self, ExitAction};
 use crate::risk_gate::{self, RiskGateConfig};
 use crate::routing::{SubmitResult, TransactionRouter};
 use crate::signer_client::SignerClient;
@@ -331,6 +331,233 @@ pub fn ensure_nonzero_output(expected_out: u64, dex_name: &str, direction: &str)
     Ok(())
 }
 
+/// Fetch pool state for the specified DEX and build swap instructions for any direction (buy/sell).
+/// This unified function replaces duplicated code in execute_buy_pipeline and execute_exit_pipeline.
+async fn fetch_and_build_dex_swap(
+    ctx: &ActorContext,
+    mint_pubkey: Pubkey,
+    pool_pubkey: Pubkey,
+    dex_program_pubkey: Pubkey,
+    amount_in_lamports: u64,
+    direction: SwapDirection,
+    slippage_bps: u32,
+) -> Result<tx_builder::SwapInstructions> {
+    let dir_label = match direction {
+        SwapDirection::Buy => "buy",
+        SwapDirection::Sell => "sell",
+    };
+
+    let rpc_url = match ctx.rpc_url.clone() {
+        Some(url) => url,
+        None => {
+            if ctx.trading_mode == TradingMode::Live {
+                tracing::error!("No RPC client in Live mode");
+                bail!("No RPC client in Live mode");
+            }
+            tracing::warn!("No RPC client, using placeholder swap instructions (Paper mode)");
+            return Ok(create_placeholder_swap_instructions());
+        }
+    };
+
+    // Local helper: fetch account via spawn_blocking
+    macro_rules! fetch_account {
+        ($pk:expr) => {{
+            let rpc_url = rpc_url.clone();
+            let pk = $pk;
+            tokio::task::spawn_blocking(move || {
+                let rpc = RpcClient::new(rpc_url);
+                rpc.get_account(&pk)
+            })
+            .await
+            .ok()
+            .and_then(|r| r.ok())
+        }};
+    }
+
+    // Unified handling for "account not found" / "parse failed" - error in Live, warning + placeholder in Paper
+    macro_rules! fail_or_placeholder {
+        ($msg:literal) => {{
+            if ctx.trading_mode == TradingMode::Live {
+                tracing::error!($msg);
+                bail!($msg);
+            }
+            tracing::warn!(concat!($msg, ", using placeholder (Paper mode)"));
+            return Ok(create_placeholder_swap_instructions());
+        }};
+    }
+
+    if ctx.dex_program_id == pump_fun_builder::PUMP_FUN_PROGRAM.to_string() {
+        let Some(account) = fetch_account!(pool_pubkey) else {
+            fail_or_placeholder!("Failed to fetch pool account in Live mode");
+        };
+        let Ok(curve) =
+            pump_fun_builder::PumpFunBondingCurve::from_account_data(&account.data, &pool_pubkey)
+        else {
+            fail_or_placeholder!("Failed to parse Pump.fun bonding curve in Live mode");
+        };
+
+        let expected_out = match direction {
+            SwapDirection::Buy => curve.calculate_buy_output(amount_in_lamports),
+            SwapDirection::Sell => curve.calculate_sell_output(amount_in_lamports),
+        };
+        let minimum_amount_out = apply_slippage(expected_out, slippage_bps);
+        let swap_params = SwapParams {
+            mint: mint_pubkey,
+            pool_address: pool_pubkey,
+            dex_program_id: dex_program_pubkey,
+            wallet: ctx.wallet,
+            direction,
+            amount_in: amount_in_lamports,
+            minimum_amount_out,
+            slippage_bps,
+        };
+        return pump_fun_builder::build_swap(&swap_params, &curve)
+            .map_err(|e| anyhow!("Tx builder error: {}", e));
+    }
+
+    if ctx.dex_program_id == raydium_amm_v4_builder::RAYDIUM_AMM_V4_PROGRAM.to_string() {
+        let Some(account) = fetch_account!(pool_pubkey) else {
+            fail_or_placeholder!("Failed to fetch pool account in Live mode");
+        };
+        let Ok(mut pool_state) =
+            raydium_amm_v4_builder::RaydiumAmmV4PoolState::from_account_data(&account.data)
+        else {
+            fail_or_placeholder!("Failed to parse Raydium AMM v4 pool state in Live mode");
+        };
+        let vault_balances = fetch_vault_balances(
+            rpc_url.clone(),
+            pool_state.serum_coin_vault,
+            pool_state.serum_pc_vault,
+            "Raydium AMM v4",
+        )
+        .await?;
+        pool_state = pool_state.with_vault_balances(vault_balances.0, vault_balances.1);
+
+        let expected_out = match direction {
+            SwapDirection::Buy => pool_state.calculate_buy_output(amount_in_lamports),
+            SwapDirection::Sell => pool_state.calculate_sell_output(amount_in_lamports),
+        };
+        ensure_nonzero_output(expected_out, "Raydium AMM v4", dir_label)?;
+        let minimum_amount_out = apply_slippage(expected_out, slippage_bps);
+        let swap_params = SwapParams {
+            mint: mint_pubkey,
+            pool_address: pool_pubkey,
+            dex_program_id: dex_program_pubkey,
+            wallet: ctx.wallet,
+            direction,
+            amount_in: amount_in_lamports,
+            minimum_amount_out,
+            slippage_bps,
+        };
+        return raydium_amm_v4_builder::build_swap(&swap_params, &pool_state)
+            .map_err(|e| anyhow!("Tx builder error: {}", e));
+    }
+
+    if ctx.dex_program_id == raydium_cpmm_builder::RAYDIUM_CPMM_PROGRAM.to_string() {
+        let Some(account) = fetch_account!(pool_pubkey) else {
+            fail_or_placeholder!("Failed to fetch pool account in Live mode");
+        };
+        let Ok(mut pool_state) =
+            raydium_cpmm_builder::CpmmPoolState::from_account_data(&account.data)
+        else {
+            fail_or_placeholder!("Failed to parse Raydium CPMM pool state in Live mode");
+        };
+        let vault_balances = fetch_vault_balances(
+            rpc_url.clone(),
+            pool_state.token_0_vault,
+            pool_state.token_1_vault,
+            "Raydium CPMM",
+        )
+        .await?;
+        pool_state = pool_state.with_vault_balances(vault_balances.0, vault_balances.1);
+
+        let expected_out = match direction {
+            SwapDirection::Buy => pool_state.calculate_buy_output(amount_in_lamports),
+            SwapDirection::Sell => pool_state.calculate_sell_output(amount_in_lamports),
+        };
+        ensure_nonzero_output(expected_out, "Raydium CPMM", dir_label)?;
+        let minimum_amount_out = apply_slippage(expected_out, slippage_bps);
+        let swap_params = SwapParams {
+            mint: mint_pubkey,
+            pool_address: pool_pubkey,
+            dex_program_id: dex_program_pubkey,
+            wallet: ctx.wallet,
+            direction,
+            amount_in: amount_in_lamports,
+            minimum_amount_out,
+            slippage_bps,
+        };
+        return raydium_cpmm_builder::build_swap(&swap_params, &pool_state)
+            .map_err(|e| anyhow!("Tx builder error: {}", e));
+    }
+
+    if ctx.dex_program_id == meteora_dlmm_builder::METEORA_DLMM_PROGRAM.to_string() {
+        let Some(account) = fetch_account!(pool_pubkey) else {
+            fail_or_placeholder!("Failed to fetch pool account in Live mode");
+        };
+        let Ok(mut pool_state) =
+            meteora_dlmm_builder::DlmmPoolState::from_account_data(&account.data, &pool_pubkey)
+        else {
+            fail_or_placeholder!("Failed to parse Meteora DLMM pool state in Live mode");
+        };
+        let vault_balances = fetch_vault_balances(
+            rpc_url.clone(),
+            pool_state.reserve_x,
+            pool_state.reserve_y,
+            "Meteora DLMM",
+        )
+        .await?;
+        pool_state = pool_state.with_vault_balances(vault_balances.0, vault_balances.1);
+
+        let expected_out = match direction {
+            SwapDirection::Buy => pool_state.calculate_buy_output(amount_in_lamports),
+            SwapDirection::Sell => pool_state.calculate_sell_output(amount_in_lamports),
+        };
+        ensure_nonzero_output(expected_out, "Meteora DLMM", dir_label)?;
+        let minimum_amount_out = apply_slippage(expected_out, slippage_bps);
+        let swap_params = SwapParams {
+            mint: mint_pubkey,
+            pool_address: pool_pubkey,
+            dex_program_id: dex_program_pubkey,
+            wallet: ctx.wallet,
+            direction,
+            amount_in: amount_in_lamports,
+            minimum_amount_out,
+            slippage_bps,
+        };
+        return meteora_dlmm_builder::build_swap(&swap_params, &pool_state)
+            .map_err(|e| anyhow!("Tx builder error: {}", e));
+    }
+
+    if ctx.trading_mode == TradingMode::Live {
+        tracing::error!("Unsupported DEX {} in Live mode", ctx.dex_program_id);
+        bail!("Unsupported DEX {} in Live mode", ctx.dex_program_id);
+    }
+    tracing::warn!(
+        "Unsupported DEX {}, using placeholder (Paper mode)",
+        ctx.dex_program_id
+    );
+    Ok(create_placeholder_swap_instructions())
+}
+
+/// Fetch recent blockhash, or use random placeholder if RPC is not set.
+/// This unified function replaces duplicated code in buy and exit pipelines.
+async fn fetch_recent_blockhash(rpc_url: &Option<String>) -> Hash {
+    if let Some(rpc_url) = rpc_url {
+        let rpc_url_clone = rpc_url.clone();
+        tokio::task::spawn_blocking(move || {
+            let rpc = RpcClient::new(rpc_url_clone);
+            rpc.get_latest_blockhash()
+        })
+        .await
+        .ok()
+        .and_then(|r| r.ok())
+        .unwrap_or(Hash::new_unique())
+    } else {
+        Hash::new_unique()
+    }
+}
+
 /// Execute the buy pipeline: Risk Gate → Sizing → Tx Builder → Signer → Router.
 pub async fn execute_buy_pipeline(ctx: &mut ActorContext, entry_price_sol: f64) -> Result<Position> {
     tracing::info!("Starting buy pipeline for mint {}", ctx.mint);
@@ -394,252 +621,18 @@ pub async fn execute_buy_pipeline(ctx: &mut ActorContext, entry_price_sol: f64) 
     let pool_pubkey = Pubkey::from_str(&ctx.pool_address).unwrap_or_else(|_| Pubkey::new_unique());
     let dex_program_pubkey = Pubkey::from_str(&ctx.dex_program_id).unwrap_or_else(|_| Pubkey::new_unique());
 
-    // Fetch pool state from RPC for Pump.fun
-    let swap_instructions = if let Some(ref rpc_url) = ctx.rpc_url {
-        if ctx.dex_program_id == pump_fun_builder::PUMP_FUN_PROGRAM.to_string() {
-            // Fetch Pump.fun bonding curve state (blocking call wrapped in spawn_blocking)
-            let rpc_url_clone = rpc_url.clone();
-            let pool_pubkey_clone = pool_pubkey;
-            let pool_account = tokio::task::spawn_blocking(move || {
-                let rpc = RpcClient::new(rpc_url_clone);
-                rpc.get_account(&pool_pubkey_clone)
-            }).await.ok().and_then(|r| r.ok());
-            if let Some(account) = pool_account {
-                if let Ok(curve) = pump_fun_builder::PumpFunBondingCurve::from_account_data(&account.data, &pool_pubkey) {
-                    let expected_out = curve.calculate_buy_output(amount_in_lamports);
-                    let minimum_amount_out = apply_slippage(expected_out, ctx.tier_params.sizing.slippage_hard_cap_bps);
-                    
-                    let swap_params = SwapParams {
-                        mint: mint_pubkey,
-                        pool_address: pool_pubkey,
-                        dex_program_id: dex_program_pubkey,
-                        wallet: ctx.wallet,
-                        direction: SwapDirection::Buy,
-                        amount_in: amount_in_lamports,
-                        minimum_amount_out,
-                        slippage_bps: ctx.tier_params.sizing.slippage_hard_cap_bps,
-                    };
-                    match pump_fun_builder::build_swap(&swap_params, &curve) {
-                        Ok(ixs) => ixs,
-                        Err(e) => {
-                            tracing::error!("Failed to build Pump.fun swap: {}", e);
-                            return Err(anyhow!("Tx builder error: {}", e));
-                        }
-                    }
-                } else {
-                    if ctx.trading_mode == TradingMode::Live {
-                        tracing::error!("Failed to parse Pump.fun bonding curve in Live mode");
-                        return Err(anyhow!("Failed to parse Pump.fun bonding curve in Live mode"));
-                    }
-                    tracing::warn!("Failed to parse Pump.fun bonding curve, using placeholder (Paper mode)");
-                    create_placeholder_swap_instructions()
-                }
-            } else {
-                if ctx.trading_mode == TradingMode::Live {
-                    tracing::error!("Failed to fetch pool account in Live mode");
-                    return Err(anyhow!("Failed to fetch pool account in Live mode"));
-                }
-                tracing::warn!("Failed to fetch pool account, using placeholder (Paper mode)");
-                create_placeholder_swap_instructions()
-            }
-        } else if ctx.dex_program_id == raydium_amm_v4_builder::RAYDIUM_AMM_V4_PROGRAM.to_string() {
-            // Fetch Raydium AMM v4 pool state
-            let rpc_url_clone = rpc_url.clone();
-            let pool_pubkey_clone = pool_pubkey;
-            let pool_account = tokio::task::spawn_blocking(move || {
-                let rpc = RpcClient::new(rpc_url_clone);
-                rpc.get_account(&pool_pubkey_clone)
-            }).await.ok().and_then(|r| r.ok());
-            if let Some(account) = pool_account {
-                if let Ok(mut pool_state) = raydium_amm_v4_builder::RaydiumAmmV4PoolState::from_account_data(&account.data) {
-                    // Fetch vault balances for accurate pricing (fail-closed)
-                    let vault_balances = fetch_vault_balances(
-                        rpc_url.clone(),
-                        pool_state.serum_coin_vault,
-                        pool_state.serum_pc_vault,
-                        "Raydium AMM v4",
-                    ).await?;
-                    
-                    pool_state = pool_state.with_vault_balances(vault_balances.0, vault_balances.1);
-                    
-                    let expected_out = pool_state.calculate_buy_output(amount_in_lamports);
-                    ensure_nonzero_output(expected_out, "Raydium AMM v4", "buy")?;
-                    let minimum_amount_out = apply_slippage(expected_out, ctx.tier_params.sizing.slippage_hard_cap_bps);
-                    
-                    let swap_params = SwapParams {
-                        mint: mint_pubkey,
-                        pool_address: pool_pubkey,
-                        dex_program_id: dex_program_pubkey,
-                        wallet: ctx.wallet,
-                        direction: SwapDirection::Buy,
-                        amount_in: amount_in_lamports,
-                        minimum_amount_out,
-                        slippage_bps: ctx.tier_params.sizing.slippage_hard_cap_bps,
-                    };
-                    match raydium_amm_v4_builder::build_swap(&swap_params, &pool_state) {
-                        Ok(ixs) => ixs,
-                        Err(e) => {
-                            tracing::error!("Failed to build Raydium AMM v4 swap: {}", e);
-                            return Err(anyhow!("Tx builder error: {}", e));
-                        }
-                    }
-                } else {
-                    if ctx.trading_mode == TradingMode::Live {
-                        tracing::error!("Failed to parse Raydium AMM v4 pool state in Live mode");
-                        return Err(anyhow!("Failed to parse Raydium AMM v4 pool state in Live mode"));
-                    }
-                    tracing::warn!("Failed to parse Raydium AMM v4 pool state, using placeholder (Paper mode)");
-                    create_placeholder_swap_instructions()
-                }
-            } else {
-                if ctx.trading_mode == TradingMode::Live {
-                    tracing::error!("Failed to fetch pool account in Live mode");
-                    return Err(anyhow!("Failed to fetch pool account in Live mode"));
-                }
-                tracing::warn!("Failed to fetch pool account, using placeholder (Paper mode)");
-                create_placeholder_swap_instructions()
-            }
-        } else if ctx.dex_program_id == raydium_cpmm_builder::RAYDIUM_CPMM_PROGRAM.to_string() {
-            // Fetch Raydium CPMM pool state
-            let rpc_url_clone = rpc_url.clone();
-            let pool_pubkey_clone = pool_pubkey;
-            let pool_account = tokio::task::spawn_blocking(move || {
-                let rpc = RpcClient::new(rpc_url_clone);
-                rpc.get_account(&pool_pubkey_clone)
-            }).await.ok().and_then(|r| r.ok());
-            if let Some(account) = pool_account {
-                if let Ok(mut pool_state) = raydium_cpmm_builder::CpmmPoolState::from_account_data(&account.data) {
-                    // Fetch vault balances for accurate pricing (fail-closed)
-                    let vault_balances = fetch_vault_balances(
-                        rpc_url.clone(),
-                        pool_state.token_0_vault,
-                        pool_state.token_1_vault,
-                        "Raydium CPMM",
-                    ).await?;
-                    
-                    pool_state = pool_state.with_vault_balances(vault_balances.0, vault_balances.1);
-                    
-                    let expected_out = pool_state.calculate_buy_output(amount_in_lamports);
-                    ensure_nonzero_output(expected_out, "Raydium CPMM", "buy")?;
-                    let minimum_amount_out = apply_slippage(expected_out, ctx.tier_params.sizing.slippage_hard_cap_bps);
-                    
-                    let swap_params = SwapParams {
-                        mint: mint_pubkey,
-                        pool_address: pool_pubkey,
-                        dex_program_id: dex_program_pubkey,
-                        wallet: ctx.wallet,
-                        direction: SwapDirection::Buy,
-                        amount_in: amount_in_lamports,
-                        minimum_amount_out,
-                        slippage_bps: ctx.tier_params.sizing.slippage_hard_cap_bps,
-                    };
-                    match raydium_cpmm_builder::build_swap(&swap_params, &pool_state) {
-                        Ok(ixs) => ixs,
-                        Err(e) => {
-                            tracing::error!("Failed to build Raydium CPMM swap: {}", e);
-                            return Err(anyhow!("Tx builder error: {}", e));
-                        }
-                    }
-                } else {
-                    if ctx.trading_mode == TradingMode::Live {
-                        tracing::error!("Failed to parse Raydium CPMM pool state in Live mode");
-                        return Err(anyhow!("Failed to parse Raydium CPMM pool state in Live mode"));
-                    }
-                    tracing::warn!("Failed to parse Raydium CPMM pool state, using placeholder (Paper mode)");
-                    create_placeholder_swap_instructions()
-                }
-            } else {
-                if ctx.trading_mode == TradingMode::Live {
-                    tracing::error!("Failed to fetch pool account in Live mode");
-                    return Err(anyhow!("Failed to fetch pool account in Live mode"));
-                }
-                tracing::warn!("Failed to fetch pool account, using placeholder (Paper mode)");
-                create_placeholder_swap_instructions()
-            }
-        } else if ctx.dex_program_id == meteora_dlmm_builder::METEORA_DLMM_PROGRAM.to_string() {
-            // Fetch Meteora DLMM pool state
-            let rpc_url_clone = rpc_url.clone();
-            let pool_pubkey_clone = pool_pubkey;
-            let pool_account = tokio::task::spawn_blocking(move || {
-                let rpc = RpcClient::new(rpc_url_clone);
-                rpc.get_account(&pool_pubkey_clone)
-            }).await.ok().and_then(|r| r.ok());
-            if let Some(account) = pool_account {
-                if let Ok(mut pool_state) = meteora_dlmm_builder::DlmmPoolState::from_account_data(&account.data, &pool_pubkey) {
-                    // Fetch vault balances for accurate pricing (fail-closed)
-                    let vault_balances = fetch_vault_balances(
-                        rpc_url.clone(),
-                        pool_state.reserve_x,
-                        pool_state.reserve_y,
-                        "Meteora DLMM",
-                    ).await?;
-                    
-                    pool_state = pool_state.with_vault_balances(vault_balances.0, vault_balances.1);
-                    
-                    let expected_out = pool_state.calculate_buy_output(amount_in_lamports);
-                    ensure_nonzero_output(expected_out, "Meteora DLMM", "buy")?;
-                    let minimum_amount_out = apply_slippage(expected_out, ctx.tier_params.sizing.slippage_hard_cap_bps);
-                    
-                    let swap_params = SwapParams {
-                        mint: mint_pubkey,
-                        pool_address: pool_pubkey,
-                        dex_program_id: dex_program_pubkey,
-                        wallet: ctx.wallet,
-                        direction: SwapDirection::Buy,
-                        amount_in: amount_in_lamports,
-                        minimum_amount_out,
-                        slippage_bps: ctx.tier_params.sizing.slippage_hard_cap_bps,
-                    };
-                    match meteora_dlmm_builder::build_swap(&swap_params, &pool_state) {
-                        Ok(ixs) => ixs,
-                        Err(e) => {
-                            tracing::error!("Failed to build Meteora DLMM swap: {}", e);
-                            return Err(anyhow!("Tx builder error: {}", e));
-                        }
-                    }
-                } else {
-                    if ctx.trading_mode == TradingMode::Live {
-                        tracing::error!("Failed to parse Meteora DLMM pool state in Live mode");
-                        return Err(anyhow!("Failed to parse Meteora DLMM pool state in Live mode"));
-                    }
-                    tracing::warn!("Failed to parse Meteora DLMM pool state, using placeholder (Paper mode)");
-                    create_placeholder_swap_instructions()
-                }
-            } else {
-                if ctx.trading_mode == TradingMode::Live {
-                    tracing::error!("Failed to fetch pool account in Live mode");
-                    return Err(anyhow!("Failed to fetch pool account in Live mode"));
-                }
-                tracing::warn!("Failed to fetch pool account, using placeholder (Paper mode)");
-                create_placeholder_swap_instructions()
-            }
-        } else {
-            if ctx.trading_mode == TradingMode::Live {
-                tracing::error!("Unsupported DEX {} in Live mode", ctx.dex_program_id);
-                return Err(anyhow!("Unsupported DEX {} in Live mode", ctx.dex_program_id));
-            }
-            tracing::warn!("Unsupported DEX {}, using placeholder (Paper mode)", ctx.dex_program_id);
-            create_placeholder_swap_instructions()
-        }
-    } else {
-        if ctx.trading_mode == TradingMode::Live {
-            tracing::error!("No RPC client in Live mode");
-            return Err(anyhow!("No RPC client in Live mode"));
-        }
-        tracing::warn!("No RPC client, using placeholder swap instructions (Paper mode)");
-        create_placeholder_swap_instructions()
-    };
+    let swap_instructions = fetch_and_build_dex_swap(
+        ctx,
+        mint_pubkey,
+        pool_pubkey,
+        dex_program_pubkey,
+        amount_in_lamports,
+        SwapDirection::Buy,
+        ctx.tier_params.sizing.slippage_hard_cap_bps,
+    ).await?;
 
-    // Get recent blockhash (blocking call wrapped in spawn_blocking)
-    let blockhash = if let Some(ref rpc_url) = ctx.rpc_url {
-        let rpc_url_clone = rpc_url.clone();
-        tokio::task::spawn_blocking(move || {
-            let rpc = RpcClient::new(rpc_url_clone);
-            rpc.get_latest_blockhash()
-        }).await.ok().and_then(|r| r.ok()).unwrap_or(Hash::new_unique())
-    } else {
-        Hash::new_unique()
-    };
+    // Get recent blockhash
+    let blockhash = fetch_recent_blockhash(&ctx.rpc_url).await;
 
     // Build complete unsigned transaction
     let (unsigned_tx, unsigned_tx_base64) = build_unsigned_transaction(
@@ -873,248 +866,18 @@ pub async fn execute_exit_pipeline(
     let dex_program_pubkey = Pubkey::from_str(&ctx.dex_program_id).unwrap_or_else(|_| Pubkey::new_unique());
     let amount_in_lamports = (position.size_sol * sell_fraction * 1_000_000_000.0) as u64;
 
-    // Fetch pool state from RPC for Pump.fun
-    let swap_instructions = if let Some(ref rpc_url) = ctx.rpc_url {
-        if ctx.dex_program_id == pump_fun_builder::PUMP_FUN_PROGRAM.to_string() {
-            let rpc_url_clone = rpc_url.clone();
-            let pool_pubkey_clone = pool_pubkey;
-            let pool_account = tokio::task::spawn_blocking(move || {
-                let rpc = RpcClient::new(rpc_url_clone);
-                rpc.get_account(&pool_pubkey_clone)
-            }).await.ok().and_then(|r| r.ok());
-            if let Some(account) = pool_account {
-                if let Ok(curve) = pump_fun_builder::PumpFunBondingCurve::from_account_data(&account.data, &pool_pubkey) {
-                    let expected_out = curve.calculate_sell_output(amount_in_lamports);
-                    let minimum_amount_out = apply_slippage(expected_out, ctx.tier_params.emergency_exit.emergency_slippage_bps);
-                    
-                    let swap_params = SwapParams {
-                        mint: mint_pubkey,
-                        pool_address: pool_pubkey,
-                        dex_program_id: dex_program_pubkey,
-                        wallet: ctx.wallet,
-                        direction: SwapDirection::Sell,
-                        amount_in: amount_in_lamports,
-                        minimum_amount_out,
-                        slippage_bps: ctx.tier_params.emergency_exit.emergency_slippage_bps,
-                    };
-                    match pump_fun_builder::build_swap(&swap_params, &curve) {
-                        Ok(ixs) => ixs,
-                        Err(e) => {
-                            tracing::error!("Failed to build Pump.fun sell: {}", e);
-                            return Err(anyhow!("Tx builder error: {}", e));
-                        }
-                    }
-                } else {
-                    if ctx.trading_mode == TradingMode::Live {
-                        tracing::error!("Failed to parse Pump.fun bonding curve in Live mode");
-                        return Err(anyhow!("Failed to parse Pump.fun bonding curve in Live mode"));
-                    }
-                    tracing::warn!("Failed to parse Pump.fun bonding curve, using placeholder (Paper mode)");
-                    create_placeholder_swap_instructions()
-                }
-            } else {
-                if ctx.trading_mode == TradingMode::Live {
-                    tracing::error!("Failed to fetch pool account in Live mode");
-                    return Err(anyhow!("Failed to fetch pool account in Live mode"));
-                }
-                tracing::warn!("Failed to fetch pool account, using placeholder (Paper mode)");
-                create_placeholder_swap_instructions()
-            }
-        } else if ctx.dex_program_id == raydium_amm_v4_builder::RAYDIUM_AMM_V4_PROGRAM.to_string() {
-            let rpc_url_clone = rpc_url.clone();
-            let pool_pubkey_clone = pool_pubkey;
-            let pool_account = tokio::task::spawn_blocking(move || {
-                let rpc = RpcClient::new(rpc_url_clone);
-                rpc.get_account(&pool_pubkey_clone)
-            }).await.ok().and_then(|r| r.ok());
-            if let Some(account) = pool_account {
-                if let Ok(mut pool_state) = raydium_amm_v4_builder::RaydiumAmmV4PoolState::from_account_data(&account.data) {
-                    // Fetch vault balances for accurate pricing (fail-closed)
-                    let vault_balances = fetch_vault_balances(
-                        rpc_url.clone(),
-                        pool_state.serum_coin_vault,
-                        pool_state.serum_pc_vault,
-                        "Raydium AMM v4",
-                    ).await?;
-                    
-                    pool_state = pool_state.with_vault_balances(vault_balances.0, vault_balances.1);
-                    
-                    let expected_out = pool_state.calculate_sell_output(amount_in_lamports);
-                    ensure_nonzero_output(expected_out, "Raydium AMM v4", "sell")?;
-                    let minimum_amount_out = apply_slippage(expected_out, ctx.tier_params.emergency_exit.emergency_slippage_bps);
-                    
-                    let swap_params = SwapParams {
-                        mint: mint_pubkey,
-                        pool_address: pool_pubkey,
-                        dex_program_id: dex_program_pubkey,
-                        wallet: ctx.wallet,
-                        direction: SwapDirection::Sell,
-                        amount_in: amount_in_lamports,
-                        minimum_amount_out,
-                        slippage_bps: ctx.tier_params.emergency_exit.emergency_slippage_bps,
-                    };
-                    match raydium_amm_v4_builder::build_swap(&swap_params, &pool_state) {
-                        Ok(ixs) => ixs,
-                        Err(e) => {
-                            tracing::error!("Failed to build Raydium AMM v4 sell: {}", e);
-                            return Err(anyhow!("Tx builder error: {}", e));
-                        }
-                    }
-                } else {
-                    if ctx.trading_mode == TradingMode::Live {
-                        tracing::error!("Failed to parse Raydium AMM v4 pool state in Live mode");
-                        return Err(anyhow!("Failed to parse Raydium AMM v4 pool state in Live mode"));
-                    }
-                    tracing::warn!("Failed to parse Raydium AMM v4 pool state, using placeholder (Paper mode)");
-                    create_placeholder_swap_instructions()
-                }
-            } else {
-                if ctx.trading_mode == TradingMode::Live {
-                    tracing::error!("Failed to fetch pool account in Live mode");
-                    return Err(anyhow!("Failed to fetch pool account in Live mode"));
-                }
-                tracing::warn!("Failed to fetch pool account, using placeholder (Paper mode)");
-                create_placeholder_swap_instructions()
-            }
-        } else if ctx.dex_program_id == raydium_cpmm_builder::RAYDIUM_CPMM_PROGRAM.to_string() {
-            let rpc_url_clone = rpc_url.clone();
-            let pool_pubkey_clone = pool_pubkey;
-            let pool_account = tokio::task::spawn_blocking(move || {
-                let rpc = RpcClient::new(rpc_url_clone);
-                rpc.get_account(&pool_pubkey_clone)
-            }).await.ok().and_then(|r| r.ok());
-            if let Some(account) = pool_account {
-                if let Ok(mut pool_state) = raydium_cpmm_builder::CpmmPoolState::from_account_data(&account.data) {
-                    // Fetch vault balances for accurate pricing (fail-closed)
-                    let vault_balances = fetch_vault_balances(
-                        rpc_url.clone(),
-                        pool_state.token_0_vault,
-                        pool_state.token_1_vault,
-                        "Raydium CPMM",
-                    ).await?;
-                    
-                    pool_state = pool_state.with_vault_balances(vault_balances.0, vault_balances.1);
-                    
-                    let expected_out = pool_state.calculate_sell_output(amount_in_lamports);
-                    ensure_nonzero_output(expected_out, "Raydium CPMM", "sell")?;
-                    let minimum_amount_out = apply_slippage(expected_out, ctx.tier_params.emergency_exit.emergency_slippage_bps);
-                    
-                    let swap_params = SwapParams {
-                        mint: mint_pubkey,
-                        pool_address: pool_pubkey,
-                        dex_program_id: dex_program_pubkey,
-                        wallet: ctx.wallet,
-                        direction: SwapDirection::Sell,
-                        amount_in: amount_in_lamports,
-                        minimum_amount_out,
-                        slippage_bps: ctx.tier_params.emergency_exit.emergency_slippage_bps,
-                    };
-                    match raydium_cpmm_builder::build_swap(&swap_params, &pool_state) {
-                        Ok(ixs) => ixs,
-                        Err(e) => {
-                            tracing::error!("Failed to build Raydium CPMM sell: {}", e);
-                            return Err(anyhow!("Tx builder error: {}", e));
-                        }
-                    }
-                } else {
-                    if ctx.trading_mode == TradingMode::Live {
-                        tracing::error!("Failed to parse Raydium CPMM pool state in Live mode");
-                        return Err(anyhow!("Failed to parse Raydium CPMM pool state in Live mode"));
-                    }
-                    tracing::warn!("Failed to parse Raydium CPMM pool state, using placeholder (Paper mode)");
-                    create_placeholder_swap_instructions()
-                }
-            } else {
-                if ctx.trading_mode == TradingMode::Live {
-                    tracing::error!("Failed to fetch pool account in Live mode");
-                    return Err(anyhow!("Failed to fetch pool account in Live mode"));
-                }
-                tracing::warn!("Failed to fetch pool account, using placeholder (Paper mode)");
-                create_placeholder_swap_instructions()
-            }
-        } else if ctx.dex_program_id == meteora_dlmm_builder::METEORA_DLMM_PROGRAM.to_string() {
-            let rpc_url_clone = rpc_url.clone();
-            let pool_pubkey_clone = pool_pubkey;
-            let pool_account = tokio::task::spawn_blocking(move || {
-                let rpc = RpcClient::new(rpc_url_clone);
-                rpc.get_account(&pool_pubkey_clone)
-            }).await.ok().and_then(|r| r.ok());
-            if let Some(account) = pool_account {
-                if let Ok(mut pool_state) = meteora_dlmm_builder::DlmmPoolState::from_account_data(&account.data, &pool_pubkey) {
-                    // Fetch vault balances for accurate pricing (fail-closed)
-                    let vault_balances = fetch_vault_balances(
-                        rpc_url.clone(),
-                        pool_state.reserve_x,
-                        pool_state.reserve_y,
-                        "Meteora DLMM",
-                    ).await?;
-                    
-                    pool_state = pool_state.with_vault_balances(vault_balances.0, vault_balances.1);
-                    
-                    let expected_out = pool_state.calculate_sell_output(amount_in_lamports);
-                    ensure_nonzero_output(expected_out, "Meteora DLMM", "sell")?;
-                    let minimum_amount_out = apply_slippage(expected_out, ctx.tier_params.emergency_exit.emergency_slippage_bps);
-                    
-                    let swap_params = SwapParams {
-                        mint: mint_pubkey,
-                        pool_address: pool_pubkey,
-                        dex_program_id: dex_program_pubkey,
-                        wallet: ctx.wallet,
-                        direction: SwapDirection::Sell,
-                        amount_in: amount_in_lamports,
-                        minimum_amount_out,
-                        slippage_bps: ctx.tier_params.emergency_exit.emergency_slippage_bps,
-                    };
-                    match meteora_dlmm_builder::build_swap(&swap_params, &pool_state) {
-                        Ok(ixs) => ixs,
-                        Err(e) => {
-                            tracing::error!("Failed to build Meteora DLMM sell: {}", e);
-                            return Err(anyhow!("Tx builder error: {}", e));
-                        }
-                    }
-                } else {
-                    if ctx.trading_mode == TradingMode::Live {
-                        tracing::error!("Failed to parse Meteora DLMM pool state in Live mode");
-                        return Err(anyhow!("Failed to parse Meteora DLMM pool state in Live mode"));
-                    }
-                    tracing::warn!("Failed to parse Meteora DLMM pool state, using placeholder (Paper mode)");
-                    create_placeholder_swap_instructions()
-                }
-            } else {
-                if ctx.trading_mode == TradingMode::Live {
-                    tracing::error!("Failed to fetch pool account in Live mode");
-                    return Err(anyhow!("Failed to fetch pool account in Live mode"));
-                }
-                tracing::warn!("Failed to fetch pool account, using placeholder (Paper mode)");
-                create_placeholder_swap_instructions()
-            }
-        } else {
-            if ctx.trading_mode == TradingMode::Live {
-                tracing::error!("Unsupported DEX {} in Live mode", ctx.dex_program_id);
-                return Err(anyhow!("Unsupported DEX {} in Live mode", ctx.dex_program_id));
-            }
-            tracing::warn!("Unsupported DEX {}, using placeholder (Paper mode)", ctx.dex_program_id);
-            create_placeholder_swap_instructions()
-        }
-    } else {
-        if ctx.trading_mode == TradingMode::Live {
-            tracing::error!("No RPC client in Live mode");
-            return Err(anyhow!("No RPC client in Live mode"));
-        }
-        tracing::warn!("No RPC client, using placeholder swap instructions (Paper mode)");
-        create_placeholder_swap_instructions()
-    };
+    let swap_instructions = fetch_and_build_dex_swap(
+        ctx,
+        mint_pubkey,
+        pool_pubkey,
+        dex_program_pubkey,
+        amount_in_lamports,
+        SwapDirection::Sell,
+        ctx.tier_params.emergency_exit.emergency_slippage_bps,
+    ).await?;
 
-    // Get recent blockhash (blocking call wrapped in spawn_blocking)
-    let blockhash = if let Some(ref rpc_url) = ctx.rpc_url {
-        let rpc_url_clone = rpc_url.clone();
-        tokio::task::spawn_blocking(move || {
-            let rpc = RpcClient::new(rpc_url_clone);
-            rpc.get_latest_blockhash()
-        }).await.ok().and_then(|r| r.ok()).unwrap_or(Hash::new_unique())
-    } else {
-        Hash::new_unique()
-    };
+    // Get recent blockhash
+    let blockhash = fetch_recent_blockhash(&ctx.rpc_url).await;
 
     // Build complete unsigned transaction
     let (unsigned_tx, unsigned_tx_base64) = build_unsigned_transaction(
@@ -1669,35 +1432,45 @@ mod tests {
 
     #[test]
     fn test_circuit_breaker_integration() {
-        let circuit_breaker = Arc::new(CircuitBreaker::new());
+        let circuit_breaker = CircuitBreaker::new();
         
-        // Test recording a loss
-        let status = circuit_breaker.record_loss(CapitalTier::Micro, 10.0);
-        assert_eq!(status.daily_loss_pct, 10.0);
+        // Test recording a loss (thresholds are in fractions, not percentages)
+        let status = circuit_breaker.record_loss(CapitalTier::Micro, 0.10);
+        assert!((status.daily_loss_pct - 0.10).abs() < 0.0001);
         assert!(!status.warning_triggered);
         assert!(!status.limit_triggered);
         
-        // Test warning threshold
-        let status = circuit_breaker.record_loss(CapitalTier::Micro, 5.0);
-        assert_eq!(status.daily_loss_pct, 15.0);
+        // Test warning threshold (Micro tier: 0.15 = 15%)
+        let status = circuit_breaker.record_loss(CapitalTier::Micro, 0.04);
+        assert!((status.daily_loss_pct - 0.14).abs() < 0.0001);
+        assert!(!status.warning_triggered);
+        assert!(!status.limit_triggered);
+        
+        let status = circuit_breaker.record_loss(CapitalTier::Micro, 0.01);
+        assert!((status.daily_loss_pct - 0.15).abs() < 0.0001);
         assert!(status.warning_triggered);
         assert!(!status.limit_triggered);
         
-        // Test limit threshold
-        let status = circuit_breaker.record_loss(CapitalTier::Micro, 10.0);
-        assert_eq!(status.daily_loss_pct, 25.0);
+        // Test limit threshold (Micro tier: 0.25 = 25%)
+        let status = circuit_breaker.record_loss(CapitalTier::Micro, 0.09);
+        assert!((status.daily_loss_pct - 0.24).abs() < 0.0001);
+        assert!(status.warning_triggered);
+        assert!(!status.limit_triggered);
+        
+        let status = circuit_breaker.record_loss(CapitalTier::Micro, 0.01);
+        assert!((status.daily_loss_pct - 0.25).abs() < 0.0001);
         assert!(status.warning_triggered);
         assert!(status.limit_triggered);
     }
 
     #[test]
     fn test_circuit_breaker_reset() {
-        let circuit_breaker = Arc::new(CircuitBreaker::new());
+        let circuit_breaker = CircuitBreaker::new();
         
         // Record some losses
-        circuit_breaker.record_loss(CapitalTier::Micro, 20.0);
+        circuit_breaker.record_loss(CapitalTier::Micro, 0.20);
         let status = circuit_breaker.get_status(CapitalTier::Micro);
-        assert_eq!(status.daily_loss_pct, 20.0);
+        assert!((status.daily_loss_pct - 0.20).abs() < 0.0001);
         
         // Reset
         circuit_breaker.reset_daily();
@@ -1709,31 +1482,27 @@ mod tests {
 
     #[test]
     fn test_circuit_breaker_tier_specific_thresholds() {
-        let circuit_breaker = Arc::new(CircuitBreaker::new());
-        
-        // Micro tier: warning 15%, limit 25%
-        let status = circuit_breaker.record_loss(CapitalTier::Micro, 15.0);
+        // Micro tier: warning 0.15 (15%), limit 0.25 (25%)
+        let cb_micro = CircuitBreaker::new();
+        let status = cb_micro.record_loss(CapitalTier::Micro, 0.15);
         assert!(status.warning_triggered);
         assert!(!status.limit_triggered);
         
-        circuit_breaker.reset_daily();
-        
-        // Small tier: warning 16%, limit 24%
-        let status = circuit_breaker.record_loss(CapitalTier::Small, 16.0);
+        // Small tier: warning 0.16 (16%), limit 0.24 (24%)
+        let cb_small = CircuitBreaker::new();
+        let status = cb_small.record_loss(CapitalTier::Small, 0.16);
         assert!(status.warning_triggered);
         assert!(!status.limit_triggered);
         
-        circuit_breaker.reset_daily();
-        
-        // Medium tier: warning 15%, limit 21.6%
-        let status = circuit_breaker.record_loss(CapitalTier::Medium, 15.0);
+        // Medium tier: warning 0.15 (15%), limit 0.216 (21.6%)
+        let cb_medium = CircuitBreaker::new();
+        let status = cb_medium.record_loss(CapitalTier::Medium, 0.15);
         assert!(status.warning_triggered);
         assert!(!status.limit_triggered);
         
-        circuit_breaker.reset_daily();
-        
-        // Large tier: warning 12%, limit 16.6%
-        let status = circuit_breaker.record_loss(CapitalTier::Large, 12.0);
+        // Large tier: warning 0.12 (12%), limit 0.166 (16.6%)
+        let cb_large = CircuitBreaker::new();
+        let status = cb_large.record_loss(CapitalTier::Large, 0.12);
         assert!(status.warning_triggered);
         assert!(!status.limit_triggered);
     }
