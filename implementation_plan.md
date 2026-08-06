@@ -211,15 +211,15 @@
 - [x] Timeout, retry, error handling
 
 #### 5.3 Position Lifecycle
-- [ ] `Open → TP1_filled → TP2_filled → TP3_filled → Closed`
-- [ ] `Open → Closing → Closed` (SL / trailing)
-- [ ] `Open → stuck_manual_intervention_required`
-- [ ] State transitions → SQLite + event bus
+- [x] `Open → TP1_filled → TP2_filled → TP3_filled → Closed`
+- [x] `Open → Closing → Closed` (SL / trailing)
+- [x] `Open → stuck_manual_intervention_required`
+- [x] State transitions → SQLite + event bus
 
 #### 5.4 Circuit Breaker Integration
-- [ ] Hook в trading loop: `on_loss → circuit_breaker.record_loss() → check status`
-- [ ] При `limit_triggered` → emergency exit escalation для всех позиций тира
-- [ ] Daily reset cron (00:00 UTC)
+- [x] Hook в trading loop: `on_loss → circuit_breaker.record_loss() → check status`
+- [x] При `limit_triggered` → emergency exit escalation для всех позиций тира
+- [x] Daily reset cron (00:00 UTC)
 
 ---
 
