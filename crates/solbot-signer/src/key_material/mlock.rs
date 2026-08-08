@@ -117,8 +117,8 @@ unsafe fn unlock_memory(ptr: *const u8, len: usize) {
 pub fn enforce_no_core_dumps() -> Result<()> {
     use rlimit::{getrlimit, setrlimit, Resource};
 
-    let (soft, hard) = getrlimit(Resource::CORE)
-        .map_err(|e| anyhow!("Failed to get RLIMIT_CORE: {e}"))?;
+    let (soft, hard) =
+        getrlimit(Resource::CORE).map_err(|e| anyhow!("Failed to get RLIMIT_CORE: {e}"))?;
 
     if soft != 0 || hard != 0 {
         tracing::warn!(

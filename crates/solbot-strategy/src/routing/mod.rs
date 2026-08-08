@@ -5,14 +5,14 @@
 //! - Stage 2: Public RPC Fallback (retries with multiple endpoints)
 //! - Stage 3: Durable Nonce (emergency fallback)
 
+pub mod durable_nonce;
 pub mod jito_bundle;
 pub mod public_rpc_fallback;
-pub mod durable_nonce;
 
 use anyhow::{anyhow, Result};
-use jito_bundle::{JitoClient, BundleConfig};
-use public_rpc_fallback::{PublicRpcClient, PublicRpcConfig};
 use durable_nonce::{DurableNonceClient, DurableNonceConfig};
+use jito_bundle::{BundleConfig, JitoClient};
+use public_rpc_fallback::{PublicRpcClient, PublicRpcConfig};
 use solana_transaction::Transaction;
 
 #[derive(Debug, Clone)]
@@ -80,16 +80,21 @@ impl TransactionRouter {
         };
 
         let public_rpc_client = if config.enable_public_rpc && config.public_rpc_config.is_some() {
-            Some(PublicRpcClient::new(config.public_rpc_config.clone().unwrap()))
+            Some(PublicRpcClient::new(
+                config.public_rpc_config.clone().unwrap(),
+            ))
         } else {
             None
         };
 
-        let durable_nonce_client = if config.enable_durable_nonce && config.durable_nonce_config.is_some() {
-            Some(DurableNonceClient::new(config.durable_nonce_config.clone().unwrap()))
-        } else {
-            None
-        };
+        let durable_nonce_client =
+            if config.enable_durable_nonce && config.durable_nonce_config.is_some() {
+                Some(DurableNonceClient::new(
+                    config.durable_nonce_config.clone().unwrap(),
+                ))
+            } else {
+                None
+            };
 
         Ok(Self {
             config,
@@ -104,17 +109,34 @@ impl TransactionRouter {
     }
 
     /// Submit transaction using configured routing strategy.
-    pub async fn submit_transaction(&mut self, transaction: Transaction, priority_fee_lamports: u64) -> Result<SubmitResult> {
+    pub async fn submit_transaction(
+        &mut self,
+        transaction: Transaction,
+        priority_fee_lamports: u64,
+    ) -> Result<SubmitResult> {
         match self.config.strategy {
-            RoutingStrategy::JitoOnly => self.submit_jito_only(transaction, priority_fee_lamports).await,
-            RoutingStrategy::PublicRpcOnly => self.submit_public_rpc_only(transaction, priority_fee_lamports).await,
+            RoutingStrategy::JitoOnly => {
+                self.submit_jito_only(transaction, priority_fee_lamports)
+                    .await
+            }
+            RoutingStrategy::PublicRpcOnly => {
+                self.submit_public_rpc_only(transaction, priority_fee_lamports)
+                    .await
+            }
             RoutingStrategy::DurableNonceOnly => self.submit_durable_nonce_only(transaction).await,
-            RoutingStrategy::AutoFallback => self.submit_with_fallback(transaction, priority_fee_lamports).await,
+            RoutingStrategy::AutoFallback => {
+                self.submit_with_fallback(transaction, priority_fee_lamports)
+                    .await
+            }
         }
     }
 
     /// Submit with automatic fallback through stages.
-    async fn submit_with_fallback(&mut self, transaction: Transaction, priority_fee_lamports: u64) -> Result<SubmitResult> {
+    async fn submit_with_fallback(
+        &mut self,
+        transaction: Transaction,
+        priority_fee_lamports: u64,
+    ) -> Result<SubmitResult> {
         // Stage 1: Try Jito Bundle
         if let Some(client) = &mut self.jito_client {
             tracing::info!("Stage 1: Attempting Jito Bundle submission");
@@ -134,7 +156,10 @@ impl TransactionRouter {
         // Stage 2: Try Public RPC
         if let Some(client) = &mut self.public_rpc_client {
             tracing::info!("Stage 2: Attempting Public RPC submission");
-            match client.submit_transaction(transaction.clone(), priority_fee_lamports).await {
+            match client
+                .submit_transaction(transaction.clone(), priority_fee_lamports)
+                .await
+            {
                 Ok(result) => {
                     tracing::info!("Stage 2: Public RPC submission succeeded");
                     return Ok(result);
@@ -162,7 +187,11 @@ impl TransactionRouter {
         Err(anyhow!("All routing stages failed"))
     }
 
-    async fn submit_jito_only(&mut self, transaction: Transaction, _priority_fee_lamports: u64) -> Result<SubmitResult> {
+    async fn submit_jito_only(
+        &mut self,
+        transaction: Transaction,
+        _priority_fee_lamports: u64,
+    ) -> Result<SubmitResult> {
         if let Some(client) = &mut self.jito_client {
             let bundle = vec![transaction];
             client.submit_bundle(bundle).await
@@ -171,15 +200,24 @@ impl TransactionRouter {
         }
     }
 
-    async fn submit_public_rpc_only(&mut self, transaction: Transaction, priority_fee_lamports: u64) -> Result<SubmitResult> {
+    async fn submit_public_rpc_only(
+        &mut self,
+        transaction: Transaction,
+        priority_fee_lamports: u64,
+    ) -> Result<SubmitResult> {
         if let Some(client) = &mut self.public_rpc_client {
-            client.submit_transaction(transaction, priority_fee_lamports).await
+            client
+                .submit_transaction(transaction, priority_fee_lamports)
+                .await
         } else {
             Err(anyhow!("Public RPC client not configured"))
         }
     }
 
-    async fn submit_durable_nonce_only(&mut self, transaction: Transaction) -> Result<SubmitResult> {
+    async fn submit_durable_nonce_only(
+        &mut self,
+        transaction: Transaction,
+    ) -> Result<SubmitResult> {
         if let Some(client) = &mut self.durable_nonce_client {
             client.submit_durable_nonce_tx(transaction).await
         } else {

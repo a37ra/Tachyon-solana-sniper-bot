@@ -2,20 +2,17 @@
 //!
 //! This test builds a Raydium CLMM swap transaction and simulates it
 //! on devnet to verify the transaction would execute successfully.
-use std::str::FromStr;
-use std::sync::Arc;
-use anyhow::{Context, Result, bail};
-use solana_sdk::{
-    pubkey::Pubkey,
-    commitment_config::CommitmentConfig,
-};
+use anyhow::{bail, Context, Result};
 use solana_rpc_client::rpc_client::RpcClient;
 use solana_rpc_client_api::config::RpcSimulateTransactionConfig;
+use solana_sdk::{commitment_config::CommitmentConfig, pubkey::Pubkey};
 use solbot_strategy::tx_builder::{
-    SwapParams, SwapDirection,
-    raydium_clmm::{build_swap as raydium_clmm_build_swap, ClmmPoolState},
     blockhash_cache::BlockhashCache,
+    raydium_clmm::{build_swap as raydium_clmm_build_swap, ClmmPoolState},
+    SwapDirection, SwapParams,
 };
+use std::str::FromStr;
+use std::sync::Arc;
 
 /// Mainnet RPC URL
 const MAINNET_RPC: &str = "https://api.mainnet-beta.solana.com";
@@ -48,8 +45,8 @@ async fn test_raydium_clmm_simulate_transaction() -> Result<()> {
         },
         TestPool {
             address: "61R1ndXxvsWXXkWSyNkCxnzwd3zUNB8Q2ibmkiLPC8ht", // RAY/USDC pool
-            mint_a: "4k3Dyjzvzp8eMZWUXbBCjEvwSkkk59S5iCNLY3QrkX6R", // RAY
-            mint_b: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", // USDC
+            mint_a: "4k3Dyjzvzp8eMZWUXbBCjEvwSkkk59S5iCNLY3QrkX6R",  // RAY
+            mint_b: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",  // USDC
             description: "RAY/USDC",
         },
     ];
@@ -60,7 +57,7 @@ async fn test_raydium_clmm_simulate_transaction() -> Result<()> {
     for test_pool in test_pools {
         println!("\n📊 Testing pool: {}", test_pool.description);
         println!("  Pool ID: {}", test_pool.address);
-        
+
         // Test Buy direction
         println!("  Testing Buy direction...");
         if let Err(e) = test_single_pool(&test_pool, SwapDirection::Buy).await {
@@ -91,7 +88,6 @@ struct TestPool {
 }
 
 async fn test_single_pool(pool: &TestPool, direction: SwapDirection) -> Result<()> {
-
     // Connect to mainnet
     let rpc_client = Arc::new(RpcClient::new(MAINNET_RPC));
     println!("✅ Connected to mainnet RPC");
@@ -107,14 +103,18 @@ async fn test_single_pool(pool: &TestPool, direction: SwapDirection) -> Result<(
 
     // Use the pool address from the test parameter
     let pool_id = Pubkey::from_str(pool.address)?;
-    
+
     // Load real pool data from mainnet
     let (clmm_pool, extension) = match rpc_client.get_account_data(&pool_id) {
         Ok(data) => {
-            println!("✅ Successfully fetched pool account data ({} bytes)", data.len());
-            let mut pool = solbot_strategy::tx_builder::raydium_clmm::ClmmPoolState::from_account_data(&data)?;
+            println!(
+                "✅ Successfully fetched pool account data ({} bytes)",
+                data.len()
+            );
+            let mut pool =
+                solbot_strategy::tx_builder::raydium_clmm::ClmmPoolState::from_account_data(&data)?;
             pool.pool_id = pool_id;
-            
+
             println!("✅ Real pool data loaded:");
             println!("  amm_config: {}", pool.amm_config);
             println!("  owner: {}", pool.owner);
@@ -125,7 +125,7 @@ async fn test_single_pool(pool: &TestPool, direction: SwapDirection) -> Result<(
             println!("  observation_key: {}", pool.observation_key);
             println!("  tick_current: {}", pool.tick_current);
             println!("  tick_spacing: {}", pool.tick_spacing);
-            
+
             // Print tick_array_bitmap for debugging
             println!("  tick_array_bitmap (non-zero limbs):");
             for (i, &limb) in pool.tick_array_bitmap.iter().enumerate() {
@@ -133,7 +133,7 @@ async fn test_single_pool(pool: &TestPool, direction: SwapDirection) -> Result<(
                     println!("    limb[{}]: {:016x}", i, limb);
                 }
             }
-            
+
             // Load TickArrayBitmapExtension if it exists
             let (extension_pda, _bump) = Pubkey::find_program_address(
                 &[b"pool_tick_array_bitmap_extension", pool_id.as_ref()],
@@ -147,31 +147,43 @@ async fn test_single_pool(pool: &TestPool, direction: SwapDirection) -> Result<(
                     Some(solbot_strategy::tx_builder::raydium_clmm::TickArrayBitmapExtension::from_account_data(&account.data)?)
                 }
                 Err(e) => {
-                    println!("⚠️ TickArrayBitmapExtension does NOT exist: {}", extension_pda);
+                    println!(
+                        "⚠️ TickArrayBitmapExtension does NOT exist: {}",
+                        extension_pda
+                    );
                     println!("  Error: {}", e);
                     None
                 }
             };
-            
+
             (pool, extension)
         }
         Err(e) => {
             println!("⚠️ Failed to fetch pool data ({}), using fallback", e);
             // Fallback to hardcoded values
-            (ClmmPoolState {
-                pool_id,
-                amm_config: Pubkey::from_str("GKUqNk76pvWv9tEG9ydj1GkPAQVNcVjqDhSs1R8V4WsY")?,
-                owner: fee_payer,
-                token_mint_0: Pubkey::from_str("So11111111111111111111111111111111111111112")?,
-                token_mint_1: Pubkey::from_str("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v")?,
-                token_vault_0: Pubkey::from_str("7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU")?,
-                token_vault_1: Pubkey::from_str("E7iPA5dHcNj9QWwWpCMpAhnwZ5h3TVDfRqYyCVT7t3w4")?,
-                observation_key: Pubkey::from_str("3MsJXVvievxAbsMsaT6TS4i6oMitD9jazucuq3X234tC")?,
-                tick_array_bitmap_extension: None,
-                tick_array_bitmap: [0u64; 16],
-                tick_current: -26347,
-                tick_spacing: 1,
-            }, None)
+            (
+                ClmmPoolState {
+                    pool_id,
+                    amm_config: Pubkey::from_str("GKUqNk76pvWv9tEG9ydj1GkPAQVNcVjqDhSs1R8V4WsY")?,
+                    owner: fee_payer,
+                    token_mint_0: Pubkey::from_str("So11111111111111111111111111111111111111112")?,
+                    token_mint_1: Pubkey::from_str("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v")?,
+                    token_vault_0: Pubkey::from_str(
+                        "7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU",
+                    )?,
+                    token_vault_1: Pubkey::from_str(
+                        "E7iPA5dHcNj9QWwWpCMpAhnwZ5h3TVDfRqYyCVT7t3w4",
+                    )?,
+                    observation_key: Pubkey::from_str(
+                        "3MsJXVvievxAbsMsaT6TS4i6oMitD9jazucuq3X234tC",
+                    )?,
+                    tick_array_bitmap_extension: None,
+                    tick_array_bitmap: [0u64; 16],
+                    tick_current: -26347,
+                    tick_spacing: 1,
+                },
+                None,
+            )
         }
     };
 
@@ -198,17 +210,22 @@ async fn test_single_pool(pool: &TestPool, direction: SwapDirection) -> Result<(
     println!("  Amount: {} lamports", params.amount_in);
 
     // Build CLMM swap instructions
-    let swap_instructions = raydium_clmm_build_swap(&params, &clmm_pool, &pool_id, extension.as_ref())
-        .context("Failed to build Raydium CLMM swap instructions")?;
+    let swap_instructions =
+        raydium_clmm_build_swap(&params, &clmm_pool, &pool_id, extension.as_ref())
+            .context("Failed to build Raydium CLMM swap instructions")?;
 
     println!("✅ Built swap instructions");
     println!("  Setup: {}", swap_instructions.setup_instructions.len());
     println!("  Swap: {}", swap_instructions.swap_instructions.len());
-    println!("  Cleanup: {}", swap_instructions.cleanup_instructions.len());
-    
+    println!(
+        "  Cleanup: {}",
+        swap_instructions.cleanup_instructions.len()
+    );
+
     // Check if the first tick array account actually exists on-chain
     if let Some(swap_ix) = swap_instructions.swap_instructions.first() {
-        if let Some(first_tick_array) = swap_ix.accounts.get(9) { // After 9 base accounts
+        if let Some(first_tick_array) = swap_ix.accounts.get(9) {
+            // After 9 base accounts
             match rpc_client.get_account(&first_tick_array.pubkey) {
                 Ok(account) => {
                     println!("✅ First tick array exists: {}", first_tick_array.pubkey);
@@ -216,7 +233,10 @@ async fn test_single_pool(pool: &TestPool, direction: SwapDirection) -> Result<(
                     println!("  Data length: {} bytes", account.data.len());
                 }
                 Err(e) => {
-                    println!("⚠️ First tick array does NOT exist: {}", first_tick_array.pubkey);
+                    println!(
+                        "⚠️ First tick array does NOT exist: {}",
+                        first_tick_array.pubkey
+                    );
                     println!("  Error: {}", e);
                 }
             }
@@ -230,7 +250,8 @@ async fn test_single_pool(pool: &TestPool, direction: SwapDirection) -> Result<(
         1000,    // Priority fee micro-lamports
         &fee_payer,
         recent_blockhash,
-    ).context("Failed to build unsigned transaction")?;
+    )
+    .context("Failed to build unsigned transaction")?;
 
     println!("✅ Transaction built:");
     println!("  Data length: {} bytes", tx_base64.len());
@@ -254,11 +275,18 @@ async fn test_single_pool(pool: &TestPool, direction: SwapDirection) -> Result<(
 
     if let Some(err) = &sim_result.value.err {
         let err_str = format!("{:?}", err);
-        let has_insufficient_funds = err_str.contains("Custom(1)") 
-            || sim_result.value.logs.as_ref().map(|logs| {
-                logs.iter().any(|log| log.contains("insufficient funds") || log.contains("InsufficientFunds"))
-            }).unwrap_or(false);
-            
+        let has_insufficient_funds = err_str.contains("Custom(1)")
+            || sim_result
+                .value
+                .logs
+                .as_ref()
+                .map(|logs| {
+                    logs.iter().any(|log| {
+                        log.contains("insufficient funds") || log.contains("InsufficientFunds")
+                    })
+                })
+                .unwrap_or(false);
+
         if has_insufficient_funds {
             println!("⚠️ Transaction simulation returned Insufficient Funds (this is expected for test environments without real balances, instruction layout is correct)");
         } else {
@@ -278,12 +306,12 @@ async fn test_raydium_clmm_tick_array_calculation() -> Result<()> {
     // Test tick array start index calculation
     let tick_current = 1000;
     let tick_spacing = 64;
-    
+
     let tick_array_index = solbot_strategy::tx_builder::raydium_clmm::tick_array_start_index(
         tick_current,
         tick_spacing,
     );
-    
+
     println!("✅ Tick array start index calculation:");
     println!("  Tick current: {}", tick_current);
     println!("  Tick spacing: {}", tick_spacing);
@@ -291,7 +319,10 @@ async fn test_raydium_clmm_tick_array_calculation() -> Result<()> {
 
     // Verify the calculation is correct
     let expected_index = tick_current / (tick_spacing as i32 * 60);
-    assert_eq!(tick_array_index, expected_index, "Tick array index calculation incorrect");
+    assert_eq!(
+        tick_array_index, expected_index,
+        "Tick array index calculation incorrect"
+    );
 
     println!("✅ Tick array calculation verified");
     Ok(())

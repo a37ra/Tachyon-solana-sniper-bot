@@ -4,14 +4,14 @@
 //! This is for verifying the logs_parser implementation and understanding
 //! the structure of transaction logs from each DEX.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use solana_pubkey::Pubkey;
-use tokio::time::timeout;
 use std::str::FromStr;
+use tokio::time::timeout;
 
 use solbot_strategy::signal::helius_ws_client::{HeliusWsClient, HeliusWsConfig};
 use solbot_strategy::signal::logs_parser::{DexType, InstructionType, ParsedSignal};
@@ -29,7 +29,7 @@ struct LogsCounters {
     init_bonding_curve: u64,
     migrate: u64,
     unknown_instruction: u64,
-    total_logs: u64,
+    _total_logs: u64,
     total_parsed: u64,
 }
 
@@ -39,8 +39,7 @@ async fn main() -> Result<()> {
         .with_max_level(tracing::Level::INFO)
         .init();
 
-    let api_key = std::env::var("HELIUS_API_KEY")
-        .context("HELIUS_API_KEY env var is required")?;
+    let api_key = std::env::var("HELIUS_API_KEY").context("HELIUS_API_KEY env var is required")?;
     let listen_secs: u64 = std::env::var("LISTEN_SECONDS")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -57,9 +56,9 @@ async fn main() -> Result<()> {
         Pubkey::from_str("675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8")?, // Raydium AMM v4
         Pubkey::from_str("CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C")?, // Raydium CP-MM
         Pubkey::from_str("CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK")?, // Raydium CLMM
-        Pubkey::from_str("LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo")?, // Meteora DLMM
-        Pubkey::from_str("cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG")?, // Meteora Dynamic AMM v2
-        Pubkey::from_str("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P")?, // Pump.fun
+        Pubkey::from_str("LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo")?,  // Meteora DLMM
+        Pubkey::from_str("cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG")?,  // Meteora Dynamic AMM v2
+        Pubkey::from_str("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P")?,  // Pump.fun
     ];
 
     println!("Subscribing to {} program IDs:", program_ids.len());
@@ -70,10 +69,8 @@ async fn main() -> Result<()> {
 
     let helius_ws_config = HeliusWsConfig {
         ws_url: format!("wss://mainnet.helius-rpc.com/?api-key={}", api_key),
-        commitment: std::env::var("HELIUS_COMMITMENT")
-            .unwrap_or_else(|_| "confirmed".to_string()),
-        encoding: std::env::var("HELIUS_ENCODING")
-            .unwrap_or_else(|_| "base64".to_string()),
+        commitment: std::env::var("HELIUS_COMMITMENT").unwrap_or_else(|_| "confirmed".to_string()),
+        encoding: std::env::var("HELIUS_ENCODING").unwrap_or_else(|_| "base64".to_string()),
     };
 
     let helius_client = HeliusWsClient::new(helius_ws_config);
@@ -176,7 +173,10 @@ async fn main() -> Result<()> {
             return Err(e);
         }
         Err(_) => {
-            println!("\n⏱️  Listen window ({}s) elapsed — this is expected, not a failure.", listen_secs);
+            println!(
+                "\n⏱️  Listen window ({}s) elapsed — this is expected, not a failure.",
+                listen_secs
+            );
         }
     }
 

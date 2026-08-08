@@ -1,7 +1,7 @@
+pub mod escalation;
+pub mod hard_stop_loss;
 pub mod take_profit_ladder;
 pub mod trailing_stop;
-pub mod hard_stop_loss;
-pub mod escalation;
 
 use solbot_common::types::position::Position;
 
@@ -53,9 +53,7 @@ pub enum ExitAction {
     /// Hard stop loss at -50% — sell 100% and start escalation.
     HardStopLoss,
     /// Emergency exit triggered externally (circuit breaker, kill switch).
-    Emergency {
-        reason: String,
-    },
+    Emergency { reason: String },
 }
 
 /// Evaluate whether the current price triggers any exit action for the given position.
@@ -173,7 +171,13 @@ mod tests {
         let pos = make_position(1.0, PositionStatus::Open, 1.0);
         // Price at +60% → triggers TP1 (+50%)
         let action = evaluate_exit(&pos, 1.6);
-        assert!(matches!(action, Some(ExitAction::TakeProfit { level: TpLevel::Tp1, .. })));
+        assert!(matches!(
+            action,
+            Some(ExitAction::TakeProfit {
+                level: TpLevel::Tp1,
+                ..
+            })
+        ));
     }
 
     #[test]
@@ -181,7 +185,13 @@ mod tests {
         let pos = make_position(1.0, PositionStatus::Tp1Filled, 0.7);
         // Price at +120% → triggers TP2 (+100%)
         let action = evaluate_exit(&pos, 2.2);
-        assert!(matches!(action, Some(ExitAction::TakeProfit { level: TpLevel::Tp2, .. })));
+        assert!(matches!(
+            action,
+            Some(ExitAction::TakeProfit {
+                level: TpLevel::Tp2,
+                ..
+            })
+        ));
     }
 
     #[test]

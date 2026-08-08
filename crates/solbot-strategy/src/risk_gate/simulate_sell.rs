@@ -5,7 +5,7 @@
 //! - Excessive fees (hidden taxes on transfers)
 //! - Zero output (token cannot be sold)
 //!
-//! Uses a hard timeout of 80ms with fallback reject to prevent
+//! Uses a hard timeout of 30ms with fallback reject to prevent
 //! slow RPC responses from blocking the trading pipeline.
 
 use super::CheckResult;
@@ -18,8 +18,8 @@ use solana_rpc_client::rpc_client::RpcClient;
 use solana_transaction::Transaction;
 use std::time::Duration;
 
-/// Maximum simulation time in milliseconds
-const SIMULATION_TIMEOUT_MS: u64 = 80;
+/// Maximum simulation time in milliseconds (aggressively optimized: 80ms → 30ms)
+const SIMULATION_TIMEOUT_MS: u64 = 30;
 
 pub async fn check(
     mint: &str,
@@ -29,7 +29,9 @@ pub async fn check(
 ) -> CheckResult {
     let start = std::time::Instant::now();
 
-    let rpc = RpcClient::new(rpc_url.to_string());
+    let rpc = std::sync::Arc::new(solana_rpc_client::nonblocking::rpc_client::RpcClient::new(
+        rpc_url.to_string(),
+    ));
     let mint_pubkey = match Pubkey::try_from(mint) {
         Ok(pk) => pk,
         Err(e) => {
@@ -55,31 +57,24 @@ pub async fn check(
     let mint_clone = mint.to_string();
     let pool_clone = pool_address.to_string();
 
-    // Apply hard timeout (80ms) with fallback reject
+    // Apply hard timeout (30ms) with fallback reject
     match tokio::time::timeout(
         Duration::from_millis(SIMULATION_TIMEOUT_MS),
-        tokio::task::spawn_blocking(move || {
-            simulate_sell_transaction(
-                &rpc,
-                &mint_pubkey,
-                &pool_pubkey,
-                size_lamports,
-                &mint_clone,
-                &pool_clone,
-            )
-        }),
+        simulate_sell_transaction(
+            rpc,
+            mint_pubkey,
+            pool_pubkey,
+            size_lamports,
+            mint_clone,
+            pool_clone,
+        ),
     )
     .await
     {
-        Ok(Ok(Ok(result))) => result,
-        Ok(Ok(Err(e))) => CheckResult {
-            passed: false,
-            reason: Some(format!("Simulation error: {}", e)),
-            duration_ms: start.elapsed().as_millis() as u64,
-        },
+        Ok(Ok(result)) => result,
         Ok(Err(e)) => CheckResult {
             passed: false,
-            reason: Some(format!("Task join error: {}", e)),
+            reason: Some(format!("Simulation error: {}", e)),
             duration_ms: start.elapsed().as_millis() as u64,
         },
         Err(_) => {
@@ -102,26 +97,30 @@ pub async fn check(
 }
 
 /// Build and simulate a real sell transaction.
-fn simulate_sell_transaction(
-    rpc: &RpcClient,
-    mint_pubkey: &Pubkey,
-    pool_pubkey: &Pubkey,
+async fn simulate_sell_transaction(
+    rpc: std::sync::Arc<solana_rpc_client::nonblocking::rpc_client::RpcClient>,
+    mint_pubkey: Pubkey,
+    pool_pubkey: Pubkey,
     size_lamports: u64,
-    mint_str: &str,
-    pool_str: &str,
+    mint_str: String,
+    pool_str: String,
 ) -> anyhow::Result<CheckResult> {
     let start = std::time::Instant::now();
 
-    // 1. Fetch pool account to get owner (DEX program ID) and state
-    let pool_account = rpc.get_account(pool_pubkey)?;
+    // 1. Fetch pool account and blockhash in parallel using nonblocking async
+    let (pool_account_result, blockhash_result) =
+        tokio::join!(rpc.get_account(&pool_pubkey), rpc.get_latest_blockhash());
+
+    let pool_account = pool_account_result?;
+    let recent_blockhash = blockhash_result?;
     let dex_program = pool_account.owner;
 
     // Dummy wallet for simulation
     let dummy_wallet = Pubkey::new_unique();
 
     let params = SwapParams {
-        mint: *mint_pubkey,
-        pool_address: *pool_pubkey,
+        mint: mint_pubkey,
+        pool_address: pool_pubkey,
         dex_program_id: dex_program,
         wallet: dummy_wallet,
         direction: SwapDirection::Sell,
@@ -134,7 +133,8 @@ fn simulate_sell_transaction(
     let dex_str = dex_program.to_string();
     let swap_instructions_result: anyhow::Result<SwapInstructions> = match dex_str.as_str() {
         "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8" => {
-            let state = raydium_amm_v4::RaydiumAmmV4PoolState::from_account_data(&pool_account.data)?;
+            let state =
+                raydium_amm_v4::RaydiumAmmV4PoolState::from_account_data(&pool_account.data)?;
             raydium_amm_v4::build_swap(&params, &state)
         }
         "CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C" => {
@@ -143,18 +143,23 @@ fn simulate_sell_transaction(
         }
         "CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK" => {
             let state = raydium_clmm::ClmmPoolState::from_account_data(&pool_account.data)?;
-            raydium_clmm::build_swap(&params, &state, pool_pubkey, None)
+            raydium_clmm::build_swap(&params, &state, &pool_pubkey, None)
         }
         "Eo7WjKq67rjJQSZxS6z3YKapzY3eMj6Xy8X5EQVn5UaB" => {
-            let state = meteora_dynamic::DynamicAmmPoolState::from_account_data(&pool_account.data, pool_pubkey)?;
+            let state = meteora_dynamic::DynamicAmmPoolState::from_account_data(
+                &pool_account.data,
+                &pool_pubkey,
+            )?;
             meteora_dynamic::build_swap(&params, &state)
         }
         "LBUZKhRxPF3XUpBCjp4kVn14nz88kZjgL6Xm1xS8bKp" => {
-            let state = meteora_dlmm::DlmmPoolState::from_account_data(&pool_account.data, pool_pubkey)?;
+            let state =
+                meteora_dlmm::DlmmPoolState::from_account_data(&pool_account.data, &pool_pubkey)?;
             meteora_dlmm::build_swap(&params, &state)
         }
         "6EF8rrecthR5DkZ8w3bq6z3Y3Y3Y3Y3Y3Y3Y3Y3Y3Y" => {
-            let curve = pump_fun::PumpFunBondingCurve::from_account_data(&pool_account.data, pool_pubkey)?;
+            let curve =
+                pump_fun::PumpFunBondingCurve::from_account_data(&pool_account.data, &pool_pubkey)?;
             pump_fun::build_swap(&params, &curve)
         }
         _ => anyhow::bail!("Unsupported DEX program for simulation: {}", dex_str),
@@ -185,12 +190,10 @@ fn simulate_sell_transaction(
     instructions.extend(swap_instructions.cleanup_instructions);
 
     let mut transaction = Transaction::new_with_payer(&instructions, Some(&dummy_wallet));
-
-    let recent_blockhash = rpc.get_latest_blockhash()?;
     transaction.message.recent_blockhash = recent_blockhash;
 
-    // 5. Simulate transaction on-chain
-    let simulation_result = rpc.simulate_transaction(&transaction)?;
+    // 5. Simulate transaction on-chain using nonblocking async
+    let simulation_result = rpc.simulate_transaction(&transaction).await?;
     let elapsed = start.elapsed();
 
     // 6. Check for honeypot errors in simulation
@@ -209,7 +212,10 @@ fn simulate_sell_transaction(
         {
             return Ok(CheckResult {
                 passed: false,
-                reason: Some(format!("Sell simulation failed (honeypot check): {}", err_str)),
+                reason: Some(format!(
+                    "Sell simulation failed (honeypot check): {}",
+                    err_str
+                )),
                 duration_ms: elapsed.as_millis() as u64,
             });
         }
@@ -219,7 +225,9 @@ fn simulate_sell_transaction(
     if let Some(logs) = simulation_result.value.logs {
         for log in logs {
             let log_lower = log.to_lowercase();
-            if log_lower.contains("fee") && (log_lower.contains("transfer") || log_lower.contains("tax")) {
+            if log_lower.contains("fee")
+                && (log_lower.contains("transfer") || log_lower.contains("tax"))
+            {
                 return Ok(CheckResult {
                     passed: false,
                     reason: Some("Transfer tax detected in simulation logs".to_string()),
@@ -283,7 +291,7 @@ mod tests {
 
     #[test]
     fn test_constants() {
-        assert_eq!(SIMULATION_TIMEOUT_MS, 80);
+        assert_eq!(SIMULATION_TIMEOUT_MS, 30);
     }
 
     /// Integration test — simulates real sell swap transaction on mainnet RPC.

@@ -8,9 +8,8 @@ use solana_sdk::{
     signature::{Keypair, Signer},
 };
 use solbot_strategy::tx_builder::{
+    ata, raydium_amm_v4,
     raydium_amm_v4::{RaydiumAmmV4PoolState, RAYDIUM_AMM_V4_PROGRAM},
-    ata,
-    raydium_amm_v4,
     SwapDirection, SwapParams,
 };
 
@@ -18,15 +17,15 @@ use solbot_strategy::tx_builder::{
 #[ignore = "Requires devnet connection"]
 async fn test_raydium_amm_v4_pool_state_parsing() {
     let _wallet = Keypair::new();
-    
+
     // Create dummy pool data (752 bytes minimum for Raydium AMM v4)
     let mut pool_data = vec![0u8; 752];
-    
+
     // Write some pubkeys at expected offsets
     let amm_id = Pubkey::new_unique();
     let coin_mint = Pubkey::new_unique();
     let pc_mint = Pubkey::new_unique();
-    
+
     pool_data[8..40].copy_from_slice(amm_id.as_ref());
     pool_data[400..432].copy_from_slice(coin_mint.as_ref());
     pool_data[368..400].copy_from_slice(pc_mint.as_ref());
@@ -51,7 +50,7 @@ async fn test_raydium_amm_v4_swap_instruction_structure() {
     let amm_id = Pubkey::new_unique();
     let coin_mint = mint;
     let pc_mint = Pubkey::new_unique();
-    
+
     pool_data[8..40].copy_from_slice(amm_id.as_ref());
     pool_data[400..432].copy_from_slice(coin_mint.as_ref());
     pool_data[368..400].copy_from_slice(pc_mint.as_ref());
@@ -77,7 +76,10 @@ async fn test_raydium_amm_v4_swap_instruction_structure() {
 
     let swap_ix = &swap_instructions.swap_instructions[0];
     assert_eq!(swap_ix.program_id, RAYDIUM_AMM_V4_PROGRAM);
-    assert!(swap_ix.accounts.len() >= 17, "Raydium AMM v4 swap requires at least 17 accounts");
+    assert!(
+        swap_ix.accounts.len() >= 17,
+        "Raydium AMM v4 swap requires at least 17 accounts"
+    );
 
     let account_pubkeys: Vec<_> = swap_ix.accounts.iter().map(|a| a.pubkey).collect();
     assert!(account_pubkeys.contains(&spl_token::id()));

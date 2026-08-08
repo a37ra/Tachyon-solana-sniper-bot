@@ -15,8 +15,8 @@ use super::{ata, SwapDirection, SwapInstructions, SwapParams};
 use anyhow::{anyhow, bail, Result};
 use solana_instruction::{AccountMeta, Instruction};
 use solana_pubkey::Pubkey;
-use solana_sdk_ids::system_program;
 use solana_sdk::sysvar;
+use solana_sdk_ids::system_program;
 
 pub const PUMP_FUN_PROGRAM: Pubkey =
     solana_pubkey::pubkey!("6EF8rrecthR5Dkzon8Nwu78hRvfX4LctQnUBjWdK8nN2");
@@ -53,7 +53,10 @@ pub struct PumpFunBondingCurve {
 impl PumpFunBondingCurve {
     pub fn from_account_data(data: &[u8], bonding_curve_address: &Pubkey) -> Result<Self> {
         if data.len() < 8 + 32 + 8 * 5 + 1 {
-            bail!("Pump.fun bonding curve data too short: {} bytes", data.len());
+            bail!(
+                "Pump.fun bonding curve data too short: {} bytes",
+                data.len()
+            );
         }
 
         let offset = 8; // discriminator
@@ -121,18 +124,13 @@ pub fn derive_global() -> Pubkey {
 
 /// Derive the bonding curve PDA for a mint.
 pub fn derive_bonding_curve(mint: &Pubkey) -> Pubkey {
-    let (address, _) = Pubkey::find_program_address(
-        &[BONDING_CURVE_SEED, mint.as_ref()],
-        &PUMP_FUN_PROGRAM,
-    );
+    let (address, _) =
+        Pubkey::find_program_address(&[BONDING_CURVE_SEED, mint.as_ref()], &PUMP_FUN_PROGRAM);
     address
 }
 
 /// Build Pump.fun buy/sell instructions.
-pub fn build_swap(
-    params: &SwapParams,
-    curve: &PumpFunBondingCurve,
-) -> Result<SwapInstructions> {
+pub fn build_swap(params: &SwapParams, curve: &PumpFunBondingCurve) -> Result<SwapInstructions> {
     if curve.complete {
         bail!("Bonding curve is complete (graduated) — use Raydium instead");
     }
@@ -152,7 +150,7 @@ pub fn build_swap(
             // Buy: SOL → Token
             let mut data = Vec::with_capacity(8 + 8 + 8);
             data.extend_from_slice(&BUY_DISCRIMINATOR);
-            data.extend_from_slice(&params.amount_in.to_le_bytes());        // max SOL cost
+            data.extend_from_slice(&params.amount_in.to_le_bytes()); // max SOL cost
             data.extend_from_slice(&params.minimum_amount_out.to_le_bytes()); // min tokens out
 
             Instruction {
@@ -177,7 +175,7 @@ pub fn build_swap(
             // Sell: Token → SOL
             let mut data = Vec::with_capacity(8 + 8 + 8);
             data.extend_from_slice(&SELL_DISCRIMINATOR);
-            data.extend_from_slice(&params.amount_in.to_le_bytes());        // token amount to sell
+            data.extend_from_slice(&params.amount_in.to_le_bytes()); // token amount to sell
             data.extend_from_slice(&params.minimum_amount_out.to_le_bytes()); // min SOL out
 
             Instruction {
@@ -228,7 +226,7 @@ mod tests {
             mint: Pubkey::new_unique(),
             associated_bonding_curve: Pubkey::new_unique(),
             virtual_token_reserves: 1_000_000_000_000, // 1M tokens (6 decimals)
-            virtual_sol_reserves: 30_000_000_000,        // 30 SOL
+            virtual_sol_reserves: 30_000_000_000,      // 30 SOL
             real_token_reserves: 500_000_000_000,
             real_sol_reserves: 15_000_000_000,
             token_total_supply: 1_000_000_000_000,

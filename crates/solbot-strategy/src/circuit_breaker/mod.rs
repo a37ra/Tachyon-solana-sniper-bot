@@ -45,7 +45,11 @@ impl CircuitBreaker {
         *entry += loss_pct;
         let current_loss = *entry;
 
-        let warning_threshold = self.warning_thresholds.get(&tier).map(|v| *v).unwrap_or(0.15);
+        let warning_threshold = self
+            .warning_thresholds
+            .get(&tier)
+            .map(|v| *v)
+            .unwrap_or(0.15);
         let limit_threshold = self.limit_thresholds.get(&tier).map(|v| *v).unwrap_or(0.25);
 
         let warning_triggered = current_loss >= warning_threshold;
@@ -81,7 +85,11 @@ impl CircuitBreaker {
 
     pub fn get_status(&self, tier: CapitalTier) -> CircuitBreakerStatus {
         let loss = self.tier_losses.get(&tier).map(|v| *v).unwrap_or(0.0);
-        let warning_threshold = self.warning_thresholds.get(&tier).map(|v| *v).unwrap_or(0.15);
+        let warning_threshold = self
+            .warning_thresholds
+            .get(&tier)
+            .map(|v| *v)
+            .unwrap_or(0.15);
         let limit_threshold = self.limit_thresholds.get(&tier).map(|v| *v).unwrap_or(0.25);
 
         CircuitBreakerStatus {

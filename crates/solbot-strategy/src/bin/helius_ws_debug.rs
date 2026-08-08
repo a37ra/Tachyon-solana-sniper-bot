@@ -12,20 +12,20 @@
 //! - LISTEN_SECONDS  (default: 180)
 //! - MAX_SIGNAL_AGE_SLOTS (default: 30)
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use solana_pubkey::Pubkey;
-use tokio::time::timeout;
 use std::str::FromStr;
+use tokio::time::timeout;
 
 use solbot_strategy::signal::helius_ws_client::{HeliusWsClient, HeliusWsConfig};
-use solbot_strategy::tx_builder::raydium_cpmm::CpmmPoolState;
 use solbot_strategy::tx_builder::meteora_dlmm::DlmmPoolState;
 use solbot_strategy::tx_builder::meteora_dynamic::DynamicAmmPoolState;
 use solbot_strategy::tx_builder::pump_fun::PumpFunBondingCurve;
+use solbot_strategy::tx_builder::raydium_cpmm::CpmmPoolState;
 
 #[derive(Default, Debug)]
 struct Counters {
@@ -56,8 +56,7 @@ async fn main() -> Result<()> {
         .with_max_level(tracing::Level::DEBUG)
         .init();
 
-    let api_key = std::env::var("HELIUS_API_KEY")
-        .context("HELIUS_API_KEY env var is required")?;
+    let api_key = std::env::var("HELIUS_API_KEY").context("HELIUS_API_KEY env var is required")?;
     let listen_secs: u64 = std::env::var("LISTEN_SECONDS")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -83,9 +82,9 @@ async fn main() -> Result<()> {
         Pubkey::from_str("675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8")?, // Raydium AMM v4
         Pubkey::from_str("CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C")?, // Raydium CP-MM
         Pubkey::from_str("CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK")?, // Raydium CLMM
-        Pubkey::from_str("LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo")?, // Meteora DLMM
-        Pubkey::from_str("cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG")?, // Meteora Dynamic AMM v2
-        Pubkey::from_str("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P")?, // Pump.fun
+        Pubkey::from_str("LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo")?,  // Meteora DLMM
+        Pubkey::from_str("cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG")?,  // Meteora Dynamic AMM v2
+        Pubkey::from_str("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P")?,  // Pump.fun
     ];
 
     println!("Subscribing to {} program IDs:", program_ids.len());
@@ -251,15 +250,33 @@ async fn main() -> Result<()> {
     println!("  Raydium AMM v4        : {}", counters.raydium_amm_v4);
     println!("  Raydium CP-MM         : {}", counters.raydium_cpmm);
     println!("  Raydium CLMM          : {}", counters.raydium_clmm);
-    println!("  Meteora DLMM          : {} (received: {}, parsed: {}, rejected: {})", 
-        counters.meteora_dlmm, counters.meteora_dlmm_received, counters.meteora_dlmm_parsed, counters.meteora_dlmm_rejected);
-    println!("  Meteora Dynamic AMM   : {} (received: {}, parsed: {}, rejected: {})", 
-        counters.meteora_dynamic, counters.meteora_dynamic_received, counters.meteora_dynamic_parsed, counters.meteora_dynamic_rejected);
-    println!("  Pump.fun              : {} (received: {}, parsed: {}, rejected: {})", 
-        counters.pump_fun, counters.pump_fun_received, counters.pump_fun_parsed, counters.pump_fun_rejected);
+    println!(
+        "  Meteora DLMM          : {} (received: {}, parsed: {}, rejected: {})",
+        counters.meteora_dlmm,
+        counters.meteora_dlmm_received,
+        counters.meteora_dlmm_parsed,
+        counters.meteora_dlmm_rejected
+    );
+    println!(
+        "  Meteora Dynamic AMM   : {} (received: {}, parsed: {}, rejected: {})",
+        counters.meteora_dynamic,
+        counters.meteora_dynamic_received,
+        counters.meteora_dynamic_parsed,
+        counters.meteora_dynamic_rejected
+    );
+    println!(
+        "  Pump.fun              : {} (received: {}, parsed: {}, rejected: {})",
+        counters.pump_fun,
+        counters.pump_fun_received,
+        counters.pump_fun_parsed,
+        counters.pump_fun_rejected
+    );
     println!("  Unparsed/unknown      : {}", counters.unparsed);
     println!("  Dropped (stale)       : {}", counters.stale_dropped);
-    println!("  Latest cached slot    : {}", latest_slot.load(Ordering::Relaxed));
+    println!(
+        "  Latest cached slot    : {}",
+        latest_slot.load(Ordering::Relaxed)
+    );
     println!("  RPC calls made        : 0 (NO THROTTLE)");
 
     match result {
@@ -269,7 +286,10 @@ async fn main() -> Result<()> {
             return Err(e);
         }
         Err(_) => {
-            println!("\n⏱️  Listen window ({}s) elapsed — this is expected, not a failure.", listen_secs);
+            println!(
+                "\n⏱️  Listen window ({}s) elapsed — this is expected, not a failure.",
+                listen_secs
+            );
         }
     }
 

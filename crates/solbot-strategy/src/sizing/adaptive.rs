@@ -17,7 +17,7 @@ impl AdaptiveSizer {
 
     pub fn add_trade_result(&mut self, result: TradeResult) {
         self.trade_history.push(result);
-        
+
         if self.trade_history.len() > self.calibration_window {
             self.trade_history.remove(0);
         }
@@ -28,19 +28,25 @@ impl AdaptiveSizer {
             return None;
         }
 
-        let wins: f64 = self.trade_history.iter()
+        let wins: f64 = self
+            .trade_history
+            .iter()
             .filter(|t| t.pnl_pct > 0.0)
             .count() as f64;
-        
+
         let total = self.trade_history.len() as f64;
         let win_rate = wins / total;
 
-        let winning_trades: Vec<f64> = self.trade_history.iter()
+        let winning_trades: Vec<f64> = self
+            .trade_history
+            .iter()
             .filter(|t| t.pnl_pct > 0.0)
             .map(|t| t.pnl_pct)
             .collect();
-        
-        let losing_trades: Vec<f64> = self.trade_history.iter()
+
+        let losing_trades: Vec<f64> = self
+            .trade_history
+            .iter()
             .filter(|t| t.pnl_pct <= 0.0)
             .map(|t| t.pnl_pct.abs())
             .collect();
@@ -65,19 +71,25 @@ impl AdaptiveSizer {
             return None;
         }
 
-        let wins: f64 = self.trade_history.iter()
+        let wins: f64 = self
+            .trade_history
+            .iter()
             .filter(|t| t.pnl_pct > 0.0)
             .count() as f64;
-        
+
         let total = self.trade_history.len() as f64;
         let win_rate = wins / total;
 
-        let winning_trades: Vec<f64> = self.trade_history.iter()
+        let winning_trades: Vec<f64> = self
+            .trade_history
+            .iter()
             .filter(|t| t.pnl_pct > 0.0)
             .map(|t| t.pnl_pct)
             .collect();
-        
-        let losing_trades: Vec<f64> = self.trade_history.iter()
+
+        let losing_trades: Vec<f64> = self
+            .trade_history
+            .iter()
             .filter(|t| t.pnl_pct <= 0.0)
             .map(|t| t.pnl_pct.abs())
             .collect();

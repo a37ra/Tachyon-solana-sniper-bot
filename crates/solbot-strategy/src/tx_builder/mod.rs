@@ -17,10 +17,10 @@ pub mod raydium_clmm;
 pub mod raydium_cpmm;
 
 use anyhow::Result;
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use solana_instruction::Instruction;
 use solana_pubkey::Pubkey;
 use solana_transaction::Transaction;
-use base64::{Engine as _, engine::general_purpose::STANDARD};
 
 /// Direction of a swap from the bot's perspective.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -156,6 +156,9 @@ mod tests {
         // 100% slippage
         assert_eq!(apply_slippage(1000, 10000), 0);
         // overflow protection
-        assert_eq!(apply_slippage(u64::MAX, 500), (u64::MAX as u128 * 9500 / 10000) as u64);
+        assert_eq!(
+            apply_slippage(u64::MAX, 500),
+            (u64::MAX as u128 * 9500 / 10000) as u64
+        );
     }
 }

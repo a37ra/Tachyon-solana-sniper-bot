@@ -3,19 +3,19 @@
 //! This test builds a Meteora DLMM swap transaction and simulates it
 //! on devnet to verify the transaction would execute successfully.
 
-use std::str::FromStr;
-use std::sync::Arc;
 use anyhow::{Context, Result};
 use solana_pubkey::Pubkey;
 use solana_rpc_client::rpc_client::RpcClient;
 use solana_rpc_client_api::config::RpcSimulateTransactionConfig;
 use solana_sdk::commitment_config::CommitmentConfig;
 use solana_sdk::transaction::Transaction;
+use std::str::FromStr;
+use std::sync::Arc;
 
 use solbot_strategy::tx_builder::{
-    SwapDirection, SwapParams,
-    meteora_dlmm::{build_swap as meteora_dlmm_build_swap, DlmmPoolState},
     blockhash_cache::BlockhashCache,
+    meteora_dlmm::{build_swap as meteora_dlmm_build_swap, DlmmPoolState},
+    SwapDirection, SwapParams,
 };
 
 /// Mainnet RPC URL
@@ -93,7 +93,10 @@ async fn test_meteora_dlmm_simulate_transaction() -> Result<()> {
     println!("✅ Built swap instructions");
     println!("  Setup: {}", swap_instructions.setup_instructions.len());
     println!("  Swap: {}", swap_instructions.swap_instructions.len());
-    println!("  Cleanup: {}", swap_instructions.cleanup_instructions.len());
+    println!(
+        "  Cleanup: {}",
+        swap_instructions.cleanup_instructions.len()
+    );
 
     // Build unsigned transaction
     let (unsigned_tx, tx_base64) = solbot_strategy::tx_builder::build_unsigned_transaction(
@@ -102,7 +105,8 @@ async fn test_meteora_dlmm_simulate_transaction() -> Result<()> {
         1000,    // Priority fee micro-lamports
         &fee_payer,
         recent_blockhash,
-    ).context("Failed to build unsigned transaction")?;
+    )
+    .context("Failed to build unsigned transaction")?;
 
     println!("✅ Transaction built:");
     println!("  Data length: {} bytes", tx_base64.len());
@@ -123,16 +127,20 @@ async fn test_meteora_dlmm_bin_array_calculation() -> Result<()> {
 
     // Test bin array index calculation
     let bin_id = 1000;
-    
-    let bin_array_index = solbot_strategy::tx_builder::meteora_dlmm::bin_array_index_from_bin_id(bin_id);
-    
+
+    let bin_array_index =
+        solbot_strategy::tx_builder::meteora_dlmm::bin_array_index_from_bin_id(bin_id);
+
     println!("✅ Bin array index calculation:");
     println!("  Bin ID: {}", bin_id);
     println!("  Bin array index: {}", bin_array_index);
 
     // Verify the calculation is correct (Meteora uses 70 bins per array)
     let expected_index = bin_id as i64 / 70;
-    assert_eq!(bin_array_index, expected_index, "Bin array index calculation incorrect");
+    assert_eq!(
+        bin_array_index, expected_index,
+        "Bin array index calculation incorrect"
+    );
 
     println!("✅ Bin array calculation verified");
     Ok(())

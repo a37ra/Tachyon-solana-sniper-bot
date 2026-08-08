@@ -8,8 +8,8 @@
 
 use anyhow::Result;
 use solana_instruction::Instruction;
-use solana_pubkey::Pubkey;
 use solana_program::system_instruction;
+use solana_pubkey::Pubkey;
 use spl_associated_token_account::get_associated_token_address;
 use spl_associated_token_account::instruction::create_associated_token_account_idempotent;
 
@@ -61,15 +61,13 @@ pub fn wrap_sol_instructions(
 /// Build instruction to close a WSOL account and reclaim rent + remaining balance.
 ///
 /// Used after a sell swap completes (output is WSOL → unwrap to native SOL).
-pub fn close_wsol_account_instruction(
-    wallet: &Pubkey,
-) -> Result<Instruction> {
+pub fn close_wsol_account_instruction(wallet: &Pubkey) -> Result<Instruction> {
     let wsol_ata = derive_ata(wallet, &WSOL_MINT);
     Ok(spl_token::instruction::close_account(
         &spl_token::id(),
         &wsol_ata,
-        wallet,   // destination for remaining lamports
-        wallet,   // authority
+        wallet, // destination for remaining lamports
+        wallet, // authority
         &[],
     )?)
 }
@@ -82,9 +80,7 @@ pub fn ensure_token_ata_instructions(
     token_mint: &Pubkey,
 ) -> (Pubkey, Vec<Instruction>) {
     let ata = derive_ata(wallet, token_mint);
-    let instructions = vec![
-        create_ata_instruction_if_needed(wallet, wallet, token_mint),
-    ];
+    let instructions = vec![create_ata_instruction_if_needed(wallet, wallet, token_mint)];
     (ata, instructions)
 }
 

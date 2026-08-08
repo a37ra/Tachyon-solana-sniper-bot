@@ -3,13 +3,13 @@
 //! Subscribes to Raydium program account updates via Geyser gRPC
 //! with automatic reconnection and exponential backoff.
 
-use solbot_common::types::Signal;
-use crate::signal::geyser_client::{GeyserClient, GeyserConfig, AccountUpdate};
+use crate::signal::geyser_client::{AccountUpdate, GeyserClient, GeyserConfig};
 use crate::signal::helius_ws_client::{HeliusWsClient, HeliusWsConfig};
 use crate::signal::signal_validator::SignalValidator;
 use anyhow::{Context, Result};
 use chrono::Utc;
 use solana_pubkey::Pubkey;
+use solbot_common::types::Signal;
 use std::str::FromStr;
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -34,9 +34,9 @@ impl Default for RaydiumListener {
 
 impl RaydiumListener {
     pub fn new() -> Self {
-        let signal_source = std::env::var("SIGNAL_SOURCE")
-            .unwrap_or_else(|_| "geyser_grpc".to_string());
-        
+        let signal_source =
+            std::env::var("SIGNAL_SOURCE").unwrap_or_else(|_| "geyser_grpc".to_string());
+
         Self {
             geyser_config: GeyserConfig::default(),
             helius_ws_config: HeliusWsConfig::default(),
@@ -46,9 +46,9 @@ impl RaydiumListener {
     }
 
     pub fn with_geyser_config(config: GeyserConfig) -> Self {
-        let signal_source = std::env::var("SIGNAL_SOURCE")
-            .unwrap_or_else(|_| "geyser_grpc".to_string());
-        
+        let signal_source =
+            std::env::var("SIGNAL_SOURCE").unwrap_or_else(|_| "geyser_grpc".to_string());
+
         Self {
             geyser_config: config,
             helius_ws_config: HeliusWsConfig::default(),
@@ -58,9 +58,9 @@ impl RaydiumListener {
     }
 
     pub fn with_validator(config: GeyserConfig, validator: Arc<SignalValidator>) -> Self {
-        let signal_source = std::env::var("SIGNAL_SOURCE")
-            .unwrap_or_else(|_| "geyser_grpc".to_string());
-        
+        let signal_source =
+            std::env::var("SIGNAL_SOURCE").unwrap_or_else(|_| "geyser_grpc".to_string());
+
         Self {
             geyser_config: config,
             helius_ws_config: HeliusWsConfig::default(),
@@ -84,9 +84,7 @@ impl RaydiumListener {
     }
 
     /// Subscribe to Raydium pool creation events across all 3 variants.
-    pub async fn subscribe_to_pool_creation(
-        &self,
-    ) -> Result<mpsc::Receiver<Signal>> {
+    pub async fn subscribe_to_pool_creation(&self) -> Result<mpsc::Receiver<Signal>> {
         let (tx, rx) = mpsc::channel(100);
         let geyser_config = self.geyser_config.clone();
         let helius_ws_config = self.helius_ws_config.clone();
@@ -105,13 +103,17 @@ impl RaydiumListener {
             let mut account_updates = if signal_source == "helius_ws" {
                 info!("Starting Raydium pool creation listener via Helius WebSocket");
                 let helius_client = HeliusWsClient::new(helius_ws_config);
-                helius_client.subscribe_to_programs(program_ids).await
+                helius_client
+                    .subscribe_to_programs(program_ids)
+                    .await
                     .context("Failed to subscribe to Helius WebSocket")
                     .unwrap()
             } else {
                 info!("Starting Raydium pool creation listener via Geyser gRPC");
                 let geyser_client = GeyserClient::new(geyser_config);
-                geyser_client.subscribe_to_programs(program_ids, None, false).await
+                geyser_client
+                    .subscribe_to_programs(program_ids, None, false)
+                    .await
                     .context("Failed to subscribe to Geyser gRPC")
                     .unwrap()
             };
@@ -149,8 +151,8 @@ impl RaydiumListener {
 
     /// Parse Raydium account update to extract pool creation signal.
     fn parse_raydium_account(update: AccountUpdate) -> Option<Signal> {
-        let signal_source = std::env::var("SIGNAL_SOURCE")
-            .unwrap_or_else(|_| "geyser_grpc".to_string());
+        let signal_source =
+            std::env::var("SIGNAL_SOURCE").unwrap_or_else(|_| "geyser_grpc".to_string());
         let account_data = update.data;
         let owner_str = update.owner.to_string();
 
@@ -163,7 +165,7 @@ impl RaydiumListener {
                     dex_program: update.owner.to_string(),
                     signal_source: signal_source.clone(),
                     slot: update.slot,
-                    received_at: Utc::now().timestamp_millis() as u64,
+                    received_at: update.timestamp_ms,
                 });
             }
         }
@@ -178,7 +180,7 @@ impl RaydiumListener {
                     dex_program: update.owner.to_string(),
                     signal_source: signal_source.clone(),
                     slot: update.slot,
-                    received_at: Utc::now().timestamp_millis() as u64,
+                    received_at: update.timestamp_ms,
                 });
             }
         }
@@ -193,7 +195,7 @@ impl RaydiumListener {
                     dex_program: update.owner.to_string(),
                     signal_source: signal_source.clone(),
                     slot: update.slot,
-                    received_at: Utc::now().timestamp_millis() as u64,
+                    received_at: update.timestamp_ms,
                 });
             }
         }
