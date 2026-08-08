@@ -10,11 +10,11 @@ use solbot_common::types::Signal;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-// TEMP: Increased for current non-co-located network conditions.
-// Current measured RPC RTT is around 120-130ms, so 80ms is too aggressive
-// for real Helius/remote RPC traffic. Reduce back to 80ms after moving the
-// bot nearer to the RPC provider or colocating with a low-latency endpoint.
-const PRE_BUY_CHECK_RPC_TIMEOUT_MS: u64 = 200;
+// TEMP: Increased for current non-co-located network conditions (200 → 300ms).
+// Current measured RPC RTT is around 120-130ms, but single RPC calls are timing out at 200ms.
+// This suggests actual RTT is worse than measured or network is unstable.
+// Reduce back to 200ms (or 80ms after co-location) once network stabilizes.
+const PRE_BUY_CHECK_RPC_TIMEOUT_MS: u64 = 300;
 
 /// Context holding pre-fetched account data to avoid redundant RPC calls.
 /// This optimization reduces latency by:
@@ -383,7 +383,11 @@ pub async fn run_pre_buy_checks(signal: &Signal, config: &RiskGateConfig) -> Ris
                 match PreBuyCheckContext::from_ws_update(&rpc, &signal.mint, pool_data.clone(), pool_owner_pk).await {
                     Ok(ctx) => ctx,
                     Err(e) => {
-                        tracing::warn!("Failed to build pre-buy context from WS update: {}, falling back to RPC fetch", e);
+                        tracing::warn!(
+                            dex_program = %signal.dex_program,
+                            pool_owner = %pool_owner_str,
+                            "Failed to build pre-buy context from WS update: {}, falling back to RPC fetch", e
+                        );
                         match PreBuyCheckContext::fetch(&rpc, &signal.mint, &signal.pool_address, None).await {
                             Ok(ctx2) => ctx2,
                             Err(e2) => {
@@ -400,7 +404,7 @@ pub async fn run_pre_buy_checks(signal: &Signal, config: &RiskGateConfig) -> Ris
                                         &signal.mint,
                                         &signal.pool_address,
                                         config.simulate_size_lamports,
-                                        &config.rpc_url
+                                        config.rpc.clone()
                                     )
                                 );
 
@@ -464,7 +468,7 @@ pub async fn run_pre_buy_checks(signal: &Signal, config: &RiskGateConfig) -> Ris
                                 &signal.mint,
                                 &signal.pool_address,
                                 config.simulate_size_lamports,
-                                &config.rpc_url
+                                config.rpc.clone()
                             )
                         );
 
@@ -528,7 +532,7 @@ pub async fn run_pre_buy_checks(signal: &Signal, config: &RiskGateConfig) -> Ris
                             &signal.mint,
                             &signal.pool_address,
                             config.simulate_size_lamports,
-                            &config.rpc_url
+                            config.rpc.clone()
                         )
                     );
 
@@ -593,7 +597,7 @@ pub async fn run_pre_buy_checks(signal: &Signal, config: &RiskGateConfig) -> Ris
             &signal.mint,
             &signal.pool_address,
             config.simulate_size_lamports,
-            &config.rpc_url
+            config.rpc.clone()
         )
     );
 
@@ -680,8 +684,9 @@ pub async fn run_pre_buy_checks_with_timeout(
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct RiskGateConfig {
+    pub rpc: std::sync::Arc<solana_rpc_client::nonblocking::rpc_client::RpcClient>,
     pub rpc_url: String,
     pub mint_freeze_timeout_ms: u64,
     pub lp_lock_timeout_ms: u64,
@@ -698,12 +703,15 @@ pub struct RiskGateConfig {
 impl Default for RiskGateConfig {
     fn default() -> Self {
         Self {
+            rpc: std::sync::Arc::new(solana_rpc_client::nonblocking::rpc_client::RpcClient::new(
+                "https://api.mainnet-beta.solana.com".to_string(),
+            )),
             rpc_url: "https://api.mainnet-beta.solana.com".to_string(),
             mint_freeze_timeout_ms: 10,     // Further optimized: 15 → 10
             lp_lock_timeout_ms: 15,         // Further optimized: 20 → 15
             token2022_timeout_ms: 10,       // Further optimized: 15 → 10
             simulate_sell_timeout_ms: 30,   // Further optimized: 50 → 30
-            pre_buy_checks_timeout_ms: 300, // Temporary paper-trading default; TODO reduce to 150ms after batch RPC optimization
+            pre_buy_checks_timeout_ms: 3000, // Increased to 3000ms to account for simulate_sell RPC latency with connection pooling
             simulate_size_lamports: 100_000_000, // Reduced: 1B → 100M (faster simulation)
             token2022_blocklist: vec![
                 "transferFee".to_string(),

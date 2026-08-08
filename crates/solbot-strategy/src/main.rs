@@ -189,7 +189,9 @@ async fn process_signals(
     use std::sync::Arc as StdArc;
 
     let signal_count = StdArc::new(AtomicUsize::new(0));
-    let max_concurrent_signals = 30;
+    // TEMP: Reduced from 30 to 5 due to public Solana RPC rate limits (100 req/10s per IP)
+    // See notes.md for HFT Infrastructure TODO checklist for private RPC migration
+    let max_concurrent_signals = 5;
     let semaphore = StdArc::new(tokio::sync::Semaphore::new(max_concurrent_signals));
 
     while let Some(signal) = signal_rx.recv().await {
@@ -200,6 +202,21 @@ async fn process_signals(
         } else {
             0.0
         };
+
+        // TEMP: Load shedding - drop stale signals to conserve RPC quota for public endpoints
+        // See notes.md for HFT Infrastructure TODO checklist for private RPC migration
+        const MAX_SIGNAL_AGE_MS: f64 = 300.0;
+        if inbound_latency > MAX_SIGNAL_AGE_MS {
+            let seq_num = signal_count.fetch_add(1, Ordering::SeqCst);
+            tracing::warn!(
+                "[SIGNAL DROPPED - STALE] seq={}, mint={}, inbound_age_ms={:.2} > {}ms threshold",
+                seq_num,
+                signal.mint,
+                inbound_latency,
+                MAX_SIGNAL_AGE_MS
+            );
+            continue;
+        }
 
         let seq_num = signal_count.fetch_add(1, Ordering::SeqCst);
         tracing::info!(
@@ -259,9 +276,13 @@ async fn process_signals(
                 metrics.inbound_stream_latency_ms = inbound_latency;
 
                 let mut risk_config = RiskGateConfig::default();
-                risk_config.rpc_url = rpc_clone
+                let rpc_url = rpc_clone
                     .clone()
                     .unwrap_or_else(|| "https://api.mainnet-beta.solana.com".to_string());
+                risk_config.rpc_url = rpc_url.clone();
+                risk_config.rpc = std::sync::Arc::new(
+                    solana_rpc_client::nonblocking::rpc_client::RpcClient::new(rpc_url)
+                );
 
                 let timer1 = PhaseTimer::start();
                 let _user_key = solana_sdk::pubkey::Pubkey::new_unique();

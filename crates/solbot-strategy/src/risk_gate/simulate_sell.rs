@@ -14,8 +14,9 @@ use crate::tx_builder::{
     SwapDirection, SwapInstructions, SwapParams,
 };
 use solana_pubkey::Pubkey;
-use solana_rpc_client::rpc_client::RpcClient;
+use solana_rpc_client::nonblocking::rpc_client::RpcClient;
 use solana_transaction::Transaction;
+use std::sync::Arc;
 use std::time::Duration;
 
 /// Maximum simulation time in milliseconds (aggressively optimized: 80ms → 30ms)
@@ -27,13 +28,9 @@ pub async fn check(
     mint: &str,
     pool_address: &str,
     size_lamports: u64,
-    rpc_url: &str,
+    rpc: Arc<RpcClient>,
 ) -> CheckResult {
     let start = std::time::Instant::now();
-
-    let rpc = std::sync::Arc::new(solana_rpc_client::nonblocking::rpc_client::RpcClient::new(
-        rpc_url.to_string(),
-    ));
     let mint_pubkey = match Pubkey::try_from(mint) {
         Ok(pk) => pk,
         Err(e) => {
