@@ -80,22 +80,26 @@ impl Default for BundleConfig {
             regions: vec![
                 JitoRegion {
                     name: "amsterdam".to_string(),
-                    http_endpoint: "https://amsterdam.mainnet.block-engine.jito.wtf/api/v1/bundles".to_string(),
+                    http_endpoint: "https://amsterdam.mainnet.block-engine.jito.wtf/api/v1/bundles"
+                        .to_string(),
                     grpc_endpoint: "amsterdam.mainnet.block-engine.jito.wtf:443".to_string(),
                 },
                 JitoRegion {
                     name: "frankfurt".to_string(),
-                    http_endpoint: "https://frankfurt.mainnet.block-engine.jito.wtf/api/v1/bundles".to_string(),
+                    http_endpoint: "https://frankfurt.mainnet.block-engine.jito.wtf/api/v1/bundles"
+                        .to_string(),
                     grpc_endpoint: "frankfurt.mainnet.block-engine.jito.wtf:443".to_string(),
                 },
                 JitoRegion {
                     name: "ny".to_string(),
-                    http_endpoint: "https://ny.mainnet.block-engine.jito.wtf/api/v1/bundles".to_string(),
+                    http_endpoint: "https://ny.mainnet.block-engine.jito.wtf/api/v1/bundles"
+                        .to_string(),
                     grpc_endpoint: "ny.mainnet.block-engine.jito.wtf:443".to_string(),
                 },
                 JitoRegion {
                     name: "tokyo".to_string(),
-                    http_endpoint: "https://tokyo.mainnet.block-engine.jito.wtf/api/v1/bundles".to_string(),
+                    http_endpoint: "https://tokyo.mainnet.block-engine.jito.wtf/api/v1/bundles"
+                        .to_string(),
                     grpc_endpoint: "tokyo.mainnet.block-engine.jito.wtf:443".to_string(),
                 },
             ],
@@ -115,7 +119,8 @@ pub struct JitoClient {
 
 impl JitoClient {
     pub fn new(config: BundleConfig) -> Self {
-        let http_client = hyper_util::client::legacy::Client::builder(TokioExecutor::new()).build_http();
+        let http_client =
+            hyper_util::client::legacy::Client::builder(TokioExecutor::new()).build_http();
         Self {
             config,
             selected_region: None,
@@ -142,7 +147,11 @@ impl JitoClient {
         let best_region = ping_results
             .into_iter()
             .filter(|r| r.success)
-            .min_by(|a, b| a.rtt_ms.partial_cmp(&b.rtt_ms).unwrap_or(std::cmp::Ordering::Equal))
+            .min_by(|a, b| {
+                a.rtt_ms
+                    .partial_cmp(&b.rtt_ms)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
             .ok_or_else(|| anyhow!("No Jito region reachable"))?;
 
         tracing::info!(
@@ -194,11 +203,7 @@ impl JitoClient {
 
     /// Create a tip instruction for Jito.
     fn create_tip_instruction(&self, payer: &Pubkey, tip_amount: u64) -> Instruction {
-        system_instruction::transfer(
-            payer,
-            &self.config.tip_config.tip_account,
-            tip_amount,
-        )
+        system_instruction::transfer(payer, &self.config.tip_config.tip_account, tip_amount)
     }
 
     /// Build a Jito bundle: swap transaction + separate tip transaction.
@@ -239,7 +244,8 @@ impl JitoClient {
 
         // Extract host and port for TCP ping
         let host_port = grpc_endpoint.clone();
-        let ping_future = tokio::time::timeout(Duration::from_secs(3), TcpStream::connect(&host_port));
+        let ping_future =
+            tokio::time::timeout(Duration::from_secs(3), TcpStream::connect(&host_port));
 
         match ping_future.await {
             Ok(Ok(_stream)) => {
@@ -290,7 +296,11 @@ impl JitoClient {
             }
         }
 
-        results.sort_by(|a, b| a.rtt_ms.partial_cmp(&b.rtt_ms).unwrap_or(std::cmp::Ordering::Equal));
+        results.sort_by(|a, b| {
+            a.rtt_ms
+                .partial_cmp(&b.rtt_ms)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         results
     }
 
@@ -355,7 +365,11 @@ impl JitoClient {
     /// Poll bundle status until confirmation or timeout.
     async fn poll_bundle_status(&mut self, bundle_id: &str) -> Result<SubmitResult> {
         let region = self.get_or_select_region().await?;
-        let status_url = format!("{}/{}", region.http_endpoint.trim_end_matches("/bundles"), bundle_id);
+        let status_url = format!(
+            "{}/{}",
+            region.http_endpoint.trim_end_matches("/bundles"),
+            bundle_id
+        );
 
         let start = Instant::now();
         let timeout = Duration::from_millis(self.config.poll_timeout_ms);
@@ -378,10 +392,13 @@ impl JitoClient {
                     let response_text = String::from_utf8(body.to_vec())?;
 
                     if status.is_success() {
-                        let response_json: serde_json::Value = serde_json::from_str(&response_text)?;
+                        let response_json: serde_json::Value =
+                            serde_json::from_str(&response_text)?;
 
                         // Check if bundle is confirmed
-                        if let Some(status) = response_json.get("result").and_then(|r| r.get("status")) {
+                        if let Some(status) =
+                            response_json.get("result").and_then(|r| r.get("status"))
+                        {
                             if status.as_str() == Some("confirmed") {
                                 let signature = response_json
                                     .get("result")
@@ -515,18 +532,22 @@ mod tests {
         swap_tx.message.recent_blockhash = Hash::new_unique();
 
         let bundle = client.build_bundle(swap_tx.clone(), &payer).unwrap();
-        assert_eq!(bundle.len(), 2, "Bundle must contain exactly 2 transactions");
+        assert_eq!(
+            bundle.len(),
+            2,
+            "Bundle must contain exactly 2 transactions"
+        );
 
         // Both transactions must share the same blockhash
         assert_eq!(
-            bundle[0].message.recent_blockhash,
-            bundle[1].message.recent_blockhash,
+            bundle[0].message.recent_blockhash, bundle[1].message.recent_blockhash,
             "swap_tx and tip_tx must share the same blockhash"
         );
 
         // Tip tx must have exactly one instruction (SOL transfer)
         assert_eq!(
-            bundle[1].message.instructions.len(), 1,
+            bundle[1].message.instructions.len(),
+            1,
             "tip_tx must contain exactly one transfer instruction"
         );
     }

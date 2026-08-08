@@ -3,13 +3,13 @@
 //! Subscribes to Pump.fun program account updates via Geyser gRPC
 //! to detect new token launches and Raydium migration events.
 
-use solbot_common::types::Signal;
-use crate::signal::geyser_client::{GeyserClient, GeyserConfig, AccountUpdate};
+use crate::signal::geyser_client::{AccountUpdate, GeyserClient, GeyserConfig};
 use crate::signal::helius_ws_client::{HeliusWsClient, HeliusWsConfig};
 use crate::signal::signal_validator::SignalValidator;
 use anyhow::{Context, Result};
 use chrono::Utc;
 use solana_pubkey::Pubkey;
+use solbot_common::types::Signal;
 use std::str::FromStr;
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -32,9 +32,9 @@ impl Default for PumpFunListener {
 
 impl PumpFunListener {
     pub fn new() -> Self {
-        let signal_source = std::env::var("SIGNAL_SOURCE")
-            .unwrap_or_else(|_| "geyser_grpc".to_string());
-        
+        let signal_source =
+            std::env::var("SIGNAL_SOURCE").unwrap_or_else(|_| "geyser_grpc".to_string());
+
         Self {
             geyser_config: GeyserConfig::default(),
             helius_ws_config: HeliusWsConfig::default(),
@@ -44,9 +44,9 @@ impl PumpFunListener {
     }
 
     pub fn with_geyser_config(config: GeyserConfig) -> Self {
-        let signal_source = std::env::var("SIGNAL_SOURCE")
-            .unwrap_or_else(|_| "geyser_grpc".to_string());
-        
+        let signal_source =
+            std::env::var("SIGNAL_SOURCE").unwrap_or_else(|_| "geyser_grpc".to_string());
+
         Self {
             geyser_config: config,
             helius_ws_config: HeliusWsConfig::default(),
@@ -56,9 +56,9 @@ impl PumpFunListener {
     }
 
     pub fn with_validator(config: GeyserConfig, validator: Arc<SignalValidator>) -> Self {
-        let signal_source = std::env::var("SIGNAL_SOURCE")
-            .unwrap_or_else(|_| "geyser_grpc".to_string());
-        
+        let signal_source =
+            std::env::var("SIGNAL_SOURCE").unwrap_or_else(|_| "geyser_grpc".to_string());
+
         Self {
             geyser_config: config,
             helius_ws_config: HeliusWsConfig::default(),
@@ -82,9 +82,7 @@ impl PumpFunListener {
     }
 
     /// Subscribe to new bonding curve creation events.
-    pub async fn subscribe_to_bonding_curve(
-        &self,
-    ) -> Result<mpsc::Receiver<Signal>> {
+    pub async fn subscribe_to_bonding_curve(&self) -> Result<mpsc::Receiver<Signal>> {
         let (tx, rx) = mpsc::channel(100);
         let geyser_config = self.geyser_config.clone();
         let helius_ws_config = self.helius_ws_config.clone();
@@ -98,13 +96,17 @@ impl PumpFunListener {
             let mut account_updates = if signal_source == "helius_ws" {
                 info!("Starting Pump.fun bonding curve listener via Helius WebSocket");
                 let helius_client = HeliusWsClient::new(helius_ws_config);
-                helius_client.subscribe_to_programs(program_ids).await
+                helius_client
+                    .subscribe_to_programs(program_ids)
+                    .await
                     .context("Failed to subscribe to Helius WebSocket")
                     .unwrap()
             } else {
                 info!("Starting Pump.fun bonding curve listener via Geyser gRPC");
                 let geyser_client = GeyserClient::new(geyser_config);
-                geyser_client.subscribe_to_programs(program_ids, None, false).await
+                geyser_client
+                    .subscribe_to_programs(program_ids, None, false)
+                    .await
                     .context("Failed to subscribe to Geyser gRPC")
                     .unwrap()
             };
@@ -142,8 +144,8 @@ impl PumpFunListener {
 
     /// Parse Pump.fun account update to extract bonding curve signal.
     fn parse_pump_fun_account(update: AccountUpdate) -> Option<Signal> {
-        let signal_source = std::env::var("SIGNAL_SOURCE")
-            .unwrap_or_else(|_| "geyser_grpc".to_string());
+        let signal_source =
+            std::env::var("SIGNAL_SOURCE").unwrap_or_else(|_| "geyser_grpc".to_string());
         let account_data = update.data;
 
         // Pump.fun bonding curve data structure:
@@ -162,7 +164,7 @@ impl PumpFunListener {
                         dex_program: update.owner.to_string(),
                         signal_source: "pump_fun_migration".to_string(),
                         slot: update.slot,
-                        received_at: Utc::now().timestamp_millis() as u64,
+                        received_at: update.timestamp_ms,
                     });
                 }
             }
@@ -176,7 +178,7 @@ impl PumpFunListener {
                         dex_program: update.owner.to_string(),
                         signal_source: signal_source.clone(),
                         slot: update.slot,
-                        received_at: Utc::now().timestamp_millis() as u64,
+                        received_at: update.timestamp_ms,
                     });
                 }
             }

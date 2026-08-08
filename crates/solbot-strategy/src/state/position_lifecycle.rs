@@ -110,12 +110,24 @@ pub fn get_valid_transition(from: &PositionStatus, to: &PositionStatus) -> Optio
         (PositionStatus::Tp2Filled, PositionStatus::Closing) => Some(Transition::Tp2ToClosing),
         (PositionStatus::Tp3Filled, PositionStatus::Closing) => Some(Transition::Tp3ToClosing),
         (PositionStatus::Closing, PositionStatus::Closed) => Some(Transition::ClosingToClosed),
-        (PositionStatus::Open, PositionStatus::StuckManualInterventionRequired) => Some(Transition::ToStuck),
-        (PositionStatus::Tp1Filled, PositionStatus::StuckManualInterventionRequired) => Some(Transition::ToStuck),
-        (PositionStatus::Tp2Filled, PositionStatus::StuckManualInterventionRequired) => Some(Transition::ToStuck),
-        (PositionStatus::Tp3Filled, PositionStatus::StuckManualInterventionRequired) => Some(Transition::ToStuck),
-        (PositionStatus::Closing, PositionStatus::StuckManualInterventionRequired) => Some(Transition::ToStuck),
-        (PositionStatus::StuckManualInterventionRequired, PositionStatus::Closed) => Some(Transition::StuckToClosed),
+        (PositionStatus::Open, PositionStatus::StuckManualInterventionRequired) => {
+            Some(Transition::ToStuck)
+        }
+        (PositionStatus::Tp1Filled, PositionStatus::StuckManualInterventionRequired) => {
+            Some(Transition::ToStuck)
+        }
+        (PositionStatus::Tp2Filled, PositionStatus::StuckManualInterventionRequired) => {
+            Some(Transition::ToStuck)
+        }
+        (PositionStatus::Tp3Filled, PositionStatus::StuckManualInterventionRequired) => {
+            Some(Transition::ToStuck)
+        }
+        (PositionStatus::Closing, PositionStatus::StuckManualInterventionRequired) => {
+            Some(Transition::ToStuck)
+        }
+        (PositionStatus::StuckManualInterventionRequired, PositionStatus::Closed) => {
+            Some(Transition::StuckToClosed)
+        }
         _ => None,
     }
 }
@@ -159,14 +171,13 @@ impl PositionLifecycle {
         new_status: PositionStatus,
         tx_signature: Option<String>,
     ) -> Result<Transition> {
-        let transition = get_valid_transition(&position.status, &new_status)
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "Invalid transition from {:?} to {:?}",
-                    position.status,
-                    new_status
-                )
-            })?;
+        let transition = get_valid_transition(&position.status, &new_status).ok_or_else(|| {
+            anyhow::anyhow!(
+                "Invalid transition from {:?} to {:?}",
+                position.status,
+                new_status
+            )
+        })?;
 
         // Log the transition to state_transitions table
         let transition_id = Uuid::new_v4().to_string();
@@ -257,31 +268,34 @@ impl PositionLifecycle {
 
     /// Get the transition history for a position.
     pub async fn get_transition_history(&self, position_id: &str) -> Result<Vec<StateTransition>> {
-        let rows = sqlx::query_as::<_, (String, String, String, String, String, Option<String>, i64)>(
-            r#"
+        let rows =
+            sqlx::query_as::<_, (String, String, String, String, String, Option<String>, i64)>(
+                r#"
             SELECT id, position_id, from_status, to_status, reason, tx_signature, created_at_utc
             FROM state_transitions
             WHERE position_id = ?
             ORDER BY created_at_utc ASC
             "#,
-        )
-        .bind(position_id)
-        .fetch_all(&self.pool)
-        .await?;
+            )
+            .bind(position_id)
+            .fetch_all(&self.pool)
+            .await?;
 
         let transitions = rows
             .into_iter()
-            .map(|(id, position_id, from_status, to_status, reason, tx_signature, created_at)| {
-                StateTransition {
-                    id,
-                    position_id,
-                    from_status,
-                    to_status,
-                    reason,
-                    tx_signature,
-                    created_at_utc: created_at as u64,
-                }
-            })
+            .map(
+                |(id, position_id, from_status, to_status, reason, tx_signature, created_at)| {
+                    StateTransition {
+                        id,
+                        position_id,
+                        from_status,
+                        to_status,
+                        reason,
+                        tx_signature,
+                        created_at_utc: created_at as u64,
+                    }
+                },
+            )
             .collect();
 
         Ok(transitions)
@@ -306,41 +320,95 @@ mod tests {
 
     #[test]
     fn test_valid_tp_ladder_transitions() {
-        assert!(is_valid_transition(&PositionStatus::Open, &PositionStatus::Tp1Filled));
-        assert!(is_valid_transition(&PositionStatus::Tp1Filled, &PositionStatus::Tp2Filled));
-        assert!(is_valid_transition(&PositionStatus::Tp2Filled, &PositionStatus::Tp3Filled));
-        assert!(is_valid_transition(&PositionStatus::Tp3Filled, &PositionStatus::Closed));
+        assert!(is_valid_transition(
+            &PositionStatus::Open,
+            &PositionStatus::Tp1Filled
+        ));
+        assert!(is_valid_transition(
+            &PositionStatus::Tp1Filled,
+            &PositionStatus::Tp2Filled
+        ));
+        assert!(is_valid_transition(
+            &PositionStatus::Tp2Filled,
+            &PositionStatus::Tp3Filled
+        ));
+        assert!(is_valid_transition(
+            &PositionStatus::Tp3Filled,
+            &PositionStatus::Closed
+        ));
     }
 
     #[test]
     fn test_valid_sl_trailing_transitions() {
-        assert!(is_valid_transition(&PositionStatus::Open, &PositionStatus::Closing));
-        assert!(is_valid_transition(&PositionStatus::Tp1Filled, &PositionStatus::Closing));
-        assert!(is_valid_transition(&PositionStatus::Tp2Filled, &PositionStatus::Closing));
-        assert!(is_valid_transition(&PositionStatus::Tp3Filled, &PositionStatus::Closing));
-        assert!(is_valid_transition(&PositionStatus::Closing, &PositionStatus::Closed));
+        assert!(is_valid_transition(
+            &PositionStatus::Open,
+            &PositionStatus::Closing
+        ));
+        assert!(is_valid_transition(
+            &PositionStatus::Tp1Filled,
+            &PositionStatus::Closing
+        ));
+        assert!(is_valid_transition(
+            &PositionStatus::Tp2Filled,
+            &PositionStatus::Closing
+        ));
+        assert!(is_valid_transition(
+            &PositionStatus::Tp3Filled,
+            &PositionStatus::Closing
+        ));
+        assert!(is_valid_transition(
+            &PositionStatus::Closing,
+            &PositionStatus::Closed
+        ));
     }
 
     #[test]
     fn test_valid_stuck_transitions() {
-        assert!(is_valid_transition(&PositionStatus::Open, &PositionStatus::StuckManualInterventionRequired));
-        assert!(is_valid_transition(&PositionStatus::Tp1Filled, &PositionStatus::StuckManualInterventionRequired));
-        assert!(is_valid_transition(&PositionStatus::Closing, &PositionStatus::StuckManualInterventionRequired));
-        assert!(is_valid_transition(&PositionStatus::StuckManualInterventionRequired, &PositionStatus::Closed));
+        assert!(is_valid_transition(
+            &PositionStatus::Open,
+            &PositionStatus::StuckManualInterventionRequired
+        ));
+        assert!(is_valid_transition(
+            &PositionStatus::Tp1Filled,
+            &PositionStatus::StuckManualInterventionRequired
+        ));
+        assert!(is_valid_transition(
+            &PositionStatus::Closing,
+            &PositionStatus::StuckManualInterventionRequired
+        ));
+        assert!(is_valid_transition(
+            &PositionStatus::StuckManualInterventionRequired,
+            &PositionStatus::Closed
+        ));
     }
 
     #[test]
     fn test_invalid_transitions() {
         // Can't go backwards
-        assert!(!is_valid_transition(&PositionStatus::Tp1Filled, &PositionStatus::Open));
-        assert!(!is_valid_transition(&PositionStatus::Closed, &PositionStatus::Open));
-        
+        assert!(!is_valid_transition(
+            &PositionStatus::Tp1Filled,
+            &PositionStatus::Open
+        ));
+        assert!(!is_valid_transition(
+            &PositionStatus::Closed,
+            &PositionStatus::Open
+        ));
+
         // Can't skip TP levels
-        assert!(!is_valid_transition(&PositionStatus::Open, &PositionStatus::Tp2Filled));
-        assert!(!is_valid_transition(&PositionStatus::Open, &PositionStatus::Tp3Filled));
-        
+        assert!(!is_valid_transition(
+            &PositionStatus::Open,
+            &PositionStatus::Tp2Filled
+        ));
+        assert!(!is_valid_transition(
+            &PositionStatus::Open,
+            &PositionStatus::Tp3Filled
+        ));
+
         // Can't go from stuck back to active
-        assert!(!is_valid_transition(&PositionStatus::StuckManualInterventionRequired, &PositionStatus::Open));
+        assert!(!is_valid_transition(
+            &PositionStatus::StuckManualInterventionRequired,
+            &PositionStatus::Open
+        ));
     }
 
     #[test]
@@ -348,7 +416,10 @@ mod tests {
         assert_eq!(Transition::OpenToTp1.reason(), "TP1 (+50%) filled");
         assert_eq!(Transition::Tp1ToTp2.reason(), "TP2 (+100%) filled");
         assert_eq!(Transition::Tp2ToTp3.reason(), "TP3 (+200%) filled");
-        assert_eq!(Transition::OpenToClosing.reason(), "Stop loss or trailing stop triggered");
+        assert_eq!(
+            Transition::OpenToClosing.reason(),
+            "Stop loss or trailing stop triggered"
+        );
         assert_eq!(Transition::ToStuck.reason(), "Manual intervention required");
     }
 
@@ -408,7 +479,10 @@ mod tests {
 
     #[test]
     fn test_opening_to_open_transition() {
-        assert!(is_valid_transition(&PositionStatus::Opening, &PositionStatus::Open));
+        assert!(is_valid_transition(
+            &PositionStatus::Opening,
+            &PositionStatus::Open
+        ));
         assert_eq!(
             get_valid_transition(&PositionStatus::Opening, &PositionStatus::Open),
             Some(Transition::OpeningToOpen)
@@ -418,21 +492,42 @@ mod tests {
     #[test]
     fn test_cannot_transition_from_closed() {
         // Once closed, no further transitions allowed
-        assert!(!is_valid_transition(&PositionStatus::Closed, &PositionStatus::Open));
-        assert!(!is_valid_transition(&PositionStatus::Closed, &PositionStatus::Closing));
-        assert!(!is_valid_transition(&PositionStatus::Closed, &PositionStatus::Tp1Filled));
+        assert!(!is_valid_transition(
+            &PositionStatus::Closed,
+            &PositionStatus::Open
+        ));
+        assert!(!is_valid_transition(
+            &PositionStatus::Closed,
+            &PositionStatus::Closing
+        ));
+        assert!(!is_valid_transition(
+            &PositionStatus::Closed,
+            &PositionStatus::Tp1Filled
+        ));
     }
 
     #[test]
     fn test_cannot_transition_from_stuck_except_to_closed() {
-        assert!(is_valid_transition(&PositionStatus::StuckManualInterventionRequired, &PositionStatus::Closed));
-        assert!(!is_valid_transition(&PositionStatus::StuckManualInterventionRequired, &PositionStatus::Open));
-        assert!(!is_valid_transition(&PositionStatus::StuckManualInterventionRequired, &PositionStatus::Closing));
+        assert!(is_valid_transition(
+            &PositionStatus::StuckManualInterventionRequired,
+            &PositionStatus::Closed
+        ));
+        assert!(!is_valid_transition(
+            &PositionStatus::StuckManualInterventionRequired,
+            &PositionStatus::Open
+        ));
+        assert!(!is_valid_transition(
+            &PositionStatus::StuckManualInterventionRequired,
+            &PositionStatus::Closing
+        ));
     }
 
     #[test]
     fn test_tp3_to_closed_is_valid() {
-        assert!(is_valid_transition(&PositionStatus::Tp3Filled, &PositionStatus::Closed));
+        assert!(is_valid_transition(
+            &PositionStatus::Tp3Filled,
+            &PositionStatus::Closed
+        ));
         assert_eq!(
             get_valid_transition(&PositionStatus::Tp3Filled, &PositionStatus::Closed),
             Some(Transition::Tp3ToClosed)
@@ -441,34 +536,88 @@ mod tests {
 
     #[test]
     fn test_closing_to_closed_only_path() {
-        assert!(is_valid_transition(&PositionStatus::Closing, &PositionStatus::Closed));
-        assert!(!is_valid_transition(&PositionStatus::Closing, &PositionStatus::Open));
-        assert!(!is_valid_transition(&PositionStatus::Closing, &PositionStatus::Tp1Filled));
+        assert!(is_valid_transition(
+            &PositionStatus::Closing,
+            &PositionStatus::Closed
+        ));
+        assert!(!is_valid_transition(
+            &PositionStatus::Closing,
+            &PositionStatus::Open
+        ));
+        assert!(!is_valid_transition(
+            &PositionStatus::Closing,
+            &PositionStatus::Tp1Filled
+        ));
     }
 
     #[test]
     fn test_all_active_states_can_go_to_stuck() {
-        assert!(is_valid_transition(&PositionStatus::Open, &PositionStatus::StuckManualInterventionRequired));
-        assert!(is_valid_transition(&PositionStatus::Tp1Filled, &PositionStatus::StuckManualInterventionRequired));
-        assert!(is_valid_transition(&PositionStatus::Tp2Filled, &PositionStatus::StuckManualInterventionRequired));
-        assert!(is_valid_transition(&PositionStatus::Tp3Filled, &PositionStatus::StuckManualInterventionRequired));
-        assert!(is_valid_transition(&PositionStatus::Closing, &PositionStatus::StuckManualInterventionRequired));
+        assert!(is_valid_transition(
+            &PositionStatus::Open,
+            &PositionStatus::StuckManualInterventionRequired
+        ));
+        assert!(is_valid_transition(
+            &PositionStatus::Tp1Filled,
+            &PositionStatus::StuckManualInterventionRequired
+        ));
+        assert!(is_valid_transition(
+            &PositionStatus::Tp2Filled,
+            &PositionStatus::StuckManualInterventionRequired
+        ));
+        assert!(is_valid_transition(
+            &PositionStatus::Tp3Filled,
+            &PositionStatus::StuckManualInterventionRequired
+        ));
+        assert!(is_valid_transition(
+            &PositionStatus::Closing,
+            &PositionStatus::StuckManualInterventionRequired
+        ));
     }
 
     #[test]
     fn test_transition_variants_cover_all_paths() {
         // TP ladder path
-        assert!(matches!(get_valid_transition(&PositionStatus::Open, &PositionStatus::Tp1Filled), Some(Transition::OpenToTp1)));
-        assert!(matches!(get_valid_transition(&PositionStatus::Tp1Filled, &PositionStatus::Tp2Filled), Some(Transition::Tp1ToTp2)));
-        assert!(matches!(get_valid_transition(&PositionStatus::Tp2Filled, &PositionStatus::Tp3Filled), Some(Transition::Tp2ToTp3)));
-        assert!(matches!(get_valid_transition(&PositionStatus::Tp3Filled, &PositionStatus::Closed), Some(Transition::Tp3ToClosed)));
+        assert!(matches!(
+            get_valid_transition(&PositionStatus::Open, &PositionStatus::Tp1Filled),
+            Some(Transition::OpenToTp1)
+        ));
+        assert!(matches!(
+            get_valid_transition(&PositionStatus::Tp1Filled, &PositionStatus::Tp2Filled),
+            Some(Transition::Tp1ToTp2)
+        ));
+        assert!(matches!(
+            get_valid_transition(&PositionStatus::Tp2Filled, &PositionStatus::Tp3Filled),
+            Some(Transition::Tp2ToTp3)
+        ));
+        assert!(matches!(
+            get_valid_transition(&PositionStatus::Tp3Filled, &PositionStatus::Closed),
+            Some(Transition::Tp3ToClosed)
+        ));
 
         // SL/trailing path
-        assert!(matches!(get_valid_transition(&PositionStatus::Open, &PositionStatus::Closing), Some(Transition::OpenToClosing)));
-        assert!(matches!(get_valid_transition(&PositionStatus::Closing, &PositionStatus::Closed), Some(Transition::ClosingToClosed)));
+        assert!(matches!(
+            get_valid_transition(&PositionStatus::Open, &PositionStatus::Closing),
+            Some(Transition::OpenToClosing)
+        ));
+        assert!(matches!(
+            get_valid_transition(&PositionStatus::Closing, &PositionStatus::Closed),
+            Some(Transition::ClosingToClosed)
+        ));
 
         // Stuck path
-        assert!(matches!(get_valid_transition(&PositionStatus::Open, &PositionStatus::StuckManualInterventionRequired), Some(Transition::ToStuck)));
-        assert!(matches!(get_valid_transition(&PositionStatus::StuckManualInterventionRequired, &PositionStatus::Closed), Some(Transition::StuckToClosed)));
+        assert!(matches!(
+            get_valid_transition(
+                &PositionStatus::Open,
+                &PositionStatus::StuckManualInterventionRequired
+            ),
+            Some(Transition::ToStuck)
+        ));
+        assert!(matches!(
+            get_valid_transition(
+                &PositionStatus::StuckManualInterventionRequired,
+                &PositionStatus::Closed
+            ),
+            Some(Transition::StuckToClosed)
+        ));
     }
 }

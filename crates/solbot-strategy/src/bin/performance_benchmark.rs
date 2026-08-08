@@ -10,8 +10,8 @@
 
 use anyhow::Result;
 use futures_util::{stream::StreamExt, SinkExt};
-use solana_rpc_client::rpc_client::RpcClient;
 use solana_pubkey::Pubkey;
+use solana_rpc_client::rpc_client::RpcClient;
 use std::str::FromStr;
 use std::time::{Duration, Instant};
 use tokio_tungstenite::tungstenite::Message;
@@ -128,7 +128,8 @@ async fn measure_ws_signal_latency(ws_url: &str) -> Result<()> {
     info!("\n📊 Measuring WebSocket Signal Reception Latency");
     info!("   Endpoint: {}", ws_url);
 
-    let (ws_stream, _) = tokio_tungstenite::connect_async(ws_url).await
+    let (ws_stream, _) = tokio_tungstenite::connect_async(ws_url)
+        .await
         .map_err(|e| anyhow::anyhow!("Failed to connect: {}", e))?;
 
     let (mut write, mut read) = ws_stream.split();
@@ -148,7 +149,9 @@ async fn measure_ws_signal_latency(ws_url: &str) -> Result<()> {
         ]
     }"#;
 
-    write.send(Message::Text(subscribe_msg.to_string())).await
+    write
+        .send(Message::Text(subscribe_msg.to_string()))
+        .await
         .map_err(|e| anyhow::anyhow!("Failed to subscribe: {}", e))?;
 
     info!("   Subscribed to Pump.fun logs, waiting for signals...");
@@ -255,8 +258,8 @@ async fn measure_tx_building_latency() -> Result<()> {
     info!("\n🔨 Measuring Transaction Building Latency");
 
     use solbot_strategy::tx_builder::{
-        SwapDirection, SwapParams,
         pump_fun::{build_swap, PumpFunBondingCurve},
+        SwapDirection, SwapParams,
     };
 
     let wallet = Pubkey::new_unique();

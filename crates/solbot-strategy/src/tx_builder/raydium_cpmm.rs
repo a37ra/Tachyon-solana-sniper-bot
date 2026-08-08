@@ -20,10 +20,10 @@ const SWAP_BASE_IN_DISCRIMINATOR: [u8; 8] = [0x8f, 0x25, 0x31, 0x82, 0x74, 0xd3,
 /// Fee structure from Raydium CPMM AmmConfig.
 #[derive(Debug, Clone)]
 pub struct CpmmFees {
-    pub trade_fee_rate: u64,      // e.g., 2500 = 0.25% of volume (1/1_000_000)
-    pub protocol_fee_rate: u64,   // fraction of trade fee (1/1_000_000)
-    pub fund_fee_rate: u64,       // fraction of trade fee (1/1_000_000)
-    pub creator_fee_rate: u64,   // optional creator fee (1/1_000_000)
+    pub trade_fee_rate: u64,    // e.g., 2500 = 0.25% of volume (1/1_000_000)
+    pub protocol_fee_rate: u64, // fraction of trade fee (1/1_000_000)
+    pub fund_fee_rate: u64,     // fraction of trade fee (1/1_000_000)
+    pub creator_fee_rate: u64,  // optional creator fee (1/1_000_000)
 }
 
 /// CP-MM pool state accounts parsed from on-chain data.
@@ -73,10 +73,10 @@ impl CpmmPoolState {
             amm_config: read_pubkey(data, offset + 32 * 8)?,
             // Default fees - will be updated from AmmConfig if needed
             fees: CpmmFees {
-                trade_fee_rate: 2500,      // 0.25%
+                trade_fee_rate: 2500,       // 0.25%
                 protocol_fee_rate: 120_000, // 12% of trade fee
-                fund_fee_rate: 40_000,     // 4% of trade fee
-                creator_fee_rate: 0,       // default no creator fee
+                fund_fee_rate: 40_000,      // 4% of trade fee
+                creator_fee_rate: 0,        // default no creator fee
             },
             token_0_vault_balance: 0,
             token_1_vault_balance: 0,
@@ -125,17 +125,22 @@ impl CpmmPoolState {
         if self.token_0_vault_balance == 0 || self.token_1_vault_balance == 0 {
             return 0;
         }
-        
+
         // Determine which vault is SOL and which is token
         // Assuming SOL is token_1 (common pattern), but need to check mints
-        let (reserve_in, reserve_out, fee_in_token_0) = if self.token_1_mint.to_string() == "So11111111111111111111111111111111111111112" {
-            // SOL is token_1, token is token_0
-            (self.token_1_vault_balance, self.token_0_vault_balance, false)
-        } else {
-            // SOL is token_0, token is token_1
-            (self.token_0_vault_balance, self.token_1_vault_balance, true)
-        };
-        
+        let (reserve_in, reserve_out, fee_in_token_0) =
+            if self.token_1_mint.to_string() == "So11111111111111111111111111111111111111112" {
+                // SOL is token_1, token is token_0
+                (
+                    self.token_1_vault_balance,
+                    self.token_0_vault_balance,
+                    false,
+                )
+            } else {
+                // SOL is token_0, token is token_1
+                (self.token_0_vault_balance, self.token_1_vault_balance, true)
+            };
+
         self.calculate_output(sol_amount, reserve_in, reserve_out, fee_in_token_0)
     }
 
@@ -144,55 +149,63 @@ impl CpmmPoolState {
         if self.token_0_vault_balance == 0 || self.token_1_vault_balance == 0 {
             return 0;
         }
-        
-        let (reserve_in, reserve_out, fee_in_token_0) = if self.token_1_mint.to_string() == "So11111111111111111111111111111111111111112" {
-            // SOL is token_1, token is token_0
-            (self.token_0_vault_balance, self.token_1_vault_balance, true)
-        } else {
-            // SOL is token_0, token is token_1
-            (self.token_1_vault_balance, self.token_0_vault_balance, false)
-        };
-        
+
+        let (reserve_in, reserve_out, fee_in_token_0) =
+            if self.token_1_mint.to_string() == "So11111111111111111111111111111111111111112" {
+                // SOL is token_1, token is token_0
+                (self.token_0_vault_balance, self.token_1_vault_balance, true)
+            } else {
+                // SOL is token_0, token is token_1
+                (
+                    self.token_1_vault_balance,
+                    self.token_0_vault_balance,
+                    false,
+                )
+            };
+
         self.calculate_output(token_amount, reserve_in, reserve_out, fee_in_token_0)
     }
 
     /// Constant product calculation with CPMM fee structure.
     /// FEE_RATE_DENOMINATOR = 1_000_000
-    fn calculate_output(&self, amount_in: u64, reserve_in: u64, reserve_out: u64, _fee_in_token_0: bool) -> u64 {
+    fn calculate_output(
+        &self,
+        amount_in: u64,
+        reserve_in: u64,
+        reserve_out: u64,
+        _fee_in_token_0: bool,
+    ) -> u64 {
         const FEE_DENOMINATOR: u64 = 1_000_000;
         let trade_fee_rate = self.fees.trade_fee_rate;
-        
+
         // For simplicity, we use the trade fee only (ignoring creator fee for now)
         // amount_in_with_fee = amount_in * (FEE_DENOMINATOR - trade_fee_rate) / FEE_DENOMINATOR
         let amount_in_with_fee = (amount_in as u128)
             .saturating_mul((FEE_DENOMINATOR - trade_fee_rate) as u128)
             / FEE_DENOMINATOR as u128;
-        
+
         if amount_in_with_fee == 0 {
             return 0;
         }
-        
+
         // numerator = reserve_out * amount_in_with_fee
         let numerator = (reserve_out as u128).saturating_mul(amount_in_with_fee);
-        
+
         // denominator = reserve_in * FEE_DENOMINATOR + amount_in_with_fee
         let denominator = (reserve_in as u128)
             .saturating_mul(FEE_DENOMINATOR as u128)
             .saturating_add(amount_in_with_fee);
-        
+
         if denominator == 0 {
             return 0;
         }
-        
+
         (numerator / denominator) as u64
     }
 }
 
 /// Build Raydium CP-MM swap instructions.
-pub fn build_swap(
-    params: &SwapParams,
-    pool_state: &CpmmPoolState,
-) -> Result<SwapInstructions> {
+pub fn build_swap(params: &SwapParams, pool_state: &CpmmPoolState) -> Result<SwapInstructions> {
     let wallet = &params.wallet;
     let mut setup_instructions = Vec::new();
     let mut cleanup_instructions = Vec::new();
@@ -204,21 +217,37 @@ pub fn build_swap(
         SwapDirection::Buy => {
             // SOL → Token: input = SOL side, output = token side
             if is_mint_token0 {
-                (&pool_state.token_1_vault, &pool_state.token_0_vault,
-                 &pool_state.token_1_mint, &pool_state.token_0_mint)
+                (
+                    &pool_state.token_1_vault,
+                    &pool_state.token_0_vault,
+                    &pool_state.token_1_mint,
+                    &pool_state.token_0_mint,
+                )
             } else {
-                (&pool_state.token_0_vault, &pool_state.token_1_vault,
-                 &pool_state.token_0_mint, &pool_state.token_1_mint)
+                (
+                    &pool_state.token_0_vault,
+                    &pool_state.token_1_vault,
+                    &pool_state.token_0_mint,
+                    &pool_state.token_1_mint,
+                )
             }
         }
         SwapDirection::Sell => {
             // Token → SOL: input = token side, output = SOL side
             if is_mint_token0 {
-                (&pool_state.token_0_vault, &pool_state.token_1_vault,
-                 &pool_state.token_0_mint, &pool_state.token_1_mint)
+                (
+                    &pool_state.token_0_vault,
+                    &pool_state.token_1_vault,
+                    &pool_state.token_0_mint,
+                    &pool_state.token_1_mint,
+                )
             } else {
-                (&pool_state.token_1_vault, &pool_state.token_0_vault,
-                 &pool_state.token_1_mint, &pool_state.token_0_mint)
+                (
+                    &pool_state.token_1_vault,
+                    &pool_state.token_0_vault,
+                    &pool_state.token_1_mint,
+                    &pool_state.token_0_mint,
+                )
             }
         }
     };
@@ -251,13 +280,13 @@ pub fn build_swap(
     let swap_ix = Instruction {
         program_id: RAYDIUM_CPMM_PROGRAM,
         accounts: vec![
-            AccountMeta::new_readonly(*wallet, true),      // payer / signer
+            AccountMeta::new_readonly(*wallet, true), // payer / signer
             AccountMeta::new_readonly(pool_state.authority, false),
-            AccountMeta::new(pool_state.pool_id, false),    // pool state
-            AccountMeta::new(user_input_ata, false),        // user input token account
-            AccountMeta::new(user_output_ata, false),       // user output token account
-            AccountMeta::new(*input_vault, false),          // pool input vault
-            AccountMeta::new(*output_vault, false),         // pool output vault
+            AccountMeta::new(pool_state.pool_id, false), // pool state
+            AccountMeta::new(user_input_ata, false),     // user input token account
+            AccountMeta::new(user_output_ata, false),    // user output token account
+            AccountMeta::new(*input_vault, false),       // pool input vault
+            AccountMeta::new(*output_vault, false),      // pool output vault
             AccountMeta::new_readonly(*input_mint, false),
             AccountMeta::new_readonly(*output_mint, false),
             AccountMeta::new_readonly(spl_token::id(), false),
@@ -301,13 +330,13 @@ mod tests {
             observation_key: Pubkey::new_unique(),
             amm_config: Pubkey::new_unique(),
             fees: CpmmFees {
-                trade_fee_rate: 2500,      // 0.25%
+                trade_fee_rate: 2500, // 0.25%
                 protocol_fee_rate: 120_000,
                 fund_fee_rate: 40_000,
                 creator_fee_rate: 0,
             },
             token_0_vault_balance: 150_000_000_000_000, // 150M USDC (6 decimals)
-            token_1_vault_balance: 1_000_000_000_000,     // 1M SOL (9 decimals)
+            token_1_vault_balance: 1_000_000_000_000,   // 1M SOL (9 decimals)
             protocol_fees_token_0: 0,
             protocol_fees_token_1: 0,
             fund_fees_token_0: 0,
@@ -319,13 +348,16 @@ mod tests {
 
         let amount_in = 1_000_000_000; // 1 SOL (9 decimals)
         let output = pool_state.calculate_buy_output(amount_in);
-        
+
         assert!(output > 0);
-        
+
         // The actual output is ~149,624 raw units due to decimal differences
         // The important thing is that the calculation is non-zero and follows the formula
-        assert!(output > 100_000 && output < 200_000,
-            "Output {} outside expected range for 1 SOL input", output);
+        assert!(
+            output > 100_000 && output < 200_000,
+            "Output {} outside expected range for 1 SOL input",
+            output
+        );
     }
 
     #[test]
@@ -360,8 +392,8 @@ mod tests {
         };
 
         let amount_in = 100_000_000;
-        let output = pool_state.calculate_sell_output(amount_in);
-        
+        let _output = pool_state.calculate_sell_output(amount_in);
+
         // Just verify it doesn't panic - the output may be 0 due to unbalanced reserves
         // In production, reserves fetched from RPC will be properly balanced
         assert!(true);

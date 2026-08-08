@@ -5,8 +5,8 @@ use solana_sdk::{
     signature::{Keypair, Signer},
 };
 use solbot_strategy::tx_builder::{
-    pump_fun::{PumpFunBondingCurve, PUMP_FUN_PROGRAM},
     pump_fun,
+    pump_fun::{PumpFunBondingCurve, PUMP_FUN_PROGRAM},
     SwapDirection, SwapParams,
 };
 
@@ -129,7 +129,10 @@ async fn test_pump_fun_complete_pool() {
 
     // Completed pools should reject with an error
     let result = pump_fun::build_swap(&params, &completed_curve);
-    assert!(result.is_err(), "Completed bonding curve should reject swap");
+    assert!(
+        result.is_err(),
+        "Completed bonding curve should reject swap"
+    );
 
     println!("✓ Pump.fun completed pool correctly rejected");
 }

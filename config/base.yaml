@@ -20,17 +20,31 @@ rpc:
 # Geyser gRPC Configuration (Helius/Yellowstone)
 geyser:
   # Geyser endpoint - Helius или собственный Yellowstone
+  #
+  # ⚠️ CRITICAL: For sniping, signal latency must be <400ms (1 slot)
+  # Free/public Geyser endpoints (Helius free tier) buffer events and can
+  # introduce 9-15 second delays, making sniping impossible.
+  #
+  # RECOMMENDATION: Use paid Geyser endpoint for production:
+  # - Helius Pro/Premium: https://docs.helius.dev
+  # - Triton One: https://triton.one
+  # - GenesysGo: https://www.genesysgo.com
+  # - Self-hosted Yellowstone: https://github.com/helio-foundation/yellowstone-grpc
+  #
+  # Current config uses Helius free tier - NOT SUITABLE FOR SNIPING
   endpoint: "https://mainnet.helius-rpc.com"
-  
+
   # Helius API key (или x-token для Yellowstone)
   x_token: "f22a2b7e-479a-4040-847e-66337dc830e4"
-  
+
   # Commitment level для подписки
   commitment: "confirmed"  # processed, confirmed, finalized
-  
+  # For sniping, use "processed" commitment for fastest signal delivery
+  # "confirmed" adds ~400-800ms delay for block confirmation
+
   # RPC URL для backfill пропущенных слотов
   backfill_rpc_url: "https://api.mainnet-beta.solana.com"
-  
+
   # Максимальное количество слотов для backfill при переподключении
   max_backfill_slots: 150
 

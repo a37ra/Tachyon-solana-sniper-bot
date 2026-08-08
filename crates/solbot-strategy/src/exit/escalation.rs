@@ -38,8 +38,12 @@ impl EscalationStage {
     pub fn next(&self) -> Option<EscalationStage> {
         match self {
             EscalationStage::Stage0Jito => Some(EscalationStage::Stage1PublicRpc2x),
-            EscalationStage::Stage1PublicRpc2x => Some(EscalationStage::Stage2PublicRpc3xMaxSlippage),
-            EscalationStage::Stage2PublicRpc3xMaxSlippage => Some(EscalationStage::Stage3DurableNonceStuck),
+            EscalationStage::Stage1PublicRpc2x => {
+                Some(EscalationStage::Stage2PublicRpc3xMaxSlippage)
+            }
+            EscalationStage::Stage2PublicRpc3xMaxSlippage => {
+                Some(EscalationStage::Stage3DurableNonceStuck)
+            }
             EscalationStage::Stage3DurableNonceStuck => None, // terminal
         }
     }
@@ -118,7 +122,9 @@ impl std::fmt::Display for EscalationStage {
         match self {
             EscalationStage::Stage0Jito => write!(f, "Stage0Jito"),
             EscalationStage::Stage1PublicRpc2x => write!(f, "Stage1PublicRpc2x"),
-            EscalationStage::Stage2PublicRpc3xMaxSlippage => write!(f, "Stage2PublicRpc3xMaxSlippage"),
+            EscalationStage::Stage2PublicRpc3xMaxSlippage => {
+                write!(f, "Stage2PublicRpc3xMaxSlippage")
+            }
             EscalationStage::Stage3DurableNonceStuck => write!(f, "Stage3DurableNonceStuck"),
         }
     }
@@ -318,9 +324,19 @@ pub async fn run_escalation<SignFn, SubmitFn, PersistFn>(
     persist_fn: &PersistFn,
 ) -> Result<bool>
 where
-    SignFn: Fn(&EscalationState) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String>> + Send + '_>>,
-    SubmitFn: Fn(&EscalationState) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Option<(String, u64)>>> + Send + '_>>,
-    PersistFn: Fn(&EscalationState) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + '_>>,
+    SignFn: Fn(
+        &EscalationState,
+    )
+        -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String>> + Send + '_>>,
+    SubmitFn: Fn(
+        &EscalationState,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Option<(String, u64)>>> + Send + '_>,
+    >,
+    PersistFn: Fn(
+        &EscalationState,
+    )
+        -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + '_>>,
 {
     loop {
         if state.completed {
@@ -414,10 +430,16 @@ mod tests {
         assert_eq!(state.current_stage, EscalationStage::Stage1PublicRpc2x);
 
         assert!(state.advance_stage(1000200));
-        assert_eq!(state.current_stage, EscalationStage::Stage2PublicRpc3xMaxSlippage);
+        assert_eq!(
+            state.current_stage,
+            EscalationStage::Stage2PublicRpc3xMaxSlippage
+        );
 
         assert!(state.advance_stage(1000300));
-        assert_eq!(state.current_stage, EscalationStage::Stage3DurableNonceStuck);
+        assert_eq!(
+            state.current_stage,
+            EscalationStage::Stage3DurableNonceStuck
+        );
 
         // Cannot advance beyond Stage 3
         assert!(!state.advance_stage(1000400));
@@ -449,7 +471,7 @@ mod tests {
     fn test_attempt_tracking() {
         let mut state = make_state();
         // Stage 0 has 2 max attempts
-        assert!(state.record_attempt());  // attempt 1 < 2, should retry
+        assert!(state.record_attempt()); // attempt 1 < 2, should retry
         assert!(!state.record_attempt()); // attempt 2 >= 2, should transition
     }
 
@@ -486,7 +508,10 @@ mod tests {
         let mut state = make_state();
         state.complete_success("final-sig".to_string(), 12345);
         assert!(state.completed);
-        assert!(matches!(state.outcome, Some(EscalationOutcome::Success { .. })));
+        assert!(matches!(
+            state.outcome,
+            Some(EscalationOutcome::Success { .. })
+        ));
     }
 
     #[test]

@@ -14,6 +14,12 @@ pub enum PositionStatus {
     StuckManualInterventionRequired,
 }
 
+impl Default for PositionStatus {
+    fn default() -> Self {
+        PositionStatus::Open
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Position {
     pub position_id: String,

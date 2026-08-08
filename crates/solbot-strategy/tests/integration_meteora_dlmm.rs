@@ -5,8 +5,8 @@ use solana_sdk::{
     signature::{Keypair, Signer},
 };
 use solbot_strategy::tx_builder::{
-    meteora_dlmm::{DlmmPoolState, METEORA_DLMM_PROGRAM},
     meteora_dlmm,
+    meteora_dlmm::{DlmmPoolState, METEORA_DLMM_PROGRAM},
     SwapDirection, SwapParams,
 };
 
@@ -110,7 +110,7 @@ async fn test_meteora_dlmm_sell_swap_structure() {
 #[ignore = "Requires devnet connection"]
 async fn test_meteora_dlmm_bin_array_derivation() {
     let pool_id = Pubkey::new_unique();
-    
+
     let bin_index = 1000;
     let bin_array = meteora_dlmm::derive_bin_array_address(&pool_id, bin_index).unwrap();
 

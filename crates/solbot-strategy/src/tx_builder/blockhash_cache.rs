@@ -10,8 +10,8 @@ use anyhow::{Context, Result};
 use solana_rpc_client::rpc_client::RpcClient;
 use solana_sdk::hash::Hash;
 use std::sync::Arc;
-use tokio::sync::RwLock;
 use std::time::{Duration, Instant};
+use tokio::sync::RwLock;
 
 /// How often to refresh the blockhash (well within the ~60s validity window).
 const REFRESH_INTERVAL: Duration = Duration::from_secs(2);
@@ -74,7 +74,9 @@ impl BlockhashCache {
         self.refresh().await?;
 
         let guard = self.cache.read().await;
-        let cached = guard.as_ref().context("Blockhash cache empty after refresh")?;
+        let cached = guard
+            .as_ref()
+            .context("Blockhash cache empty after refresh")?;
         Ok((cached.hash, cached.last_valid_block_height))
     }
 
@@ -93,9 +95,8 @@ impl BlockhashCache {
                 use solana_sdk::commitment_config::CommitmentConfig;
 
                 // Use get_latest_blockhash_with_commitment for both hash and validity height
-                let result = rpc.get_latest_blockhash_with_commitment(
-                    CommitmentConfig::confirmed(),
-                );
+                let result =
+                    rpc.get_latest_blockhash_with_commitment(CommitmentConfig::confirmed());
                 match result {
                     Ok((hash, height)) => Ok((hash, height)),
                     Err(e) => {

@@ -15,21 +15,23 @@ impl SmartMoneyHitsRepo {
         id: &str,
         wallet_address: &str,
         mint: &str,
+        pool_address: &str,
         tx_signature: &str,
         detected_at_slot: u64,
     ) -> Result<()> {
         let detected_at_slot = detected_at_slot as i64;
-        sqlx::query!(
+        sqlx::query(
             r#"
-            INSERT INTO smart_money_hits (id, wallet_address, mint, tx_signature, detected_at_slot)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO smart_money_hits (id, wallet_address, mint, pool_address, tx_signature, detected_at_slot)
+            VALUES (?, ?, ?, ?, ?, ?)
             "#,
-            id,
-            wallet_address,
-            mint,
-            tx_signature,
-            detected_at_slot
         )
+        .bind(id)
+        .bind(wallet_address)
+        .bind(mint)
+        .bind(pool_address)
+        .bind(tx_signature)
+        .bind(detected_at_slot)
         .execute(&self.pool)
         .await?;
 

@@ -5,26 +5,36 @@
 //! - Sell workflow: PriceTick → Exit Evaluation → Exit Tx → Signer → Router
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
-use solbot_strategy::actor::mint_actor::{ActorContext, TradingMode, execute_buy_pipeline, execute_exit_pipeline};
-use solbot_strategy::risk_gate::RiskGateConfig;
-use solbot_strategy::exit::{self, ExitAction, TpLevel};
-use solbot_strategy::signer_client::SignerClient;
-use solbot_strategy::routing::{TransactionRouter, RoutingConfig};
-use solbot_common::config::TierParams;
+use solana_pubkey::Pubkey;
 use solbot_common::config::base_config::DexReadinessConfig;
-use solbot_common::config::tier_params::{TierInfo, CapitalRange, SizingParams, KellyParams, AdaptiveParams, PositionLimits, CircuitBreakerParams, HotWalletParams, CompromiseDetection, EmergencyExitParams};
+use solbot_common::config::tier_params::{
+    AdaptiveParams, CapitalRange, CircuitBreakerParams, CompromiseDetection, EmergencyExitParams,
+    HotWalletParams, KellyParams, PositionLimits, SizingParams, TierInfo,
+};
+use solbot_common::config::TierParams;
 use solbot_common::types::position::{Position, PositionStatus};
 use solbot_common::types::tier::CapitalTier;
-use solana_pubkey::Pubkey;
+use solbot_strategy::actor::mint_actor::{
+    execute_buy_pipeline, execute_exit_pipeline, ActorContext, TradingMode,
+};
+use solbot_strategy::exit::{self, ExitAction, TpLevel};
+use solbot_strategy::risk_gate::{RiskGateCache, RiskGateConfig};
+use solbot_strategy::routing::{RoutingConfig, TransactionRouter};
+use solbot_strategy::signer_client::SignerClient;
+use solbot_strategy::state::position_lifecycle::PositionLifecycle;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use tokio::net::TcpListener;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpListener;
 
 /// Helper to start a lightweight mock JSON-RPC server that handles Risk Gate RPC calls
 /// and then simulates pool account not found (returns null) on Step 3 fetch.
-async fn start_mock_rpc_server_for_pool_not_found(mint_pubkey: String, pool_pubkey: String, dex_program_id: String) -> String {
+async fn start_mock_rpc_server_for_pool_not_found(
+    mint_pubkey: String,
+    pool_pubkey: String,
+    dex_program_id: String,
+) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let url = format!("http://{}", addr);
@@ -70,7 +80,9 @@ async fn start_mock_rpc_server_for_pool_not_found(mint_pubkey: String, pool_pubk
                     if count < 2 {
                         // First 2 calls (during Risk Gate lp_lock_check & simulate_sell): return valid dummy pool account data
                         let mut dummy_data = vec![0u8; 400];
-                        let incinerator = Pubkey::from_str("1nc1nerator11111111111111111111111111111111").unwrap();
+                        let incinerator =
+                            Pubkey::from_str("1nc1nerator11111111111111111111111111111111")
+                                .unwrap();
                         if dummy_data.len() >= 232 {
                             dummy_data[200..232].copy_from_slice(incinerator.as_ref());
                         }
@@ -81,7 +93,8 @@ async fn start_mock_rpc_server_for_pool_not_found(mint_pubkey: String, pool_pubk
                         )
                     } else {
                         // 3rd call (Step 3 tx builder): return null (pool account not found)
-                        r#"{"jsonrpc":"2.0","result":{"context":{"slot":1},"value":null},"id":1}"#.to_string()
+                        r#"{"jsonrpc":"2.0","result":{"context":{"slot":1},"value":null},"id":1}"#
+                            .to_string()
                     }
                 } else {
                     // Any other pubkey (e.g. LP mint): return account owned by incinerator
@@ -106,7 +119,7 @@ async fn start_mock_rpc_server_for_pool_not_found(mint_pubkey: String, pool_pubk
     url
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_cpmm_buy_pipeline_fail_closed_pool_account_not_found() {
     let mint_pubkey = Pubkey::new_unique().to_string();
     let pool_pubkey = Pubkey::new_unique().to_string();
@@ -116,7 +129,8 @@ async fn test_cpmm_buy_pipeline_fail_closed_pool_account_not_found() {
         mint_pubkey.clone(),
         pool_pubkey.clone(),
         dex_program_id.clone(),
-    ).await;
+    )
+    .await;
 
     let mut ctx = ActorContext {
         mint: mint_pubkey,
@@ -134,9 +148,12 @@ async fn test_cpmm_buy_pipeline_fail_closed_pool_account_not_found() {
             lp_lock_timeout_ms: 10000,
             token2022_timeout_ms: 5000,
             simulate_sell_timeout_ms: 5000,
+            pre_buy_checks_timeout_ms: 200,
             simulate_size_lamports: 1_000_000_000,
             token2022_allowlist: vec![],
             token2022_blocklist: vec![],
+            max_signal_age_ms: 0,
+            cache: RiskGateCache::new(10),
         },
         dex_readiness: DexReadinessConfig::default(),
         active_position: None,
@@ -145,6 +162,9 @@ async fn test_cpmm_buy_pipeline_fail_closed_pool_account_not_found() {
         trade_stats: None,
         positions_repo: None,
         state_transitions_repo: None,
+        position_lifecycle: None,
+        lifecycle_event_tx: None,
+        circuit_breaker: None,
     };
 
     let result = execute_buy_pipeline(&mut ctx, 0.001).await;
@@ -152,11 +172,12 @@ async fn test_cpmm_buy_pipeline_fail_closed_pool_account_not_found() {
     let error_msg = result.unwrap_err().to_string();
     assert_eq!(
         error_msg, "Failed to fetch pool account in Live mode",
-        "Expected exact error 'Failed to fetch pool account in Live mode', got: {}", error_msg
+        "Expected exact error 'Failed to fetch pool account in Live mode', got: {}",
+        error_msg
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_dlmm_buy_pipeline_fail_closed_pool_account_not_found() {
     let mint_pubkey = Pubkey::new_unique().to_string();
     let pool_pubkey = Pubkey::new_unique().to_string();
@@ -166,7 +187,8 @@ async fn test_dlmm_buy_pipeline_fail_closed_pool_account_not_found() {
         mint_pubkey.clone(),
         pool_pubkey.clone(),
         dex_program_id.clone(),
-    ).await;
+    )
+    .await;
 
     let mut ctx = ActorContext {
         mint: mint_pubkey,
@@ -184,9 +206,12 @@ async fn test_dlmm_buy_pipeline_fail_closed_pool_account_not_found() {
             lp_lock_timeout_ms: 10000,
             token2022_timeout_ms: 5000,
             simulate_sell_timeout_ms: 5000,
+            pre_buy_checks_timeout_ms: 200,
             simulate_size_lamports: 1_000_000_000,
             token2022_allowlist: vec![],
             token2022_blocklist: vec![],
+            max_signal_age_ms: 0,
+            cache: RiskGateCache::new(10),
         },
         dex_readiness: DexReadinessConfig::default(),
         active_position: None,
@@ -195,6 +220,9 @@ async fn test_dlmm_buy_pipeline_fail_closed_pool_account_not_found() {
         trade_stats: None,
         positions_repo: None,
         state_transitions_repo: None,
+        position_lifecycle: None,
+        lifecycle_event_tx: None,
+        circuit_breaker: None,
     };
 
     let result = execute_buy_pipeline(&mut ctx, 0.001).await;
@@ -202,14 +230,15 @@ async fn test_dlmm_buy_pipeline_fail_closed_pool_account_not_found() {
     let error_msg = result.unwrap_err().to_string();
     assert_eq!(
         error_msg, "Failed to fetch pool account in Live mode",
-        "Expected exact error 'Failed to fetch pool account in Live mode', got: {}", error_msg
+        "Expected exact error 'Failed to fetch pool account in Live mode', got: {}",
+        error_msg
     );
 }
 
 #[test]
 fn test_cpmm_zero_reserves_produces_zero_output_and_is_rejected() {
-    use solbot_strategy::tx_builder::raydium_cpmm::{CpmmPoolState, CpmmFees};
     use solbot_strategy::actor::mint_actor::ensure_nonzero_output;
+    use solbot_strategy::tx_builder::raydium_cpmm::{CpmmFees, CpmmPoolState};
 
     let pool_state = CpmmPoolState {
         pool_id: Pubkey::new_unique(),
@@ -236,7 +265,8 @@ fn test_cpmm_zero_reserves_produces_zero_output_and_is_rejected() {
         creator_fees_token_0: 0,
         creator_fees_token_1: 0,
         enable_creator_fee: false,
-    }.with_vault_balances(0, 0);
+    }
+    .with_vault_balances(0, 0);
 
     let expected_out = pool_state.calculate_buy_output(1_000_000_000);
     assert_eq!(expected_out, 0, "с нулевыми резервами output обязан быть 0");
@@ -247,8 +277,8 @@ fn test_cpmm_zero_reserves_produces_zero_output_and_is_rejected() {
 
 #[test]
 fn test_dlmm_zero_reserves_produces_zero_output_and_is_rejected() {
-    use solbot_strategy::tx_builder::meteora_dlmm::DlmmPoolState;
     use solbot_strategy::actor::mint_actor::ensure_nonzero_output;
+    use solbot_strategy::tx_builder::meteora_dlmm::DlmmPoolState;
 
     let pool_state = DlmmPoolState {
         lb_pair: Pubkey::new_unique(),
@@ -262,7 +292,8 @@ fn test_dlmm_zero_reserves_produces_zero_output_and_is_rejected() {
         reserve_x_balance: 0,
         reserve_y_balance: 0,
         bin_step: 1,
-    }.with_vault_balances(0, 0);
+    }
+    .with_vault_balances(0, 0);
 
     let expected_out = pool_state.calculate_buy_output(1_000_000_000);
     assert_eq!(expected_out, 0, "с нулевыми резервами output обязан быть 0");
@@ -281,7 +312,7 @@ async fn test_buy_pipeline_fail_closed_no_signer_client() {
         rpc_url: Some("https://api.mainnet-beta.solana.com".to_string()),
         wallet: Pubkey::new_unique(),
         signer_client: None, // Missing signer_client
-        router: None, // Will be caught by signer check first
+        router: None,        // Will be caught by signer check first
         tier_params: make_test_tier_params(),
         risk_gate_config: make_test_risk_gate_config(),
         dex_readiness: DexReadinessConfig::default(),
@@ -291,13 +322,19 @@ async fn test_buy_pipeline_fail_closed_no_signer_client() {
         trade_stats: None,
         positions_repo: None,
         state_transitions_repo: None,
+        position_lifecycle: None,
+        lifecycle_event_tx: None,
+        circuit_breaker: None,
     };
 
     let result = execute_buy_pipeline(&mut ctx, 0.001).await;
     assert!(result.is_err());
     let error_msg = result.unwrap_err().to_string();
-    assert!(error_msg.contains("No signer_client configured"), 
-        "Expected error about missing signer_client, got: {}", error_msg);
+    assert!(
+        error_msg.contains("No signer_client configured"),
+        "Expected error about missing signer_client, got: {}",
+        error_msg
+    );
 }
 
 #[tokio::test]
@@ -320,14 +357,20 @@ async fn test_buy_pipeline_fail_closed_no_router() {
         trade_stats: None,
         positions_repo: None,
         state_transitions_repo: None,
+        position_lifecycle: None,
+        lifecycle_event_tx: None,
+        circuit_breaker: None,
     };
 
     let result = execute_buy_pipeline(&mut ctx, 0.001).await;
     assert!(result.is_err());
     // Should fail on router check since signer_client is present
     let error_msg = result.unwrap_err().to_string();
-    assert!(error_msg.contains("No router configured"), 
-        "Expected error about missing router, got: {}", error_msg);
+    assert!(
+        error_msg.contains("No router configured"),
+        "Expected error about missing router, got: {}",
+        error_msg
+    );
 }
 
 #[tokio::test]
@@ -351,13 +394,20 @@ async fn test_exit_pipeline_fail_closed_no_signer_client() {
         trade_stats: None,
         positions_repo: None,
         state_transitions_repo: None,
+        position_lifecycle: None,
+        lifecycle_event_tx: None,
+        circuit_breaker: None,
     };
 
-    let result = execute_exit_pipeline(&mut ctx, &test_position, ExitAction::HardStopLoss, 0.0005).await;
+    let result =
+        execute_exit_pipeline(&mut ctx, &test_position, ExitAction::HardStopLoss, 0.0005).await;
     assert!(result.is_err());
     let error_msg = result.unwrap_err().to_string();
-    assert!(error_msg.contains("No signer_client configured"), 
-        "Expected error about missing signer_client, got: {}", error_msg);
+    assert!(
+        error_msg.contains("No signer_client configured"),
+        "Expected error about missing signer_client, got: {}",
+        error_msg
+    );
 }
 
 #[tokio::test]
@@ -381,14 +431,21 @@ async fn test_exit_pipeline_fail_closed_no_router() {
         trade_stats: None,
         positions_repo: None,
         state_transitions_repo: None,
+        position_lifecycle: None,
+        lifecycle_event_tx: None,
+        circuit_breaker: None,
     };
 
-    let result = execute_exit_pipeline(&mut ctx, &test_position, ExitAction::HardStopLoss, 0.0005).await;
+    let result =
+        execute_exit_pipeline(&mut ctx, &test_position, ExitAction::HardStopLoss, 0.0005).await;
     assert!(result.is_err());
     // Should fail on router check since signer_client is present
     let error_msg = result.unwrap_err().to_string();
-    assert!(error_msg.contains("No router configured"), 
-        "Expected error about missing router, got: {}", error_msg);
+    assert!(
+        error_msg.contains("No router configured"),
+        "Expected error about missing router, got: {}",
+        error_msg
+    );
 }
 
 fn make_test_risk_gate_config() -> RiskGateConfig {
@@ -398,50 +455,57 @@ fn make_test_risk_gate_config() -> RiskGateConfig {
         lp_lock_timeout_ms: 10000,
         token2022_timeout_ms: 5000,
         simulate_sell_timeout_ms: 5000,
+        pre_buy_checks_timeout_ms: 200,
         simulate_size_lamports: 1_000_000_000,
         token2022_allowlist: vec![],
         token2022_blocklist: vec![],
+        max_signal_age_ms: 0,
+        cache: RiskGateCache::new(10),
     }
 }
 
 #[tokio::test]
 async fn test_buy_pipeline_fail_closed_rpc_failure() {
     // Test the fetch_vault_balances helper function directly to avoid risk gate interference
-    use solbot_strategy::actor::mint_actor::fetch_vault_balances;
     use solana_pubkey::Pubkey;
-    
+    use solbot_strategy::actor::mint_actor::fetch_vault_balances;
+
     let vault_a = Pubkey::new_unique();
     let vault_b = Pubkey::new_unique();
-    
+
     let result = fetch_vault_balances(
         "invalid://rpc-url-that-will-fail".to_string(),
         vault_a,
         vault_b,
         "Test DEX",
-    ).await;
-    
+    )
+    .await;
+
     assert!(result.is_err());
     let error_msg = result.unwrap_err().to_string();
     // Should fail on RPC fetch error
-    assert!(error_msg.contains("Failed to fetch") || error_msg.contains("vault balance"),
-        "Expected RPC fetch error, got: {}", error_msg);
+    assert!(
+        error_msg.contains("Failed to fetch") || error_msg.contains("vault balance"),
+        "Expected RPC fetch error, got: {}",
+        error_msg
+    );
 }
 
 #[tokio::test]
 async fn test_ensure_nonzero_output() {
     use solbot_strategy::actor::mint_actor::ensure_nonzero_output;
-    
+
     // Test zero output should bail
     let result = ensure_nonzero_output(0, "Test DEX", "buy");
     assert!(result.is_err());
     let error_msg = result.unwrap_err().to_string();
     assert!(error_msg.contains("Test DEX"));
     assert!(error_msg.contains("zero buy output"));
-    
+
     // Test non-zero output should pass
     let result = ensure_nonzero_output(1000, "Test DEX", "sell");
     assert!(result.is_ok());
-    
+
     // Test sell direction
     let result = ensure_nonzero_output(0, "Raydium AMM v4", "sell");
     assert!(result.is_err());
@@ -474,13 +538,18 @@ fn make_test_tier_params() -> TierParams {
     TierParams {
         tier: TierInfo {
             name: "Micro".to_string(),
-            capital_range: CapitalRange { min_usd: 0, max_usd: 1000 },
+            capital_range: CapitalRange {
+                min_usd: 0,
+                max_usd: 1000,
+            },
         },
         sizing: SizingParams {
             base_size_pct: 0.05,
             max_size_sol: 0.5,
             slippage_hard_cap_bps: 1000,
-            kelly: KellyParams { fraction_of_kelly: 0.25 },
+            kelly: KellyParams {
+                fraction_of_kelly: 0.25,
+            },
             adaptive: AdaptiveParams {
                 enabled: false,
                 calibration_window_slots: 100,
@@ -527,6 +596,9 @@ fn test_actor_context_creation() {
         dex_readiness: DexReadinessConfig::default(),
         positions_repo: None,
         state_transitions_repo: None,
+        position_lifecycle: None,
+        lifecycle_event_tx: None,
+        circuit_breaker: None,
     };
 
     assert_eq!(ctx.trading_mode, TradingMode::Paper);
@@ -554,6 +626,9 @@ fn test_buy_pipeline_risk_gate_rejection() {
         dex_readiness: DexReadinessConfig::default(),
         positions_repo: None,
         state_transitions_repo: None,
+        position_lifecycle: None,
+        lifecycle_event_tx: None,
+        circuit_breaker: None,
     };
 
     // This should fail because risk gate checks will reject (no real RPC)
@@ -603,6 +678,9 @@ fn test_sell_pipeline_take_profit() {
         dex_readiness: DexReadinessConfig::default(),
         positions_repo: None,
         state_transitions_repo: None,
+        position_lifecycle: None,
+        lifecycle_event_tx: None,
+        circuit_breaker: None,
     };
 
     let position = ctx.active_position.clone().unwrap();
@@ -616,7 +694,7 @@ fn test_sell_pipeline_take_profit() {
         .block_on(execute_exit_pipeline(&mut ctx, &position, exit_action, 1.5));
 
     assert!(result.is_ok());
-    
+
     // Verify position state was updated
     if let Some(ref pos) = ctx.active_position {
         assert_eq!(pos.status, PositionStatus::Tp1Filled);
@@ -662,6 +740,9 @@ fn test_sell_pipeline_hard_stop_loss() {
         dex_readiness: DexReadinessConfig::default(),
         positions_repo: None,
         state_transitions_repo: None,
+        position_lifecycle: None,
+        lifecycle_event_tx: None,
+        circuit_breaker: None,
     };
 
     let position = ctx.active_position.clone().unwrap();
@@ -672,7 +753,7 @@ fn test_sell_pipeline_hard_stop_loss() {
         .block_on(execute_exit_pipeline(&mut ctx, &position, exit_action, 0.4));
 
     assert!(result.is_ok());
-    
+
     // Verify position was closed
     if let Some(ref pos) = ctx.active_position {
         assert_eq!(pos.status, PositionStatus::Closed);
@@ -704,7 +785,13 @@ fn test_exit_evaluation_tp1_trigger() {
 
     // Price at +60% should trigger TP1 (+50%)
     let action = exit::evaluate_exit(&position, 1.6);
-    assert!(matches!(action, Some(ExitAction::TakeProfit { level: TpLevel::Tp1, .. })));
+    assert!(matches!(
+        action,
+        Some(ExitAction::TakeProfit {
+            level: TpLevel::Tp1,
+            ..
+        })
+    ));
 }
 
 #[test]
@@ -762,7 +849,7 @@ fn test_exit_evaluation_no_trigger_in_range() {
 #[test]
 fn test_actor_context_with_full_components() {
     let wallet = Pubkey::from_str("7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU").unwrap();
-    
+
     let ctx = ActorContext {
         mint: "TestMint111111111111111111111111111111111".to_string(),
         pool_address: "TestPool111111111111111111111111111111111".to_string(),
@@ -773,7 +860,7 @@ fn test_actor_context_with_full_components() {
         tier: CapitalTier::Micro,
         tier_params: make_test_tier_params(),
         capital_sol: 10.0,
-        router: None, // TODO: Add mock router
+        router: None,        // TODO: Add mock router
         signer_client: None, // TODO: Add mock signer client
         rpc_url: None,
         active_position: None,
@@ -781,10 +868,19 @@ fn test_actor_context_with_full_components() {
         dex_readiness: DexReadinessConfig::default(),
         positions_repo: None,
         state_transitions_repo: None,
+        position_lifecycle: None,
+        lifecycle_event_tx: None,
+        circuit_breaker: None,
     };
 
-    assert_eq!(ctx.wallet.to_string(), "7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU");
-    assert_eq!(ctx.dex_program_id, "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8");
+    assert_eq!(
+        ctx.wallet.to_string(),
+        "7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU"
+    );
+    assert_eq!(
+        ctx.dex_program_id,
+        "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8"
+    );
     assert_eq!(ctx.trading_mode, TradingMode::Paper);
 }
 
@@ -809,6 +905,9 @@ fn test_trading_mode_paper_vs_live() {
         dex_readiness: DexReadinessConfig::default(),
         positions_repo: None,
         state_transitions_repo: None,
+        position_lifecycle: None,
+        lifecycle_event_tx: None,
+        circuit_breaker: None,
     };
 
     // Live mode - would submit transactions (mocked for test)
@@ -830,6 +929,9 @@ fn test_trading_mode_paper_vs_live() {
         dex_readiness: DexReadinessConfig::default(),
         positions_repo: None,
         state_transitions_repo: None,
+        position_lifecycle: None,
+        lifecycle_event_tx: None,
+        circuit_breaker: None,
     };
 
     assert_eq!(ctx_paper.trading_mode, TradingMode::Paper);
@@ -874,10 +976,13 @@ fn test_kill_switch_emergency_exit() {
         dex_readiness: DexReadinessConfig::default(),
         positions_repo: None,
         state_transitions_repo: None,
+        position_lifecycle: None,
+        lifecycle_event_tx: None,
+        circuit_breaker: None,
     };
 
     let position = ctx.active_position.clone().unwrap();
-    
+
     // Simulate emergency exit via execute_exit_pipeline
     let exit_action = ExitAction::Emergency {
         reason: "Kill switch activated".to_string(),
@@ -888,7 +993,7 @@ fn test_kill_switch_emergency_exit() {
         .block_on(execute_exit_pipeline(&mut ctx, &position, exit_action, 0.8));
 
     assert!(result.is_ok());
-    
+
     // Verify position was closed
     if let Some(ref pos) = ctx.active_position {
         assert_eq!(pos.status, PositionStatus::Closed);
@@ -935,7 +1040,7 @@ async fn test_position_lifecycle_sqlite_persistence_and_transitions() {
             tx_signature TEXT,
             created_at_utc INTEGER NOT NULL
         );
-        "#
+        "#,
     )
     .execute(&pool)
     .await
@@ -981,6 +1086,9 @@ async fn test_position_lifecycle_sqlite_persistence_and_transitions() {
         dex_readiness: DexReadinessConfig::default(),
         positions_repo: Some(positions_repo.clone()),
         state_transitions_repo: Some(state_transitions_repo.clone()),
+        position_lifecycle: Some(Arc::new(PositionLifecycle::new(pool.clone()))),
+        lifecycle_event_tx: None,
+        circuit_breaker: None,
     };
 
     // 1. Insert initial position into DB
@@ -994,11 +1102,20 @@ async fn test_position_lifecycle_sqlite_persistence_and_transitions() {
     execute_exit_pipeline(
         &mut ctx,
         &initial_pos,
-        ExitAction::TakeProfit { level: TpLevel::Tp1, sell_fraction_of_remaining: 0.3 },
+        ExitAction::TakeProfit {
+            level: TpLevel::Tp1,
+            sell_fraction_of_remaining: 0.3,
+        },
         1.5,
-    ).await.unwrap();
+    )
+    .await
+    .unwrap();
 
-    let db_pos = positions_repo.get_position_by_id("pos-lifecycle-1").await.unwrap().unwrap();
+    let db_pos = positions_repo
+        .get_position_by_id("pos-lifecycle-1")
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(db_pos.status, PositionStatus::Tp1Filled);
     assert!((db_pos.remaining_token_pct - 0.70).abs() < 0.01);
     assert!(db_pos.trailing_active);
@@ -1008,37 +1125,43 @@ async fn test_position_lifecycle_sqlite_persistence_and_transitions() {
     execute_exit_pipeline(
         &mut ctx,
         &current_pos,
-        ExitAction::TakeProfit { level: TpLevel::Tp2, sell_fraction_of_remaining: 0.3 },
+        ExitAction::TakeProfit {
+            level: TpLevel::Tp2,
+            sell_fraction_of_remaining: 0.3,
+        },
         2.0,
-    ).await.unwrap();
+    )
+    .await
+    .unwrap();
 
-    let db_pos = positions_repo.get_position_by_id("pos-lifecycle-1").await.unwrap().unwrap();
+    let db_pos = positions_repo
+        .get_position_by_id("pos-lifecycle-1")
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(db_pos.status, PositionStatus::Tp2Filled);
     assert!((db_pos.remaining_token_pct - 0.40).abs() < 0.01);
 
-    // 4. TP3 execution: Tp2Filled -> Tp3Filled
+    // 4. TP3 execution: Tp2Filled -> Tp3Filled -> Closed (auto-transition)
     let current_pos = ctx.active_position.clone().unwrap();
     execute_exit_pipeline(
         &mut ctx,
         &current_pos,
-        ExitAction::TakeProfit { level: TpLevel::Tp3, sell_fraction_of_remaining: 0.2 },
+        ExitAction::TakeProfit {
+            level: TpLevel::Tp3,
+            sell_fraction_of_remaining: 0.2,
+        },
         3.0,
-    ).await.unwrap();
+    )
+    .await
+    .unwrap();
 
-    let db_pos = positions_repo.get_position_by_id("pos-lifecycle-1").await.unwrap().unwrap();
-    assert_eq!(db_pos.status, PositionStatus::Tp3Filled);
-    assert!((db_pos.remaining_token_pct - 0.20).abs() < 0.01);
-
-    // 5. Trailing Stop execution: Tp3Filled -> Closed
-    let current_pos = ctx.active_position.clone().unwrap();
-    execute_exit_pipeline(
-        &mut ctx,
-        &current_pos,
-        ExitAction::TrailingStop { trigger_price: 2.5, high_water_mark: 3.5 },
-        2.5,
-    ).await.unwrap();
-
-    let db_pos = positions_repo.get_position_by_id("pos-lifecycle-1").await.unwrap().unwrap();
+    let db_pos = positions_repo
+        .get_position_by_id("pos-lifecycle-1")
+        .await
+        .unwrap()
+        .unwrap();
+    // TP3 auto-transitions to Closed
     assert_eq!(db_pos.status, PositionStatus::Closed);
     assert_eq!(db_pos.remaining_token_pct, 0.0);
     assert!(db_pos.closed_at_utc.is_some());
@@ -1105,7 +1228,7 @@ async fn test_position_lifecycle_stuck_manual_intervention_required() {
             tx_signature TEXT,
             created_at_utc INTEGER NOT NULL
         );
-        "#
+        "#,
     )
     .execute(&pool)
     .await
@@ -1153,6 +1276,9 @@ async fn test_position_lifecycle_stuck_manual_intervention_required() {
         dex_readiness: DexReadinessConfig::default(),
         positions_repo: Some(positions_repo.clone()),
         state_transitions_repo: Some(state_transitions_repo.clone()),
+        position_lifecycle: Some(Arc::new(PositionLifecycle::new(pool.clone()))),
+        lifecycle_event_tx: None,
+        circuit_breaker: None,
     };
 
     // Trigger price tick for HardStopLoss
@@ -1165,11 +1291,19 @@ async fn test_position_lifecycle_stuck_manual_intervention_required() {
             timestamp: 1000005,
         },
         &mut ctx,
-    ).await;
+    )
+    .await;
 
     // Verify status was changed to StuckManualInterventionRequired
-    let db_pos = positions_repo.get_position_by_id("pos-stuck-1").await.unwrap().unwrap();
-    assert_eq!(db_pos.status, PositionStatus::StuckManualInterventionRequired);
+    let db_pos = positions_repo
+        .get_position_by_id("pos-stuck-1")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        db_pos.status,
+        PositionStatus::StuckManualInterventionRequired
+    );
 
     let transitions = sqlx::query_as::<_, (String, String, String)>(
         "SELECT from_status, to_status, reason FROM state_transitions WHERE position_id = 'pos-stuck-1'"
@@ -1181,4 +1315,41 @@ async fn test_position_lifecycle_stuck_manual_intervention_required() {
     assert_eq!(transitions.len(), 1);
     assert_eq!(transitions[0].0, "open");
     assert_eq!(transitions[0].1, "stuck_manual_intervention_required");
+}
+
+/// Helper function to create a test ActorContext with all required fields populated.
+/// Customize by modifying returned struct after creation.
+fn make_test_actor_context(
+    mint: Option<String>,
+    pool_address: Option<String>,
+    dex_program_id: Option<String>,
+    trading_mode: TradingMode,
+) -> ActorContext {
+    use solbot_strategy::circuit_breaker::CircuitBreaker;
+    use solbot_strategy::state::position_lifecycle::PositionLifecycle;
+
+    ActorContext {
+        mint: mint.unwrap_or_else(|| "TestMint111111111111111111111111111111111".to_string()),
+        pool_address: pool_address
+            .unwrap_or_else(|| "TestPool111111111111111111111111111111111".to_string()),
+        dex_program_id: dex_program_id
+            .unwrap_or_else(|| "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8".to_string()),
+        wallet: Pubkey::new_unique(),
+        trading_mode,
+        risk_gate_config: RiskGateConfig::default(),
+        tier: CapitalTier::Micro,
+        tier_params: make_test_tier_params(),
+        capital_sol: 10.0,
+        router: None,
+        signer_client: None,
+        rpc_url: None,
+        active_position: None,
+        trade_stats: None,
+        dex_readiness: DexReadinessConfig::default(),
+        positions_repo: None,
+        state_transitions_repo: None,
+        position_lifecycle: None,
+        lifecycle_event_tx: None,
+        circuit_breaker: None,
+    }
 }

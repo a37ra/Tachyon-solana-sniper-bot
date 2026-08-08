@@ -11,18 +11,18 @@
 //! - Compatible with existing from_account_data() parsers
 
 use anyhow::Result;
+use base64::Engine;
+use futures_util::{SinkExt, StreamExt};
+use serde_json;
 use solana_pubkey::Pubkey;
 use solana_rpc_client::rpc_client::RpcClient;
 use sqlx::SqlitePool;
+use std::str::FromStr;
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use tokio::time::{Duration, sleep, interval};
+use tokio::time::{interval, sleep, Duration};
 use tokio_tungstenite::tungstenite::protocol::Message;
-use tracing::{info, warn, error};
-use serde_json;
-use std::str::FromStr;
-use futures_util::{StreamExt, SinkExt};
-use base64::Engine;
+use tracing::{error, info, warn};
 
 /// Re-export AccountUpdate from geyser_client for compatibility
 pub use super::geyser_client::{AccountUpdate, ExtendedHistoryProvider};
@@ -46,13 +46,12 @@ impl Default for HeliusWsConfig {
         let api_key = std::env::var("HELIUS_API_KEY")
             .or_else(|_| std::env::var("GEYSER_X_TOKEN"))
             .unwrap_or_else(|_| "YOUR_API_KEY".to_string());
-        
+
         Self {
             ws_url: format!("wss://mainnet.helius-rpc.com/?api-key={}", api_key),
             commitment: std::env::var("HELIUS_COMMITMENT")
                 .unwrap_or_else(|_| "confirmed".to_string()),
-            encoding: std::env::var("HELIUS_ENCODING")
-                .unwrap_or_else(|_| "base64".to_string()),
+            encoding: std::env::var("HELIUS_ENCODING").unwrap_or_else(|_| "base64".to_string()),
         }
     }
 }
@@ -143,7 +142,10 @@ impl HeliusWsClient {
                                 info!("Performing backfill for open positions after WebSocket reconnection");
                                 match backfill.perform_backfill().await {
                                     Ok(count) => {
-                                        info!(positions_checked = count, "WebSocket backfill completed");
+                                        info!(
+                                            positions_checked = count,
+                                            "WebSocket backfill completed"
+                                        );
                                     }
                                     Err(e) => {
                                         warn!(error = %e, "WebSocket backfill failed, continuing with subscription");
@@ -171,7 +173,9 @@ impl HeliusWsClient {
                                 ]
                             });
 
-                            if let Err(e) = write.send(Message::Text(subscribe_msg.to_string())).await {
+                            if let Err(e) =
+                                write.send(Message::Text(subscribe_msg.to_string())).await
+                            {
                                 error!(error = %e, "Failed to send programSubscribe request");
                                 break;
                             }
@@ -181,7 +185,7 @@ impl HeliusWsClient {
 
                         // Start ping interval (every 30 seconds)
                         let mut ping_interval = interval(Duration::from_secs(30));
-                        
+
                         let mut total_updates = 0u64;
                         let mut account_updates_count = 0u64;
 
@@ -195,7 +199,7 @@ impl HeliusWsClient {
                                     }
                                     info!("WebSocket ping sent");
                                 }
-                                
+
                                 // Handle incoming messages
                                 message = read.next() => {
                                     match message {
@@ -212,7 +216,7 @@ impl HeliusWsClient {
 
                                             if let Some(account_update) = Self::parse_program_notification(&text) {
                                                 account_updates_count += 1;
-                                                
+
                                                 if tx.send(account_update).await.is_err() {
                                                     info!("Receiver dropped, closing Helius WS listener loop");
                                                     return;
@@ -246,7 +250,8 @@ impl HeliusWsClient {
                             error!("Max reconnect attempts reached, giving up");
                             break;
                         }
-                        let backoff = (base_backoff * 2u32.pow(reconnect_attempts)).min(max_backoff);
+                        let backoff =
+                            (base_backoff * 2u32.pow(reconnect_attempts)).min(max_backoff);
                         warn!("Reconnecting in {:?}...", backoff);
                         sleep(backoff).await;
                         reconnect_attempts += 1;
@@ -308,7 +313,9 @@ impl HeliusWsClient {
                                 ]
                             });
 
-                            if let Err(e) = write.send(Message::Text(subscribe_msg.to_string())).await {
+                            if let Err(e) =
+                                write.send(Message::Text(subscribe_msg.to_string())).await
+                            {
                                 error!(error = %e, "Failed to send logsSubscribe request");
                                 break;
                             }
@@ -318,7 +325,7 @@ impl HeliusWsClient {
 
                         // Start ping interval (every 30 seconds)
                         let mut ping_interval = interval(Duration::from_secs(30));
-                        
+
                         let mut total_logs = 0u64;
                         let mut parsed_signals_count = 0u64;
 
@@ -332,13 +339,13 @@ impl HeliusWsClient {
                                     }
                                     info!("WebSocket ping sent (logsSubscribe)");
                                 }
-                                
+
                                 // Handle incoming messages
                                 message = read.next() => {
                                     match message {
                                         Some(Ok(Message::Text(text))) => {
                                             total_logs += 1;
-                                            
+
                                             if total_logs.is_multiple_of(100) {
                                                 info!(total_logs, parsed_signals_count, "WebSocket logs stream progress");
                                             }
@@ -346,7 +353,7 @@ impl HeliusWsClient {
                                             // Parse logs message
                                             if let Ok(signals) = crate::signal::logs_parser::parse_logs_message(&text) {
                                                 parsed_signals_count += signals.len() as u64;
-                                                
+
                                                 for signal in signals {
                                                     if tx.send(signal).await.is_err() {
                                                         info!("Receiver dropped, closing Helius WS logs listener loop");
@@ -378,13 +385,14 @@ impl HeliusWsClient {
                     }
                     Err(e) => {
                         error!(error = %e, "Failed to connect to Helius WebSocket (logsSubscribe)");
-                        
+
                         if reconnect_attempts >= max_reconnect_attempts {
                             error!("Max reconnect attempts reached, giving up (logsSubscribe)");
                             return;
                         }
-                        
-                        let backoff = (base_backoff * 2u32.pow(reconnect_attempts)).min(max_backoff);
+
+                        let backoff =
+                            (base_backoff * 2u32.pow(reconnect_attempts)).min(max_backoff);
                         warn!("Reconnecting in {:?}... (logsSubscribe)", backoff);
                         sleep(backoff).await;
                         reconnect_attempts += 1;
@@ -400,7 +408,7 @@ impl HeliusWsClient {
     /// Parse programNotification from WebSocket message.
     fn parse_program_notification(text: &str) -> Option<AccountUpdate> {
         let json: serde_json::Value = serde_json::from_str(text).ok()?;
-        
+
         // Check if this is a programNotification
         let method = json.get("method")?.as_str()?;
         if method != "programNotification" {
@@ -409,13 +417,13 @@ impl HeliusWsClient {
 
         let params = json.get("params")?;
         let result = params.get("result")?;
-        
+
         // Extract slot from context
         let slot = result.get("context")?.get("slot")?.as_u64()?;
 
         // Extract value (account info)
         let value = result.get("value")?;
-        
+
         // Extract pubkey (at value level in Helius format)
         let account_str = value.get("pubkey")?.as_str()?;
         let account_pubkey = Pubkey::from_str(account_str).ok()?;
@@ -437,7 +445,9 @@ impl HeliusWsClient {
         } else {
             data_array.as_str()?
         };
-        let data = base64::engine::general_purpose::STANDARD.decode(data_base64).ok()?;
+        let data = base64::engine::general_purpose::STANDARD
+            .decode(data_base64)
+            .ok()?;
 
         // Parse executable
         let executable = account.get("executable")?.as_bool().unwrap_or(false);
@@ -453,10 +463,19 @@ impl HeliusWsClient {
             owner: owner_pubkey,
             executable,
             rent_epoch,
+            timestamp_ms: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64,
         };
 
-        info!("Parsed account update: account={} owner={} slot={} data_len={}", 
-              update.account, update.owner, update.slot, update.data.len());
+        info!(
+            "Parsed account update: account={} owner={} slot={} data_len={}",
+            update.account,
+            update.owner,
+            update.slot,
+            update.data.len()
+        );
 
         Some(update)
     }

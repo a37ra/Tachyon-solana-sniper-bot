@@ -17,9 +17,13 @@ impl ControlLane {
         Self { tx, rx }
     }
 
-    pub async fn send(&self, event: ControlEvent, timeout_ms: u64) -> Result<(), mpsc::error::SendError<ControlEvent>> {
+    pub async fn send(
+        &self,
+        event: ControlEvent,
+        timeout_ms: u64,
+    ) -> Result<(), mpsc::error::SendError<ControlEvent>> {
         let timeout = Duration::from_millis(timeout_ms);
-        
+
         match tokio::time::timeout(timeout, self.tx.send(event.clone())).await {
             Ok(Ok(())) => Ok(()),
             Ok(Err(e)) => Err(e),
@@ -31,7 +35,10 @@ impl ControlLane {
         }
     }
 
-    pub fn try_send(&self, event: ControlEvent) -> Result<(), mpsc::error::TrySendError<ControlEvent>> {
+    pub fn try_send(
+        &self,
+        event: ControlEvent,
+    ) -> Result<(), mpsc::error::TrySendError<ControlEvent>> {
         self.tx.try_send(event)
     }
 }

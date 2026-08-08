@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
-use std::time::{Duration, Instant};
 use std::sync::RwLock;
+use std::time::{Duration, Instant};
 
 pub struct CompromiseDetection {
     window: Duration,
@@ -20,7 +20,7 @@ impl CompromiseDetection {
     pub fn check_signing_rate(&self) -> bool {
         let mut q = self.timestamps.write().unwrap();
         let now = Instant::now();
-        
+
         // Remove old timestamps
         while let Some(&t) = q.front() {
             if now.duration_since(t) > self.window {
@@ -29,12 +29,12 @@ impl CompromiseDetection {
                 break;
             }
         }
-        
+
         // Check threshold
         if q.len() >= self.threshold as usize {
             return false; // Anomalous rate detected
         }
-        
+
         q.push_back(now);
         true
     }

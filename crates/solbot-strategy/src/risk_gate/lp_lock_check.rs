@@ -37,14 +37,12 @@ const INCINERATOR_ADDRESS: &str = "1nc1nerator11111111111111111111111111111111";
 const TIMELOCK_PROGRAMS: &[&str] = &[
     // Streamflow Locker
     "strmZ2eBhSivzpwb9kWwqCzP2cqnWkoV28nhPkXA36p",
-    // UNCX / UniCrypt Locker
-    "UNCX6vYVfMvwMvgC1xZJqD... ",
-    // PinkLock / PinkSale Locker
-    "pLck111111111111111111111111111111111111111",
-    // SolLocker
-    "LockT111111111111111111111111111111111111111",
-    // Team Finance Locker
-    "TF11111111111111111111111111111111111111111",
+    // UNCX / UniCrypt locker program IDs from official UNCX documentation.
+    "GsSCS3vPWrtJ5Y9aEVVT65fmrex5P5RGHXdZvsdbWgfo",
+    "UNCX77nZrA3TdAxMEggqG18xxpgiNGT6iqyynPwpoxN",
+    "UNCXdvMRxvz91g3HqFmpZ5NgmL77UH4QRM4NfeL4mQB",
+    "UNCXrB8cZXnmtYM1aSo1Wx3pQaeSZYuF2jCTesXvECs",
+    // Additional known lockers should be added here once verified by mainnet program IDs.
 ];
 
 /// Result of LP mint extraction.  
@@ -89,7 +87,11 @@ pub async fn check(pool_address: &str, dex_program: &str, rpc_url: &str) -> Chec
         let pool_account = rpc.get_account(&pool_pubkey)?;
 
         if pool_account.data.is_empty() {
-            return Ok::<_, anyhow::Error>((LpMintResult::NotApplicableBondingCurve, None, start.elapsed()));
+            return Ok::<_, anyhow::Error>((
+                LpMintResult::NotApplicableBondingCurve,
+                None,
+                start.elapsed(),
+            ));
         }
 
         // Step 2: Extract LP mint address based on DEX type
@@ -235,15 +237,9 @@ pub async fn check(pool_address: &str, dex_program: &str, rpc_url: &str) -> Chec
         },
     }
 }
-
-/// Extract LP mint address from pool account data based on DEX type.
-///
-/// Returns [`LpMintResult`] to explicitly distinguish:
-/// - real fungible LP mint → `Found(pubkey)`
-/// - protocol with no fungible LP mint → typed `NotApplicable*` variant
 fn extract_lp_mint(
     pool_data: &[u8],
-    _pool_owner: &str,
+    pool_owner: &str,
     dex_program: &str,
 ) -> anyhow::Result<LpMintResult> {
     match dex_program {
@@ -262,9 +258,7 @@ fn extract_lp_mint(
             Ok(LpMintResult::Found(read_pubkey(pool_data, 8 + 32 * 6)?))
         }
         // Raydium CLMM: concentrated liquidity — positions are NFTs, no single fungible LP mint
-        "CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK" => {
-            Ok(LpMintResult::NotApplicableClmm)
-        }
+        "CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK" => Ok(LpMintResult::NotApplicableClmm),
         // Meteora Dynamic AMM: LP vault mint at offset 8 + 32*6
         "Eo7WjKq67rjJQSZxS6z3YKapzY3eMj6Xy8X5EQVn5UaB" => {
             if pool_data.len() < 8 + 32 * 7 {
@@ -277,13 +271,9 @@ fn extract_lp_mint(
         // v1: LBUZKhRxPF3XUpBCjp4kVn14nz88kZjgL6Xm1xS8bKp
         // v2: LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo
         "LBUZKhRxPF3XUpBCjp4kVn14nz88kZjgL6Xm1xS8bKp"
-        | "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo" => {
-            Ok(LpMintResult::NotApplicableDlmm)
-        }
+        | "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo" => Ok(LpMintResult::NotApplicableDlmm),
         // Pump.fun: bonding curve holds reserves; no LP mint until Raydium migration
-        "6EF8rrecthR5DkZ8w3bq6z3Y3Y3Y3Y3Y3Y3Y3Y3Y3Y" => {
-            Ok(LpMintResult::NotApplicableBondingCurve)
-        }
+        "6EF8rrecthR5DkZ8w3bq6z3Y3Y3Y3Y3Y3Y3Y3Y3Y3Y" => Ok(LpMintResult::NotApplicableBondingCurve),
         _ => {
             anyhow::bail!("Unsupported DEX program for LP lock check: {}", dex_program);
         }
@@ -319,10 +309,139 @@ fn is_timelock_program(address: &str) -> bool {
     TIMELOCK_PROGRAMS.iter().any(|&p| p.trim() == address)
 }
 
+/// Optimized check using pre-fetched account data to avoid redundant RPC calls.
+pub async fn check_with_context(
+    pool_address: &str,
+    dex_program: &str,
+    context: &crate::risk_gate::PreBuyCheckContext,
+) -> CheckResult {
+    let start = std::time::Instant::now();
+
+    let pool_pubkey = match Pubkey::try_from(pool_address) {
+        Ok(pk) => pk,
+        Err(e) => {
+            return CheckResult {
+                passed: false,
+                reason: Some(format!("Invalid pool pubkey: {}", e)),
+                duration_ms: start.elapsed().as_millis() as u64,
+            };
+        }
+    };
+
+    let (pool_data, pool_owner) = match (&context.pool_data, &context.pool_owner) {
+        (Some(data), Some(owner)) => (data.clone(), owner.to_string()),
+        _ => {
+            return CheckResult {
+                passed: false,
+                reason: Some("Pool account not available in context".to_string()),
+                duration_ms: start.elapsed().as_millis() as u64,
+            };
+        }
+    };
+
+    let elapsed = start.elapsed();
+
+    // Skip LP lock check for DEX types without fungible LP tokens
+    if pool_owner == "CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK" {
+        return CheckResult {
+            passed: true,
+            reason: Some("lp_lock:not_applicable:clmm".to_string()),
+            duration_ms: elapsed.as_millis() as u64,
+        };
+    }
+
+    if pool_owner == "LBUZKhRxPF3XUpBCjp4kVn14nz88kZjgL6Xm1xS8bKp" {
+        return CheckResult {
+            passed: true,
+            reason: Some("lp_lock:not_applicable:dlmm".to_string()),
+            duration_ms: elapsed.as_millis() as u64,
+        };
+    }
+
+    if pool_owner == "6EF8rrecthR5DkZ8w3bq6z3Y3Y3Y3Y3Y3Y3Y3Y3Y3Y" {
+        return CheckResult {
+            passed: true,
+            reason: Some("lp_lock:not_applicable:bonding_curve".to_string()),
+            duration_ms: elapsed.as_millis() as u64,
+        };
+    }
+
+    // Extract LP mint address from pool data
+    let lp_mint_result = match extract_lp_mint(&pool_data, &pool_owner, dex_program) {
+        Ok(result) => result,
+        Err(e) => {
+            return CheckResult {
+                passed: false,
+                reason: Some(format!("lp_lock:parse_failed: {}", e)),
+                duration_ms: elapsed.as_millis() as u64,
+            };
+        }
+    };
+
+    match lp_mint_result {
+        LpMintResult::NotApplicableBondingCurve => {
+            return CheckResult {
+                passed: true,
+                reason: Some("lp_lock:not_applicable:bonding_curve".to_string()),
+                duration_ms: elapsed.as_millis() as u64,
+            };
+        }
+        LpMintResult::NotApplicableClmm => {
+            return CheckResult {
+                passed: true,
+                reason: Some("lp_lock:not_applicable:clmm".to_string()),
+                duration_ms: elapsed.as_millis() as u64,
+            };
+        }
+        LpMintResult::NotApplicableDlmm => {
+            return CheckResult {
+                passed: true,
+                reason: Some("lp_lock:not_applicable:dlmm".to_string()),
+                duration_ms: elapsed.as_millis() as u64,
+            };
+        }
+        LpMintResult::Found(_) => {}
+    }
+
+    // Use pre-fetched LP mint owner if available
+    let lp_mint_owner = match &context.lp_mint_owner {
+        Some(owner) => owner.to_string(),
+        _ => {
+            return CheckResult {
+                passed: false,
+                reason: Some("lp_lock:context_unavailable".to_string()),
+                duration_ms: elapsed.as_millis() as u64,
+            };
+        }
+    };
+
+    // Check if LP mint owner is burn address or timelock program
+    if is_burn_address(&lp_mint_owner) {
+        CheckResult {
+            passed: true,
+            reason: None,
+            duration_ms: elapsed.as_millis() as u64,
+        }
+    } else if is_timelock_program(&lp_mint_owner) {
+        CheckResult {
+            passed: true,
+            reason: None,
+            duration_ms: elapsed.as_millis() as u64,
+        }
+    } else {
+        CheckResult {
+            passed: false,
+            reason: Some(format!("LP is not locked (mint owner: {})", lp_mint_owner)),
+            duration_ms: elapsed.as_millis() as u64,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    // ... (rest of the code remains the same)
     #[test]
     fn test_is_burn_address_system_program() {
         assert!(is_burn_address(SYSTEM_PROGRAM));
@@ -338,6 +457,27 @@ mod tests {
     fn test_is_burn_address_random_address() {
         let random_pubkey = Pubkey::new_unique();
         assert!(!is_burn_address(&random_pubkey.to_string()));
+    }
+
+    #[test]
+    fn test_timelock_programs_are_valid_pubkeys() {
+        for &program_id in TIMELOCK_PROGRAMS {
+            assert!(
+                Pubkey::try_from(program_id).is_ok(),
+                "Invalid timelock program ID: {}",
+                program_id
+            );
+            assert!(
+                !program_id.contains("..."),
+                "Timelock program ID must not be a placeholder: {}",
+                program_id
+            );
+            assert!(
+                !program_id.contains(' '),
+                "Timelock program ID must not contain spaces: {}",
+                program_id
+            );
+        }
     }
 
     #[test]
@@ -426,6 +566,88 @@ mod tests {
         assert!(result.reason.unwrap().contains("Invalid pool pubkey"));
     }
 
+    #[test]
+    fn test_check_and_check_with_context_invalid_pool_reject_same_reason() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let pool_address = "not_a_valid_pubkey";
+        let fallback = rt.block_on(check(
+            pool_address,
+            "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8",
+            "https://api.mainnet-beta.solana.com",
+        ));
+
+        let context = crate::risk_gate::PreBuyCheckContext {
+            mint_data: None,
+            mint_owner: None,
+            pool_data: None,
+            pool_owner: None,
+            lp_mint_data: None,
+            lp_mint_owner: None,
+            pool_data_from_ws: false,
+        };
+
+        let optimized = rt.block_on(check_with_context(
+            pool_address,
+            "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8",
+            &context,
+        ));
+
+        assert_eq!(fallback.passed, optimized.passed);
+        assert_eq!(fallback.reason, optimized.reason);
+    }
+
+    #[test]
+    fn test_check_with_context_parse_failed_rejects() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let pool_address = Pubkey::new_unique().to_string();
+        let pool_owner = "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8".to_string();
+        let context = crate::risk_gate::PreBuyCheckContext {
+            mint_data: None,
+            mint_owner: None,
+            pool_data: Some(vec![0u8; 10]),
+            pool_owner: Some(Pubkey::try_from(pool_owner.as_str()).unwrap()),
+            lp_mint_data: None,
+            lp_mint_owner: None,
+            pool_data_from_ws: false,
+        };
+
+        let result = rt.block_on(check_with_context(&pool_address, &pool_owner, &context));
+        assert!(!result.passed);
+        assert!(result.reason.unwrap().contains("lp_lock:parse_failed"));
+    }
+
+    #[test]
+    fn test_check_with_context_missing_context_rejects() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let pool_address = Pubkey::new_unique().to_string();
+        let mut pool_data = vec![0u8; 400];
+        let lp_pubkey = Pubkey::new_unique();
+        pool_data[336..368].copy_from_slice(lp_pubkey.as_ref());
+
+        let context = crate::risk_gate::PreBuyCheckContext {
+            mint_data: None,
+            mint_owner: None,
+            pool_data: Some(pool_data),
+            pool_owner: Some(
+                Pubkey::try_from("675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8").unwrap(),
+            ),
+            lp_mint_data: None,
+            lp_mint_owner: None,
+            pool_data_from_ws: false,
+        };
+
+        let result = rt.block_on(check_with_context(
+            &pool_address,
+            "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8",
+            &context,
+        ));
+        assert!(!result.passed);
+        assert_eq!(
+            result.reason.as_deref(),
+            Some("lp_lock:context_unavailable")
+        );
+    }
+
     /// Integration: Raydium AMM v4 SOL-USDC pool — has a real fungible LP mint.
     #[test]
     #[ignore = "Requires mainnet RPC connection"]
@@ -437,8 +659,11 @@ mod tests {
         assert!(result.duration_ms > 0);
         // reason must NOT be the "not_applicable" skip markers
         if let Some(ref r) = result.reason {
-            assert!(!r.starts_with("lp_lock:not_applicable:"),
-                "AMM v4 pool should perform a real LP owner check, got skip reason: {}", r);
+            assert!(
+                !r.starts_with("lp_lock:not_applicable:"),
+                "AMM v4 pool should perform a real LP owner check, got skip reason: {}",
+                r
+            );
         }
     }
 
@@ -453,7 +678,11 @@ mod tests {
         let pool = "HJPjoWUrhoZzkNfRpHuieeFk9WcZWjwy6PBjZ81ngndJ";
         let program = "CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK";
         let result = rt.block_on(check(pool, program, "https://api.mainnet-beta.solana.com"));
-        assert!(result.passed, "CLMM pool should pass (skipped): {:?}", result.reason);
+        assert!(
+            result.passed,
+            "CLMM pool should pass (skipped): {:?}",
+            result.reason
+        );
         assert_eq!(
             result.reason.as_deref(),
             Some("lp_lock:not_applicable:clmm"),
@@ -474,7 +703,11 @@ mod tests {
         // v2 DLMM program ID — this is the actual owner of the pool account
         let program = "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo";
         let result = rt.block_on(check(pool, program, "https://api.mainnet-beta.solana.com"));
-        assert!(result.passed, "DLMM pool should pass (skipped): {:?}", result.reason);
+        assert!(
+            result.passed,
+            "DLMM pool should pass (skipped): {:?}",
+            result.reason
+        );
         assert_eq!(
             result.reason.as_deref(),
             Some("lp_lock:not_applicable:dlmm"),
