@@ -109,34 +109,30 @@ impl TransactionRouter {
     }
 
     /// Submit transaction using configured routing strategy.
-    pub async fn submit_transaction(
-        &mut self,
-        transaction: Transaction,
-        priority_fee_lamports: u64,
-    ) -> Result<SubmitResult> {
+    pub async fn submit_transaction(&mut self, transaction: Transaction) -> Result<SubmitResult> {
         match self.config.strategy {
-            RoutingStrategy::JitoOnly => {
-                self.submit_jito_only(transaction, priority_fee_lamports)
-                    .await
-            }
-            RoutingStrategy::PublicRpcOnly => {
-                self.submit_public_rpc_only(transaction, priority_fee_lamports)
-                    .await
-            }
+            RoutingStrategy::JitoOnly => self.submit_jito_only(transaction).await,
+            RoutingStrategy::PublicRpcOnly => self.submit_public_rpc_only(transaction).await,
             RoutingStrategy::DurableNonceOnly => self.submit_durable_nonce_only(transaction).await,
-            RoutingStrategy::AutoFallback => {
-                self.submit_with_fallback(transaction, priority_fee_lamports)
-                    .await
-            }
+            RoutingStrategy::AutoFallback => self.submit_with_fallback(transaction).await,
+        }
+    }
+
+    /// Submit a transaction using an explicit routing stage.
+    pub async fn submit_transaction_with_stage(
+        &mut self,
+        stage: RoutingStage,
+        transaction: Transaction,
+    ) -> Result<SubmitResult> {
+        match stage {
+            RoutingStage::JitoBundle => self.submit_jito_only(transaction).await,
+            RoutingStage::PublicRpc => self.submit_public_rpc_only(transaction).await,
+            RoutingStage::DurableNonce => self.submit_durable_nonce_only(transaction).await,
         }
     }
 
     /// Submit with automatic fallback through stages.
-    async fn submit_with_fallback(
-        &mut self,
-        transaction: Transaction,
-        priority_fee_lamports: u64,
-    ) -> Result<SubmitResult> {
+    async fn submit_with_fallback(&mut self, transaction: Transaction) -> Result<SubmitResult> {
         // Stage 1: Try Jito Bundle
         if let Some(client) = &mut self.jito_client {
             tracing::info!("Stage 1: Attempting Jito Bundle submission");
@@ -156,10 +152,7 @@ impl TransactionRouter {
         // Stage 2: Try Public RPC
         if let Some(client) = &mut self.public_rpc_client {
             tracing::info!("Stage 2: Attempting Public RPC submission");
-            match client
-                .submit_transaction(transaction.clone(), priority_fee_lamports)
-                .await
-            {
+            match client.submit_transaction(transaction.clone()).await {
                 Ok(result) => {
                     tracing::info!("Stage 2: Public RPC submission succeeded");
                     return Ok(result);
@@ -187,11 +180,7 @@ impl TransactionRouter {
         Err(anyhow!("All routing stages failed"))
     }
 
-    async fn submit_jito_only(
-        &mut self,
-        transaction: Transaction,
-        _priority_fee_lamports: u64,
-    ) -> Result<SubmitResult> {
+    async fn submit_jito_only(&mut self, transaction: Transaction) -> Result<SubmitResult> {
         if let Some(client) = &mut self.jito_client {
             let bundle = vec![transaction];
             client.submit_bundle(bundle).await
@@ -200,15 +189,9 @@ impl TransactionRouter {
         }
     }
 
-    async fn submit_public_rpc_only(
-        &mut self,
-        transaction: Transaction,
-        priority_fee_lamports: u64,
-    ) -> Result<SubmitResult> {
+    async fn submit_public_rpc_only(&mut self, transaction: Transaction) -> Result<SubmitResult> {
         if let Some(client) = &mut self.public_rpc_client {
-            client
-                .submit_transaction(transaction, priority_fee_lamports)
-                .await
+            client.submit_transaction(transaction).await
         } else {
             Err(anyhow!("Public RPC client not configured"))
         }

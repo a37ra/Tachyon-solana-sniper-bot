@@ -123,10 +123,14 @@ impl PublicRpcClient {
     }
 
     /// Submit transaction with retry logic and fallback.
+    /// Submit a fully assembled and signed transaction via Public RPC.
+    ///
+    /// The transaction MUST already contain the desired compute budget /
+    /// priority fee instructions before signing. This pathway does not mutate
+    /// transaction instructions because the signature is already fixed.
     pub async fn submit_transaction(
         &mut self,
         transaction: Transaction,
-        priority_fee_lamports: u64,
     ) -> Result<SubmitResult> {
         let endpoint_name = self.current_endpoint().name.clone();
         let endpoint_url = self.current_endpoint().url.clone();
@@ -135,16 +139,13 @@ impl PublicRpcClient {
         tracing::info!(
             endpoint = %endpoint_name,
             url = %endpoint_url,
-            priority_fee = priority_fee_lamports,
-            "Submitting transaction via Public RPC"
+            "Submitting signed transaction via Public RPC"
         );
 
         let mut last_error = None;
 
         for attempt in 0..=self.config.max_retries {
-            let result = self
-                .submit_with_retry(&rpc, &transaction, priority_fee_lamports, attempt)
-                .await;
+            let result = self.submit_with_retry(&rpc, &transaction, attempt).await;
 
             match result {
                 Ok(result) => return Ok(result),
@@ -180,11 +181,15 @@ impl PublicRpcClient {
         &self,
         rpc: &RpcClient,
         transaction: &Transaction,
-        _priority_fee_lamports: u64,
         _attempt: u32,
     ) -> Result<SubmitResult> {
         let rpc_url = rpc.url();
         let tx_clone = transaction.clone();
+
+        tracing::debug!(
+            endpoint = %rpc_url,
+            "Public RPC submission received signed transaction; compute budget must already be baked in",
+        );
 
         // Submit transaction
         let signature = tokio::task::spawn_blocking(move || {
@@ -207,39 +212,38 @@ impl PublicRpcClient {
         let timeout = Duration::from_millis(self.config.confirmation_timeout_ms);
         let interval = Duration::from_millis(self.config.confirmation_poll_interval_ms);
 
-        let signature_clone = signature.to_string();
-        let rpc_url = rpc.url();
+        let sig = Signature::from_str(signature)
+            .map_err(|e| anyhow!("Invalid signature: {}", e))?;
+        let rpc_url = rpc.url().to_string();
 
         loop {
             if start.elapsed() > timeout {
                 return Ok(SubmitResult::Timeout);
             }
 
-            let sig_clone = signature_clone.clone();
-            let sig =
-                Signature::from_str(&sig_clone).map_err(|e| anyhow!("Invalid signature: {}", e))?;
-            let rpc_url_for_poll = rpc_url.to_string();
-
+            let sig_clone = sig.clone();
+            let rpc_url_for_poll = rpc_url.clone();
             let result = tokio::task::spawn_blocking(move || {
                 let rpc = RpcClient::new(rpc_url_for_poll);
-                rpc.get_signature_status(&sig)
+                rpc.get_signature_statuses(&[sig_clone])
             })
             .await
             .map_err(|e| anyhow!("Task join error: {}", e))??;
 
-            if let Some(status) = result {
-                // Check if transaction failed
-                if let Err(err) = status {
-                    tracing::warn!(error = ?err, "Transaction failed");
-                    return Ok(SubmitResult::Failed {
-                        reason: format!("Transaction failed: {:?}", err),
+            if let Some(status_opt) = result.value.get(0) {
+                if let Some(status) = status_opt.clone() {
+                    if status.err.is_some() {
+                        tracing::warn!(error = ?status.err, "Transaction failed");
+                        return Ok(SubmitResult::Failed {
+                            reason: format!("Transaction failed: {:?}", status.err),
+                        });
+                    }
+
+                    return Ok(SubmitResult::Confirmed {
+                        signature: signature.to_string(),
+                        slot: status.slot,
                     });
                 }
-                // Transaction confirmed (Ok result)
-                return Ok(SubmitResult::Confirmed {
-                    signature: signature.to_string(),
-                    slot: 0, // Slot info not available in this response type
-                });
             }
 
             tokio::time::sleep(interval).await;
@@ -251,15 +255,26 @@ impl PublicRpcClient {
         let mut tasks = Vec::new();
 
         for endpoint in self.config.endpoints.clone() {
-            tasks.push(tokio::spawn(async move {
-                Self::health_check_endpoint(&endpoint).await
-            }));
+            let endpoint_clone = endpoint.clone();
+            tasks.push((
+                endpoint_clone.clone(),
+                tokio::spawn(async move {
+                    Self::health_check_endpoint(&endpoint_clone).await
+                }),
+            ));
         }
 
         let mut results = Vec::new();
-        for task in tasks {
+        for (endpoint, task) in tasks {
             if let Ok(result) = task.await {
                 results.push(result);
+            } else {
+                results.push(RpcEndpoint {
+                    healthy: false,
+                    latency_ms: 0.0,
+                    last_check: Some(Instant::now()),
+                    ..endpoint
+                });
             }
         }
 

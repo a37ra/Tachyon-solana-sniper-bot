@@ -8,6 +8,11 @@ pub struct Signal {
     pub signal_source: String,
     pub slot: u64,
     pub received_at: u64,
+    // Optional raw pool account bytes and owner (when provided by account update sources)
+    // These are source-agnostic and should be populated when available to enable
+    // 1-RTT pre-buy checks (no additional RPC to fetch pool bytes).
+    pub raw_pool_account_data: Option<Vec<u8>>,
+    pub raw_pool_account_owner: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

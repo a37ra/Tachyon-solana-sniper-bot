@@ -88,6 +88,8 @@ mod tests {
             signal_source: "ws".to_string(),
             slot: 100,
             received_at: 1000,
+            raw_pool_account_data: None,
+            raw_pool_account_owner: None,
         };
 
         // Fresh signal (1 slot old)
@@ -101,6 +103,8 @@ mod tests {
             signal_source: "ws".to_string(),
             slot: 100,
             received_at: 1000,
+            raw_pool_account_data: None,
+            raw_pool_account_owner: None,
         };
         assert!(!filter.is_valid_signal(&stale_signal, 105));
     }
@@ -115,6 +119,8 @@ mod tests {
             signal_source: "ws".to_string(),
             slot: 100,
             received_at: 1000,
+            raw_pool_account_data: None,
+            raw_pool_account_owner: None,
         };
 
         let signal2 = signal1.clone();

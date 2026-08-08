@@ -173,6 +173,8 @@ mod tests {
             signal_source: "test".to_string(),
             slot: 95, // 5 slots old
             received_at: 0,
+            raw_pool_account_data: None,
+            raw_pool_account_owner: None,
         };
 
         let result = validator.validate_signal(&signal).unwrap();
@@ -191,6 +193,8 @@ mod tests {
             signal_source: "test".to_string(),
             slot: 50, // 50 slots old (exceeds 30)
             received_at: 0,
+            raw_pool_account_data: None,
+            raw_pool_account_owner: None,
         };
 
         let result = validator.validate_signal(&signal).unwrap();
@@ -209,6 +213,8 @@ mod tests {
             signal_source: "test".to_string(),
             slot: 50,
             received_at: 0,
+            raw_pool_account_data: None,
+            raw_pool_account_owner: None,
         };
 
         let result = validator.validate_signal(&signal).unwrap();

@@ -1,14 +1,15 @@
 //! MintActor trading loop and pipeline execution (Stage 5.1).
 //!
 //! Executes:
-//! - Buy pipeline: Risk Gate (150ms timeout) → Position Sizing → Tx Builder → Signer Client → Transaction Router
+//! - Buy pipeline: Risk Gate (configurable timeout via RiskGateConfig) → Position Sizing → Tx Builder → Signer Client → Transaction Router
 //! - Sell pipeline: Exit Evaluation → Exit Tx Builder → Signer Client → Transaction Router → State Transition
 
 use super::{market_data_lane::MarketDataLane, ActorConfig};
 use crate::circuit_breaker::CircuitBreaker;
 use crate::exit::{self, ExitAction};
+use crate::exit::escalation::{run_escalation, EscalationState, EscalationTrigger};
 use crate::risk_gate::{self, RiskGateConfig};
-use crate::routing::{SubmitResult, TransactionRouter};
+use crate::routing::{RoutingStage, SubmitResult, TransactionRouter};
 use crate::signer_client::SignerClient;
 use crate::sizing::{self, TradeStats};
 use crate::state::position_lifecycle::PositionLifecycle;
@@ -36,6 +37,7 @@ use solbot_common::types::{ControlEvent, MarketDataEvent, PositionLifecycleEvent
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::Mutex;
 
 /// Trading mode configuration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -125,7 +127,7 @@ pub struct ActorContext {
     pub tier_params: TierParams,
     pub capital_sol: f64,
     pub router: Option<TransactionRouter>,
-    pub signer_client: Option<SignerClient>,
+    pub signer_client: Option<Arc<SignerClient>>,
     pub rpc_url: Option<String>,
     pub active_position: Option<Position>,
     pub trade_stats: Option<TradeStats>,
@@ -413,7 +415,10 @@ pub fn ensure_nonzero_output(expected_out: u64, dex_name: &str, direction: &str)
 /// Fetch pool state for the specified DEX and build swap instructions for any direction (buy/sell).
 /// This unified function replaces duplicated code in execute_buy_pipeline and execute_exit_pipeline.
 async fn fetch_and_build_dex_swap(
-    ctx: &ActorContext,
+    rpc_url: &Option<String>,
+    trading_mode: TradingMode,
+    dex_program_id: &str,
+    wallet: Pubkey,
     mint_pubkey: Pubkey,
     pool_pubkey: Pubkey,
     dex_program_pubkey: Pubkey,
@@ -426,10 +431,10 @@ async fn fetch_and_build_dex_swap(
         SwapDirection::Sell => "sell",
     };
 
-    let rpc_url = match ctx.rpc_url.clone() {
+    let rpc_url = match rpc_url.clone() {
         Some(url) => url,
         None => {
-            if ctx.trading_mode == TradingMode::Live {
+            if trading_mode == TradingMode::Live {
                 tracing::error!("No RPC client in Live mode");
                 bail!("No RPC client in Live mode");
             }
@@ -456,7 +461,7 @@ async fn fetch_and_build_dex_swap(
     // Unified handling for "account not found" / "parse failed" - error in Live, warning + placeholder in Paper
     macro_rules! fail_or_placeholder {
         ($msg:literal) => {{
-            if ctx.trading_mode == TradingMode::Live {
+            if trading_mode == TradingMode::Live {
                 tracing::error!($msg);
                 bail!($msg);
             }
@@ -465,7 +470,7 @@ async fn fetch_and_build_dex_swap(
         }};
     }
 
-    if ctx.dex_program_id == pump_fun_builder::PUMP_FUN_PROGRAM.to_string() {
+    if dex_program_id == pump_fun_builder::PUMP_FUN_PROGRAM.to_string() {
         let Some(account) = fetch_account!(pool_pubkey) else {
             fail_or_placeholder!("Failed to fetch pool account in Live mode");
         };
@@ -484,7 +489,7 @@ async fn fetch_and_build_dex_swap(
             mint: mint_pubkey,
             pool_address: pool_pubkey,
             dex_program_id: dex_program_pubkey,
-            wallet: ctx.wallet,
+            wallet,
             direction,
             amount_in: amount_in_lamports,
             minimum_amount_out,
@@ -494,7 +499,7 @@ async fn fetch_and_build_dex_swap(
             .map_err(|e| anyhow!("Tx builder error: {}", e));
     }
 
-    if ctx.dex_program_id == raydium_amm_v4_builder::RAYDIUM_AMM_V4_PROGRAM.to_string() {
+    if dex_program_id == raydium_amm_v4_builder::RAYDIUM_AMM_V4_PROGRAM.to_string() {
         let Some(account) = fetch_account!(pool_pubkey) else {
             fail_or_placeholder!("Failed to fetch pool account in Live mode");
         };
@@ -522,7 +527,7 @@ async fn fetch_and_build_dex_swap(
             mint: mint_pubkey,
             pool_address: pool_pubkey,
             dex_program_id: dex_program_pubkey,
-            wallet: ctx.wallet,
+            wallet,
             direction,
             amount_in: amount_in_lamports,
             minimum_amount_out,
@@ -532,7 +537,7 @@ async fn fetch_and_build_dex_swap(
             .map_err(|e| anyhow!("Tx builder error: {}", e));
     }
 
-    if ctx.dex_program_id == raydium_cpmm_builder::RAYDIUM_CPMM_PROGRAM.to_string() {
+    if dex_program_id == raydium_cpmm_builder::RAYDIUM_CPMM_PROGRAM.to_string() {
         let Some(account) = fetch_account!(pool_pubkey) else {
             fail_or_placeholder!("Failed to fetch pool account in Live mode");
         };
@@ -560,7 +565,7 @@ async fn fetch_and_build_dex_swap(
             mint: mint_pubkey,
             pool_address: pool_pubkey,
             dex_program_id: dex_program_pubkey,
-            wallet: ctx.wallet,
+            wallet,
             direction,
             amount_in: amount_in_lamports,
             minimum_amount_out,
@@ -570,7 +575,7 @@ async fn fetch_and_build_dex_swap(
             .map_err(|e| anyhow!("Tx builder error: {}", e));
     }
 
-    if ctx.dex_program_id == meteora_dlmm_builder::METEORA_DLMM_PROGRAM.to_string() {
+    if dex_program_id == meteora_dlmm_builder::METEORA_DLMM_PROGRAM.to_string() {
         let Some(account) = fetch_account!(pool_pubkey) else {
             fail_or_placeholder!("Failed to fetch pool account in Live mode");
         };
@@ -598,7 +603,7 @@ async fn fetch_and_build_dex_swap(
             mint: mint_pubkey,
             pool_address: pool_pubkey,
             dex_program_id: dex_program_pubkey,
-            wallet: ctx.wallet,
+            wallet,
             direction,
             amount_in: amount_in_lamports,
             minimum_amount_out,
@@ -608,32 +613,39 @@ async fn fetch_and_build_dex_swap(
             .map_err(|e| anyhow!("Tx builder error: {}", e));
     }
 
-    if ctx.trading_mode == TradingMode::Live {
-        tracing::error!("Unsupported DEX {} in Live mode", ctx.dex_program_id);
-        bail!("Unsupported DEX {} in Live mode", ctx.dex_program_id);
+    if trading_mode == TradingMode::Live {
+        tracing::error!("Unsupported DEX {} in Live mode", dex_program_id);
+        bail!("Unsupported DEX {} in Live mode", dex_program_id);
     }
     tracing::warn!(
         "Unsupported DEX {}, using placeholder (Paper mode)",
-        ctx.dex_program_id
+        dex_program_id
     );
     Ok(create_placeholder_swap_instructions())
 }
 
 /// Fetch recent blockhash, or use random placeholder if RPC is not set.
 /// This unified function replaces duplicated code in buy and exit pipelines.
-async fn fetch_recent_blockhash(rpc_url: &Option<String>) -> Hash {
+async fn fetch_recent_blockhash(
+    rpc_url: &Option<String>,
+    trading_mode: TradingMode,
+) -> Result<Hash> {
     if let Some(rpc_url) = rpc_url {
         let rpc_url_clone = rpc_url.clone();
-        tokio::task::spawn_blocking(move || {
+        let result = tokio::task::spawn_blocking(move || {
             let rpc = RpcClient::new(rpc_url_clone);
             rpc.get_latest_blockhash()
         })
         .await
-        .ok()
-        .and_then(|r| r.ok())
-        .unwrap_or(Hash::new_unique())
+        .map_err(|e| anyhow!("Recent blockhash fetch task failed: {}", e))??;
+
+        Ok(result)
+    } else if trading_mode == TradingMode::Live {
+        Err(anyhow!(
+            "Missing RPC URL in Live mode while fetching recent blockhash"
+        ))
     } else {
-        Hash::new_unique()
+        Ok(Hash::new_unique())
     }
 }
 
@@ -657,7 +669,7 @@ pub async fn execute_buy_pipeline(
         }
     }
 
-    // Step 1: Risk gate checks with 150ms hard timeout
+    // Step 1: Risk gate checks with timeout controlled by RiskGateConfig
     let signal = Signal {
         mint: ctx.mint.clone(),
         pool_address: ctx.pool_address.clone(),
@@ -665,25 +677,19 @@ pub async fn execute_buy_pipeline(
         signal_source: "actor".to_string(),
         slot: 0,
         received_at: chrono::Utc::now().timestamp() as u64,
+        raw_pool_account_data: None,
+        raw_pool_account_owner: None,
     };
 
-    let risk_result = tokio::time::timeout(
-        Duration::from_millis(150),
-        risk_gate::run_pre_buy_checks_with_timeout(&signal, &ctx.risk_gate_config),
-    )
-    .await;
+    let risk_result = risk_gate::run_pre_buy_checks_with_timeout(&signal, &ctx.risk_gate_config).await;
 
     match risk_result {
-        Ok(risk_gate::RiskGateVerdict::Accept) => {
+        risk_gate::RiskGateVerdict::Accept => {
             tracing::info!("Risk gate PASSED for mint {}", ctx.mint);
         }
-        Ok(risk_gate::RiskGateVerdict::Reject { reason }) => {
+        risk_gate::RiskGateVerdict::Reject { reason } => {
             tracing::warn!("Risk gate REJECTED for mint {}: {}", ctx.mint, reason);
             return Err(anyhow!("Risk gate rejection: {}", reason));
-        }
-        Err(_) => {
-            tracing::warn!("Risk gate TIMEOUT (150ms) for mint {}", ctx.mint);
-            return Err(anyhow!("Risk gate timeout (150ms)"));
         }
     }
 
@@ -705,7 +711,10 @@ pub async fn execute_buy_pipeline(
         Pubkey::from_str(&ctx.dex_program_id).unwrap_or_else(|_| Pubkey::new_unique());
 
     let swap_instructions = fetch_and_build_dex_swap(
-        ctx,
+        &ctx.rpc_url,
+        ctx.trading_mode,
+        &ctx.dex_program_id,
+        ctx.wallet,
         mint_pubkey,
         pool_pubkey,
         dex_program_pubkey,
@@ -716,7 +725,7 @@ pub async fn execute_buy_pipeline(
     .await?;
 
     // Get recent blockhash
-    let blockhash = fetch_recent_blockhash(&ctx.rpc_url).await;
+    let blockhash = fetch_recent_blockhash(&ctx.rpc_url, ctx.trading_mode).await?;
 
     // Build complete unsigned transaction
     let (unsigned_tx, unsigned_tx_base64) = build_unsigned_transaction(
@@ -794,8 +803,7 @@ pub async fn execute_buy_pipeline(
     if ctx.trading_mode == TradingMode::Live {
         if let Some(ref mut router) = ctx.router {
             tracing::info!("Submitting live buy transaction to Router pipeline");
-            let priority_fee = ctx.tier_params.emergency_exit.priority_fee_baseline as u64;
-            match router.submit_transaction(final_tx, priority_fee).await {
+            match router.submit_transaction(final_tx).await {
                 Ok(SubmitResult::Confirmed { signature, slot }) => {
                     tracing::info!(
                         "Buy transaction confirmed on-chain: sig={}, slot={}",
@@ -978,127 +986,354 @@ pub async fn execute_exit_pipeline(
         sell_fraction * 100.0
     );
 
-    // Build unsigned sell transaction
+    // Build unsigned sell transaction parameters
     let mint_pubkey = Pubkey::from_str(&ctx.mint).unwrap_or_else(|_| Pubkey::new_unique());
     let pool_pubkey = Pubkey::from_str(&ctx.pool_address).unwrap_or_else(|_| Pubkey::new_unique());
     let dex_program_pubkey =
         Pubkey::from_str(&ctx.dex_program_id).unwrap_or_else(|_| Pubkey::new_unique());
     let amount_in_lamports = (position.size_sol * sell_fraction * 1_000_000_000.0) as u64;
 
-    let swap_instructions = fetch_and_build_dex_swap(
-        ctx,
-        mint_pubkey,
-        pool_pubkey,
-        dex_program_pubkey,
-        amount_in_lamports,
-        SwapDirection::Sell,
-        ctx.tier_params.emergency_exit.emergency_slippage_bps,
-    )
-    .await?;
+    let use_escalation = matches!(exit_action, ExitAction::HardStopLoss | ExitAction::Emergency { .. })
+        && ctx.trading_mode == TradingMode::Live;
+    let mut final_tx = None;
 
-    // Get recent blockhash
-    let blockhash = fetch_recent_blockhash(&ctx.rpc_url).await;
+    if use_escalation {
+        tracing::info!(
+            "Using escalation state machine for exit action {:?}",
+            exit_action
+        );
 
-    // Build complete unsigned transaction
-    let (unsigned_tx, unsigned_tx_base64) = build_unsigned_transaction(
-        swap_instructions,
-        200_000,
-        ctx.tier_params.emergency_exit.priority_fee_baseline as u64 * 2,
-        &ctx.wallet,
-        blockhash,
-    )?;
+        let priority_fee_baseline = ctx.tier_params.emergency_exit.priority_fee_baseline as u64;
+        let hard_cap_bps = ctx.tier_params.emergency_exit.emergency_slippage_bps;
+        let signer = ctx.signer_client.as_ref().unwrap().clone();
+        let router_arc = Arc::new(tokio::sync::Mutex::new(ctx.router.take().unwrap()));
+        let signed_tx_state: Arc<Mutex<Option<Transaction>>> = Arc::new(Mutex::new(None));
+        let signed_tx_state_for_sign = signed_tx_state.clone();
+        let signed_tx_state_for_submit = signed_tx_state.clone();
+        let position_size_sol = position.size_sol;
+        let signer_for_sign = signer;
+        let pool_address = ctx.pool_address.clone();
+        let dex_program_id = ctx.dex_program_id.clone();
+        let mint = ctx.mint.clone();
+        let position_id = position.position_id.clone();
+        let wallet = ctx.wallet;
+        let rpc_url = ctx.rpc_url.clone();
+        let trading_mode = ctx.trading_mode;
+        let mint_pubkey_clone = mint_pubkey;
+        let pool_pubkey_clone = pool_pubkey;
+        let dex_program_pubkey_clone = dex_program_pubkey;
+        let amount_in_lamports_clone = amount_in_lamports;
 
-    let mut final_tx = unsigned_tx.clone();
+        let mut sign_fn: Box<
+            dyn for<'a> FnMut(
+                &'a EscalationState,
+            ) -> std::pin::Pin<
+                Box<dyn std::future::Future<Output = Result<String>> + Send + 'a>,
+            > + Send,
+        > = Box::new(move |state: &EscalationState| {
+            let signed_tx_state = signed_tx_state_for_sign.clone();
+            let signer = signer_for_sign.clone();
+            let pool_address = pool_address.clone();
+            let dex_program_id = dex_program_id.clone();
+            let mint = mint.clone();
+            let position_id = position_id.clone();
+            let rpc_url = rpc_url.clone();
+            Box::pin(async move {
+                tracing::info!(
+                    "Escalation signing for stage {}",
+                    state.current_stage
+                );
 
-    // Step 2: Sign sell transaction
-    if let Some(signer) = &ctx.signer_client {
-        let req = SignerIntentRequest {
-            context_key: format!("sell-{}-{}", ctx.mint, position.position_id),
-            ipc_seq: 0,
-            issued_at_unix_ms: chrono::Utc::now().timestamp_millis() as u64,
-            intent_type,
-            unsigned_transaction_base64: unsigned_tx_base64,
-            program_id: "solbot-strategy".to_string(),
-            dex_program_id: ctx.dex_program_id.clone(),
-            max_size_lamports: (position.size_sol * 1_000_000_000.0) as u64,
-            hard_cap_bps: ctx.tier_params.emergency_exit.emergency_slippage_bps,
-            destination_addresses: vec![ctx.pool_address.clone()],
-            mint: ctx.mint.clone(),
-            pool_address: ctx.pool_address.clone(),
-            position_id: Some(position.position_id.clone()),
-            amount_or_pct: sell_fraction,
-        };
+                let slippage_bps = state.current_stage.slippage_bps();
+                let blockhash = fetch_recent_blockhash(&rpc_url, trading_mode).await?;
+                let swap_instructions = fetch_and_build_dex_swap(
+                    &rpc_url,
+                    trading_mode,
+                    &dex_program_id,
+                    wallet,
+                    mint_pubkey_clone,
+                    pool_pubkey_clone,
+                    dex_program_pubkey_clone,
+                    amount_in_lamports_clone,
+                    SwapDirection::Sell,
+                    slippage_bps,
+                )
+                .await?;
 
-        match signer.sign_intent(req).await {
-            Ok(resp) => {
-                if resp.status == VerdictStatus::Accepted {
-                    if let Some(signed_base64) = resp.signed_transaction_base64 {
-                        let decoded_bytes = BASE64.decode(&signed_base64).map_err(|e| {
-                            anyhow!("Failed to decode signed transaction base64: {}", e)
-                        })?;
-                        let decoded_tx = bincode::deserialize::<Transaction>(&decoded_bytes)
-                            .map_err(|e| {
-                                anyhow!("Failed to deserialize signed transaction: {}", e)
-                            })?;
-                        final_tx = decoded_tx;
-                        tracing::info!("Signer client signed exit transaction successfully");
-                    } else {
-                        // Signer accepted but didn't return signed transaction
-                        tracing::error!("Signer accepted but no signed transaction returned");
-                        return Err(anyhow!(
-                            "Signer accepted but no signed transaction returned"
-                        ));
-                    }
-                } else {
+                let priority_fee =
+                    ((priority_fee_baseline as f64) * state.current_stage.priority_fee_multiplier())
+                        as u64;
+                let (unsigned_tx, unsigned_tx_base64) = build_unsigned_transaction(
+                    swap_instructions,
+                    200_000,
+                    priority_fee,
+                    &wallet,
+                    blockhash,
+                )?;
+
+                let req = SignerIntentRequest {
+                    context_key: format!("sell-{}-{}", mint, position_id),
+                    ipc_seq: 0,
+                    issued_at_unix_ms: chrono::Utc::now()
+                        .timestamp_millis()
+                        .try_into()
+                        .unwrap(),
+                    intent_type,
+                    unsigned_transaction_base64: unsigned_tx_base64,
+                    program_id: "solbot-strategy".to_string(),
+                    dex_program_id: dex_program_id.clone(),
+                    max_size_lamports: (position_size_sol * 1_000_000_000.0) as u64,
+                    hard_cap_bps,
+                    destination_addresses: vec![pool_address.clone()],
+                    mint: mint.clone(),
+                    pool_address: pool_address.clone(),
+                    position_id: Some(position_id.clone()),
+                    amount_or_pct: sell_fraction,
+                };
+
+                let resp = signer.sign_intent(req).await?;
+                if resp.status != VerdictStatus::Accepted {
                     let reason = resp
                         .rejection_reason
                         .unwrap_or_else(|| "Unknown".to_string());
-                    tracing::warn!("Signer client rejected exit intent: {}", reason);
-                    return Err(anyhow!("Signer rejection on exit: {}", reason));
+                    return Err(anyhow!("Signer rejection on escalation exit: {}", reason));
                 }
-            }
-            Err(e) => {
-                tracing::warn!("Signer client IPC error: {}", e);
-                if ctx.trading_mode == TradingMode::Live {
-                    return Err(anyhow!("Signer IPC error: {}", e));
+
+                let signed_base64 = resp.signed_transaction_base64.ok_or_else(|| {
+                    anyhow!("Signer accepted but no signed transaction returned")
+                })?;
+                let decoded_bytes = BASE64
+                    .decode(&signed_base64)
+                    .map_err(|e| anyhow!("Failed to decode signed transaction base64: {}", e))?;
+                let decoded_tx = bincode::deserialize::<Transaction>(&decoded_bytes)
+                    .map_err(|e| anyhow!("Failed to deserialize signed transaction: {}", e))?;
+                let signature = decoded_tx
+                    .signatures
+                    .get(0)
+                    .ok_or_else(|| anyhow!("Signed transaction has no signature"))
+                    .map(|s| s.to_string())?;
+
+                *signed_tx_state.lock().await = Some(decoded_tx.clone());
+                tracing::info!("Signer client signed escalation transaction successfully");
+                Ok(signature)
+            })
+        });
+
+
+        let router_arc_for_submit = router_arc.clone();
+
+        let mut submit_fn: Box<
+            dyn for<'a> FnMut(
+                &'a EscalationState,
+            ) -> std::pin::Pin<
+                Box<dyn std::future::Future<Output = Result<Option<(String, u64)>>> + Send + 'a>,
+            > + Send,
+        > = Box::new(move |state: &EscalationState| {
+            let signed_tx_state = signed_tx_state_for_submit.clone();
+            let router_arc = router_arc_for_submit.clone();
+            Box::pin(async move {
+                let transaction = {
+                    let guard = signed_tx_state.lock().await;
+                    guard
+                        .clone()
+                        .ok_or_else(|| anyhow!("No signed transaction available for escalation"))?
+                };
+
+                let mut router = router_arc.lock().await;
+                let routing_stage = match state.current_stage {
+                    crate::exit::escalation::EscalationStage::Stage0Jito => RoutingStage::JitoBundle,
+                    crate::exit::escalation::EscalationStage::Stage1PublicRpc2x
+                    | crate::exit::escalation::EscalationStage::Stage2PublicRpc3xMaxSlippage => {
+                        RoutingStage::PublicRpc
+                    }
+                    crate::exit::escalation::EscalationStage::Stage3DurableNonceStuck => {
+                        RoutingStage::DurableNonce
+                    }
+                };
+
+                match router
+                    .submit_transaction_with_stage(routing_stage, transaction)
+                    .await
+                {
+                    Ok(SubmitResult::Confirmed { signature, slot }) => Ok(Some((signature, slot))),
+                    Ok(SubmitResult::Failed { reason }) => {
+                        tracing::warn!(
+                            "Escalation submit failed for stage {}: {}",
+                            state.current_stage,
+                            reason
+                        );
+                        Ok(None)
+                    }
+                    Ok(SubmitResult::Timeout) => {
+                        tracing::warn!(
+                            "Escalation submit timed out for stage {}",
+                            state.current_stage
+                        );
+                        Ok(None)
+                    }
+                    Err(e) => Err(e),
+                }
+            })
+        });
+
+
+        let mut persist_fn: Box<
+            dyn for<'a> FnMut(
+                &'a EscalationState,
+            ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>>
+                + Send,
+        > = Box::new(move |_state: &EscalationState| Box::pin(async move { Ok(()) }));
+
+        let trigger = match exit_action {
+            ExitAction::HardStopLoss => EscalationTrigger::HardStopLoss,
+            ExitAction::Emergency { .. } => EscalationTrigger::HardStopLoss,
+            _ => unreachable!(),
+        };
+
+        let mut escalation_state = EscalationState::new(
+            uuid::Uuid::new_v4().to_string(),
+            position.position_id.clone(),
+            ctx.mint.clone(),
+            trigger,
+            chrono::Utc::now().timestamp_millis().try_into().unwrap(),
+        );
+
+        let escalation_result = run_escalation(&mut escalation_state, sign_fn, submit_fn, persist_fn).await;
+        let router = Arc::try_unwrap(router_arc)
+            .map_err(|_| anyhow!("Escalation router still has active references"))?
+            .into_inner();
+        ctx.router = Some(router);
+
+        let confirmed = escalation_result?;
+        if !confirmed {
+            return Err(anyhow!(
+                "Escalation reached terminal Stage3 without on-chain confirmation"
+            ));
+        }
+
+        final_tx = Some(
+            signed_tx_state.lock().await.clone().expect("signed tx should exist after successful escalation"),
+        );
+    } else {
+        let swap_instructions = fetch_and_build_dex_swap(
+            &ctx.rpc_url,
+            ctx.trading_mode,
+            &ctx.dex_program_id,
+            ctx.wallet,
+            mint_pubkey,
+            pool_pubkey,
+            dex_program_pubkey,
+            amount_in_lamports,
+            SwapDirection::Sell,
+            ctx.tier_params.emergency_exit.emergency_slippage_bps,
+        )
+        .await?;
+
+        // Get recent blockhash
+        let blockhash = fetch_recent_blockhash(&ctx.rpc_url, ctx.trading_mode).await?;
+
+        // Build complete unsigned transaction
+        let (unsigned_tx, unsigned_tx_base64) = build_unsigned_transaction(
+            swap_instructions,
+            200_000,
+            ctx.tier_params.emergency_exit.priority_fee_baseline as u64 * 2,
+            &ctx.wallet,
+            blockhash,
+        )?;
+
+        final_tx = Some(unsigned_tx.clone());
+
+        // Step 2: Sign sell transaction
+        if let Some(signer) = &ctx.signer_client {
+            let req = SignerIntentRequest {
+                context_key: format!("sell-{}-{}", ctx.mint, position.position_id),
+                ipc_seq: 0,
+                issued_at_unix_ms: chrono::Utc::now().timestamp_millis() as u64,
+                intent_type,
+                unsigned_transaction_base64: unsigned_tx_base64,
+                program_id: "solbot-strategy".to_string(),
+                dex_program_id: ctx.dex_program_id.clone(),
+                max_size_lamports: (position.size_sol * 1_000_000_000.0) as u64,
+                hard_cap_bps: ctx.tier_params.emergency_exit.emergency_slippage_bps,
+                destination_addresses: vec![ctx.pool_address.clone()],
+                mint: ctx.mint.clone(),
+                pool_address: ctx.pool_address.clone(),
+                position_id: Some(position.position_id.clone()),
+                amount_or_pct: sell_fraction,
+            };
+
+            match signer.sign_intent(req).await {
+                Ok(resp) => {
+                    if resp.status == VerdictStatus::Accepted {
+                        if let Some(signed_base64) = resp.signed_transaction_base64 {
+                            let decoded_bytes = BASE64.decode(&signed_base64).map_err(|e| {
+                                anyhow!("Failed to decode signed transaction base64: {}", e)
+                            })?;
+                            let decoded_tx = bincode::deserialize::<Transaction>(&decoded_bytes)
+                                .map_err(|e| {
+                                    anyhow!("Failed to deserialize signed transaction: {}", e)
+                                })?;
+                            final_tx = Some(decoded_tx);
+                            tracing::info!("Signer client signed exit transaction successfully");
+                        } else {
+                            tracing::error!("Signer accepted but no signed transaction returned");
+                            return Err(anyhow!(
+                                "Signer accepted but no signed transaction returned"
+                            ));
+                        }
+                    } else {
+                        let reason = resp
+                            .rejection_reason
+                            .unwrap_or_else(|| "Unknown".to_string());
+                        tracing::warn!("Signer client rejected exit intent: {}", reason);
+                        return Err(anyhow!("Signer rejection on exit: {}", reason));
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("Signer client IPC error: {}", e);
+                    if ctx.trading_mode == TradingMode::Live {
+                        return Err(anyhow!("Signer IPC error: {}", e));
+                    }
                 }
             }
         }
     }
 
-    // ... (rest of the code remains the same)
-    if ctx.trading_mode == TradingMode::Live {
-        if let Some(ref mut router) = ctx.router {
-            tracing::info!("Submitting live sell transaction to Router pipeline");
-            let priority_fee = ctx.tier_params.emergency_exit.priority_fee_baseline as u64 * 2;
-            match router.submit_transaction(final_tx, priority_fee).await {
-                Ok(SubmitResult::Confirmed { signature, slot }) => {
-                    tracing::info!(
-                        "Sell transaction confirmed on-chain: sig={}, slot={}",
-                        signature,
-                        slot
-                    );
+    if !use_escalation {
+        let final_tx = final_tx.expect("Final transaction must be constructed before submission");
+
+        if ctx.trading_mode == TradingMode::Live {
+            if let Some(ref mut router) = ctx.router {
+                tracing::info!("Submitting live sell transaction to Router pipeline");
+                match router.submit_transaction(final_tx).await {
+                    Ok(SubmitResult::Confirmed { signature, slot }) => {
+                        tracing::info!(
+                            "Sell transaction confirmed on-chain: sig={}, slot={}",
+                            signature,
+                            slot
+                        );
+                    }
+                    Ok(SubmitResult::Failed { reason }) => {
+                        tracing::error!("Sell transaction failed in router: {}", reason);
+                        return Err(anyhow!("Router exit submission failed: {}", reason));
+                    }
+                    Ok(SubmitResult::Timeout) => {
+                        tracing::warn!("Sell transaction submission timed out");
+                        return Err(anyhow!("Router exit submission timeout"));
+                    }
+                    Err(e) => {
+                        tracing::error!("Router error on exit: {}", e);
+                        return Err(anyhow!("Router exit error: {}", e));
+                    }
                 }
-                Ok(SubmitResult::Failed { reason }) => {
-                    tracing::error!("Sell transaction failed in router: {}", reason);
-                    return Err(anyhow!("Router exit submission failed: {}", reason));
-                }
-                Ok(SubmitResult::Timeout) => {
-                    tracing::warn!("Sell transaction submission timed out");
-                    return Err(anyhow!("Router exit submission timeout"));
-                }
-                Err(e) => {
-                    tracing::error!("Router error on exit: {}", e);
-                    return Err(anyhow!("Router exit error: {}", e));
-                }
+            } else {
+                // This should never happen due to check at pipeline start, but fail-closed
+                tracing::error!("Router is None in Live mode - this should have been caught earlier");
+                return Err(anyhow!("Router is None in Live mode"));
             }
         } else {
-            // This should never happen due to check at pipeline start, but fail-closed
-            tracing::error!("Router is None in Live mode - this should have been caught earlier");
-            return Err(anyhow!("Router is None in Live mode"));
+            tracing::info!("Paper trading mode - skipping live router exit submission");
         }
-    } else {
-        tracing::info!("Paper trading mode - skipping live router exit submission");
     }
 
     // Step 4: Update position state based on exit action using PositionLifecycle

@@ -395,7 +395,7 @@ async fn process_signals(
                         }),
                         signer_client: signer_clone
                             .as_ref()
-                            .map(|_| SignerClient::new("/tmp/solbot-signer.sock".to_string())),
+                            .map(|_| Arc::new(SignerClient::new("/tmp/solbot-signer.sock".to_string()))),
                         rpc_url: rpc_clone.clone(),
                         active_position: None,
                         trade_stats: None,

@@ -164,6 +164,8 @@ impl MeteoraListener {
                     signal_source: signal_source.clone(),
                     slot: update.slot,
                     received_at: update.timestamp_ms,
+                    raw_pool_account_data: Some(account_data.clone()),
+                    raw_pool_account_owner: Some(update.owner.to_string()),
                 });
             }
         }
@@ -179,6 +181,8 @@ impl MeteoraListener {
                     signal_source: signal_source.clone(),
                     slot: update.slot,
                     received_at: update.timestamp_ms,
+                    raw_pool_account_data: Some(account_data.clone()),
+                    raw_pool_account_owner: Some(update.owner.to_string()),
                 });
             }
         }

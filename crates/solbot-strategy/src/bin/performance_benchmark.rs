@@ -28,7 +28,7 @@ async fn main() -> Result<()> {
     let rpc_url = std::env::var("RPC_URL")
         .unwrap_or_else(|_| "https://api.mainnet-beta.solana.com".to_string());
     let helius_api_key = std::env::var("HELIUS_API_KEY")
-        .unwrap_or_else(|_| "f22a2b7e-479a-4040-847e-66337dc830e4".to_string());
+        .expect("HELIUS_API_KEY must be set — see .env.example");
     let ws_url = format!("wss://mainnet.helius-rpc.com/?api-key={}", helius_api_key);
 
     // 1. Measure RPC ping latency

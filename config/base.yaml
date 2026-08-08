@@ -35,7 +35,7 @@ geyser:
   endpoint: "https://mainnet.helius-rpc.com"
 
   # Helius API key (или x-token для Yellowstone)
-  x_token: "f22a2b7e-479a-4040-847e-66337dc830e4"
+  x_token: "REPLACE_WITH_HELIUS_API_KEY"
 
   # Commitment level для подписки
   commitment: "confirmed"  # processed, confirmed, finalized
