@@ -19,16 +19,12 @@ use solana_transaction::Transaction;
 use std::sync::Arc;
 use std::time::Duration;
 
-/// Maximum simulation time in milliseconds (aggressively optimized: 80ms → 30ms)
-/// TEMP: Raised to 120ms for current remote RPC latency. This should be
-/// tightened once the bot runs from a lower-latency colocated host.
-const SIMULATION_TIMEOUT_MS: u64 = 120;
-
 pub async fn check(
     mint: &str,
     pool_address: &str,
     size_lamports: u64,
     rpc: Arc<RpcClient>,
+    timeout_ms: u64,
 ) -> CheckResult {
     let start = std::time::Instant::now();
     let mint_pubkey = match Pubkey::try_from(mint) {
@@ -56,9 +52,9 @@ pub async fn check(
     let mint_clone = mint.to_string();
     let pool_clone = pool_address.to_string();
 
-    // Apply hard timeout (30ms) with fallback reject
+    // Apply hard timeout with fallback reject
     match tokio::time::timeout(
-        Duration::from_millis(SIMULATION_TIMEOUT_MS),
+        Duration::from_millis(timeout_ms),
         simulate_sell_transaction(
             rpc,
             mint_pubkey,
@@ -81,15 +77,15 @@ pub async fn check(
                 mint = %mint,
                 pool = %pool_address,
                 "Simulate sell check timed out after {}ms - rejecting",
-                SIMULATION_TIMEOUT_MS
+                timeout_ms
             );
             CheckResult {
                 passed: false,
                 reason: Some(format!(
                     "Simulation timeout after {}ms",
-                    SIMULATION_TIMEOUT_MS
+                    timeout_ms
                 )),
-                duration_ms: SIMULATION_TIMEOUT_MS,
+                duration_ms: timeout_ms,
             }
         }
     }
@@ -264,11 +260,15 @@ mod tests {
     #[test]
     fn test_invalid_mint_pubkey_rejected() {
         let rt = tokio::runtime::Runtime::new().unwrap();
+        let rpc = std::sync::Arc::new(solana_rpc_client::nonblocking::rpc_client::RpcClient::new(
+            "https://api.mainnet-beta.solana.com".to_string(),
+        ));
         let result = rt.block_on(check(
             "not_a_valid_pubkey",
             "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8",
             1_000_000,
-            "https://api.mainnet-beta.solana.com",
+            rpc,
+            120,
         ));
         assert!(!result.passed);
         assert!(result.reason.unwrap().contains("Invalid mint pubkey"));
@@ -277,12 +277,16 @@ mod tests {
     #[test]
     fn test_invalid_pool_pubkey_rejected() {
         let rt = tokio::runtime::Runtime::new().unwrap();
+        let rpc = std::sync::Arc::new(solana_rpc_client::nonblocking::rpc_client::RpcClient::new(
+            "https://api.mainnet-beta.solana.com".to_string(),
+        ));
         let valid_mint = "So11111111111111111111111111111111111111112";
         let result = rt.block_on(check(
             valid_mint,
             "not_a_valid_pubkey",
             1_000_000,
-            "https://api.mainnet-beta.solana.com",
+            rpc,
+            120,
         ));
         assert!(!result.passed);
         assert!(result.reason.unwrap().contains("Invalid pool pubkey"));
@@ -290,7 +294,8 @@ mod tests {
 
     #[test]
     fn test_constants() {
-        assert_eq!(SIMULATION_TIMEOUT_MS, 30);
+        // Removed: SIMULATION_TIMEOUT_MS constant no longer exists
+        // Timeout is now passed as parameter from config
     }
 
     /// Integration test — simulates real sell swap transaction on mainnet RPC.
