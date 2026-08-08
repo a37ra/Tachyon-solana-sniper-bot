@@ -1,3 +1,7 @@
+<div align="center">
+<img src="./bannertachyon.jpg" width="100%" alt="banner" />
+</div>
+
 # Временный readme с командами и полезными бинарниками
 
 ## Пока готов только P0 из плана, всего P3
