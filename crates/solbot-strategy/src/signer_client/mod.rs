@@ -1,7 +1,9 @@
 pub mod ipc_seq_counter;
 
 use anyhow::{bail, Context, Result};
-use solbot_common::types::intent::{IntentType, SignerIntentRequest, SignerIntentResponse, VerdictStatus};
+use solbot_common::types::intent::{
+    IntentType, SignerIntentRequest, SignerIntentResponse, VerdictStatus,
+};
 use std::time::Duration;
 use tokio::net::UnixStream;
 use tonic::transport::{Channel, Endpoint, Uri};
@@ -60,27 +62,30 @@ impl SignerClient {
 
     /// Get or create the gRPC channel over UDS.
     async fn get_channel(&self) -> Result<Channel> {
-        let channel = self.channel.get_or_try_init(|| async {
-            let socket_path = self.socket_path.clone();
+        let channel = self
+            .channel
+            .get_or_try_init(|| async {
+                let socket_path = self.socket_path.clone();
 
-            // Endpoint URI is ignored for UDS — the connector overrides it.
-            // We use a dummy HTTP URI because tonic requires one.
-            let channel = Endpoint::try_from("http://[::]:50051")
-                .context("Failed to create endpoint")?
-                .connect_timeout(Duration::from_secs(5))
-                .timeout(self.timeout)
-                .connect_with_connector(service_fn(move |_: Uri| {
-                    let path = socket_path.clone();
-                    async move {
-                        let stream = UnixStream::connect(path).await?;
-                        Ok::<_, std::io::Error>(hyper_util::rt::TokioIo::new(stream))
-                    }
-                }))
-                .await
-                .context("Failed to connect to solbot-signer via UDS")?;
+                // Endpoint URI is ignored for UDS — the connector overrides it.
+                // We use a dummy HTTP URI because tonic requires one.
+                let channel = Endpoint::try_from("http://[::]:50051")
+                    .context("Failed to create endpoint")?
+                    .connect_timeout(Duration::from_secs(5))
+                    .timeout(self.timeout)
+                    .connect_with_connector(service_fn(move |_: Uri| {
+                        let path = socket_path.clone();
+                        async move {
+                            let stream = UnixStream::connect(path).await?;
+                            Ok::<_, std::io::Error>(hyper_util::rt::TokioIo::new(stream))
+                        }
+                    }))
+                    .await
+                    .context("Failed to connect to solbot-signer via UDS")?;
 
-            Ok::<Channel, anyhow::Error>(channel)
-        }).await?;
+                Ok::<Channel, anyhow::Error>(channel)
+            })
+            .await?;
 
         Ok(channel.clone())
     }
@@ -89,7 +94,10 @@ impl SignerClient {
     ///
     /// Automatically assigns the next IPC sequence number for anti-replay.
     /// Retries on transient transport errors (up to MAX_RETRIES).
-    pub async fn sign_intent(&self, mut request: SignerIntentRequest) -> Result<SignerIntentResponse> {
+    pub async fn sign_intent(
+        &self,
+        mut request: SignerIntentRequest,
+    ) -> Result<SignerIntentResponse> {
         let seq = self.seq_counter.next_seq(&request.context_key);
         request.ipc_seq = seq;
 
@@ -200,10 +208,7 @@ impl SignerClient {
 
         match &status {
             VerdictStatus::Accepted => {
-                tracing::info!(
-                    last_ipc_seq = resp.last_ipc_seq,
-                    "Signer ACCEPTED intent"
-                );
+                tracing::info!(last_ipc_seq = resp.last_ipc_seq, "Signer ACCEPTED intent");
             }
             VerdictStatus::Rejected => {
                 tracing::warn!(

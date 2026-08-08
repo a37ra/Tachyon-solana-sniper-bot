@@ -29,7 +29,8 @@ use solana_instruction::{AccountMeta, Instruction};
 use solana_pubkey::Pubkey;
 
 /// Raydium AMM v4 program ID.
-pub const RAYDIUM_AMM_V4_PROGRAM: Pubkey = solana_pubkey::pubkey!("675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8");
+pub const RAYDIUM_AMM_V4_PROGRAM: Pubkey =
+    solana_pubkey::pubkey!("675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8");
 
 /// Raydium AMM authority PDA seed.
 const AMM_AUTHORITY_SEED: &[u8] = b"amm authority";
@@ -109,8 +110,8 @@ impl RaydiumAmmV4PoolState {
         Ok(Self {
             // Status (8 bytes) + nonce (8) + max_order (8) + depth (8) + ...
             // Pubkeys start at various offsets in the AMM layout
-            amm_id: read_pubkey(data, 8)?,       // offset after status
-            amm_authority: Pubkey::default(),          // derived PDA
+            amm_id: read_pubkey(data, 8)?,    // offset after status
+            amm_authority: Pubkey::default(), // derived PDA
             amm_open_orders: read_pubkey(data, 72)?,
             amm_target_orders: read_pubkey(data, 104)?,
             pool_coin_token_account: read_pubkey(data, 136)?,
@@ -126,7 +127,7 @@ impl RaydiumAmmV4PoolState {
             coin_mint: read_pubkey(data, 400)?,
             pc_mint: read_pubkey(data, 368)?,
             fees,
-            coin_vault_balance: 0,  // Set separately via RPC
+            coin_vault_balance: 0, // Set separately via RPC
             pc_vault_balance: 0,   // Set separately via RPC
         })
     }
@@ -139,7 +140,7 @@ impl RaydiumAmmV4PoolState {
         if data.len() < fees_offset + 64 {
             bail!("Data too short to parse fees");
         }
-        
+
         let offset = fees_offset;
         Ok(Fees {
             min_separate_numerator: read_u64(data, offset)?,
@@ -162,10 +163,8 @@ impl RaydiumAmmV4PoolState {
 
     /// Derive the AMM authority PDA.
     pub fn derive_authority() -> Result<Pubkey> {
-        let (authority, _bump) = Pubkey::find_program_address(
-            &[AMM_AUTHORITY_SEED],
-            &RAYDIUM_AMM_V4_PROGRAM,
-        );
+        let (authority, _bump) =
+            Pubkey::find_program_address(&[AMM_AUTHORITY_SEED], &RAYDIUM_AMM_V4_PROGRAM);
         Ok(authority)
     }
 
@@ -176,12 +175,12 @@ impl RaydiumAmmV4PoolState {
         if self.coin_vault_balance == 0 || self.pc_vault_balance == 0 {
             return 0;
         }
-        
+
         // For buy: SOL is input (pc), Token is output (coin)
         // reserve_in = pc_vault_balance, reserve_out = coin_vault_balance
         let reserve_in = self.pc_vault_balance;
         let reserve_out = self.coin_vault_balance;
-        
+
         self.calculate_output(sol_amount, reserve_in, reserve_out)
     }
 
@@ -191,12 +190,12 @@ impl RaydiumAmmV4PoolState {
         if self.coin_vault_balance == 0 || self.pc_vault_balance == 0 {
             return 0;
         }
-        
+
         // For sell: Token is input (coin), SOL is output (pc)
         // reserve_in = coin_vault_balance, reserve_out = pc_vault_balance
         let reserve_in = self.coin_vault_balance;
         let reserve_out = self.pc_vault_balance;
-        
+
         self.calculate_output(token_amount, reserve_in, reserve_out)
     }
 
@@ -205,28 +204,28 @@ impl RaydiumAmmV4PoolState {
     fn calculate_output(&self, amount_in: u64, reserve_in: u64, reserve_out: u64) -> u64 {
         let fee_numerator = self.fees.swap_fee_numerator;
         let fee_denominator = self.fees.swap_fee_denominator;
-        
+
         // amount_in_with_fee = amount_in * (denom - fee) / denom
         let amount_in_with_fee = (amount_in as u128)
             .saturating_mul((fee_denominator - fee_numerator) as u128)
             / fee_denominator as u128;
-        
+
         if amount_in_with_fee == 0 {
             return 0;
         }
-        
+
         // numerator = reserve_out * amount_in_with_fee
         let numerator = (reserve_out as u128).saturating_mul(amount_in_with_fee);
-        
+
         // denominator = reserve_in * denom + amount_in_with_fee
         let denominator = (reserve_in as u128)
             .saturating_mul(fee_denominator as u128)
             .saturating_add(amount_in_with_fee);
-        
+
         if denominator == 0 {
             return 0;
         }
-        
+
         (numerator / denominator) as u64
     }
 }
@@ -366,7 +365,7 @@ mod tests {
         // numerator = 1000 * 9 = 9000
         // denominator = 1000 * 10000 + 9 = 10_000_009
         // amount_out = 9000 / 10_000_009 = 0
-        
+
         let pool_state = RaydiumAmmV4PoolState {
             amm_id: Pubkey::new_unique(),
             amm_authority: Pubkey::new_unique(),
@@ -401,10 +400,10 @@ mod tests {
         // Test with larger amount to get non-zero output
         let amount_in = 100_000_000; // 0.1 SOL
         let output = pool_state.calculate_buy_output(amount_in);
-        
+
         // Should be non-zero with reasonable input
         assert!(output > 0, "Expected non-zero output for 0.1 SOL input");
-        
+
         // Verify output is reasonable (should be less than input due to fee and reserves)
         assert!(output < amount_in, "Output should be less than input");
     }
@@ -449,14 +448,17 @@ mod tests {
 
         let amount_in = 1_000_000_000; // 1 SOL (9 decimals)
         let output = pool_state.calculate_buy_output(amount_in);
-        
+
         assert!(output > 0);
-        
+
         // The actual output is ~14.96M USDC raw units = ~14.96 USDC
         // This is because the reserves are not perfectly balanced in raw units
         // due to decimal differences (SOL: 9 decimals, USDC: 6 decimals)
         // The important thing is that the calculation is non-zero and reasonable
-        assert!(output > 10_000_000 && output < 20_000_000, 
-            "Output {} outside expected range for 1 SOL input", output);
+        assert!(
+            output > 10_000_000 && output < 20_000_000,
+            "Output {} outside expected range for 1 SOL input",
+            output
+        );
     }
 }

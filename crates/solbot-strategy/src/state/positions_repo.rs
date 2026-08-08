@@ -142,10 +142,24 @@ impl PositionsRepo {
 
         match row {
             Some(row) => {
-                let (position_id, mint, pool_address, dex_program_id, tier, status,
-                     size_sol, entry_price_sol, size_pct_of_capital, remaining_token_pct,
-                     hard_sl_price_sol, trailing_active, trailing_high_water_sol,
-                     realized_pnl_net_sol, opened_at_utc, closed_at_utc) = row;
+                let (
+                    position_id,
+                    mint,
+                    pool_address,
+                    dex_program_id,
+                    tier,
+                    status,
+                    size_sol,
+                    entry_price_sol,
+                    size_pct_of_capital,
+                    remaining_token_pct,
+                    hard_sl_price_sol,
+                    trailing_active,
+                    trailing_high_water_sol,
+                    realized_pnl_net_sol,
+                    opened_at_utc,
+                    closed_at_utc,
+                ) = row;
 
                 let tier = match tier.as_str() {
                     "micro" => solbot_common::types::tier::CapitalTier::Micro,
@@ -197,10 +211,24 @@ impl PositionsRepo {
         let positions = rows
             .into_iter()
             .map(|row| {
-                let (position_id, mint, pool_address, dex_program_id, tier, status,
-                     size_sol, entry_price_sol, size_pct_of_capital, remaining_token_pct,
-                     hard_sl_price_sol, trailing_active, trailing_high_water_sol,
-                     realized_pnl_net_sol, opened_at_utc, closed_at_utc) = row;
+                let (
+                    position_id,
+                    mint,
+                    pool_address,
+                    dex_program_id,
+                    tier,
+                    status,
+                    size_sol,
+                    entry_price_sol,
+                    size_pct_of_capital,
+                    remaining_token_pct,
+                    hard_sl_price_sol,
+                    trailing_active,
+                    trailing_high_water_sol,
+                    realized_pnl_net_sol,
+                    opened_at_utc,
+                    closed_at_utc,
+                ) = row;
 
                 let tier = match tier.as_str() {
                     "micro" => solbot_common::types::tier::CapitalTier::Micro,

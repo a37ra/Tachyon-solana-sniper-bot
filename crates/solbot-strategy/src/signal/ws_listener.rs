@@ -5,21 +5,21 @@
 //! and fetches account data via RPC when relevant transactions are detected.
 
 use anyhow::{Context, Result};
+use futures_util::{SinkExt, StreamExt};
+use serde_json;
 use solana_pubkey::Pubkey;
 use solana_rpc_client::rpc_client::RpcClient;
 use solana_rpc_client_api::config::RpcTransactionConfig;
-use solana_transaction_status::UiTransactionEncoding;
 use solana_signature::Signature;
-use futures_util::{StreamExt, SinkExt};
-use tokio::sync::mpsc;
-use tokio::time::{Duration, sleep, Instant};
-use tokio_tungstenite::tungstenite::protocol::Message;
-use tracing::{info, warn, error};
-use std::sync::Arc;
+use solana_transaction_status::UiTransactionEncoding;
 use std::collections::HashSet;
 use std::str::FromStr;
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
-use serde_json;
+use tokio::sync::mpsc;
+use tokio::time::{sleep, Duration, Instant};
+use tokio_tungstenite::tungstenite::protocol::Message;
+use tracing::{error, info, warn};
 
 // Re-export AccountUpdate from geyser_client for compatibility
 pub use super::geyser_client::AccountUpdate;
@@ -85,7 +85,9 @@ struct RateLimiter {
 impl RateLimiter {
     fn new(reqs_per_sec: u64) -> Self {
         Self {
-            last_call: Arc::new(tokio::sync::Mutex::new(Instant::now() - Duration::from_secs(1))),
+            last_call: Arc::new(tokio::sync::Mutex::new(
+                Instant::now() - Duration::from_secs(1),
+            )),
             min_interval: Duration::from_millis(1000 / reqs_per_sec),
         }
     }
@@ -175,7 +177,8 @@ impl WsListener {
                                 error!("Max reconnect attempts reached, giving up");
                                 break;
                             }
-                            let backoff = (base_backoff * 2u32.pow(reconnect_attempts)).min(max_backoff);
+                            let backoff =
+                                (base_backoff * 2u32.pow(reconnect_attempts)).min(max_backoff);
                             warn!("Reconnecting in {:?}...", backoff);
                             sleep(backoff).await;
                             reconnect_attempts += 1;
@@ -192,22 +195,37 @@ impl WsListener {
                                 Ok(Message::Text(text)) => {
                                     total_logs += 1;
                                     if total_logs.is_multiple_of(100) {
-                                        info!(total_logs, account_updates_count, "WebSocket stream progress");
+                                        info!(
+                                            total_logs,
+                                            account_updates_count, "WebSocket stream progress"
+                                        );
                                     }
 
-                                    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
+                                    if let Ok(json) =
+                                        serde_json::from_str::<serde_json::Value>(&text)
+                                    {
                                         // Handle both subscription response and notification
-                                        let result_value = if json.get("method").and_then(|m| m.as_str()) == Some("logsNotification") {
-                                            json.get("params").and_then(|p| p.get("result")).and_then(|r| r.get("value"))
-                                        } else {
-                                            json.get("result")
-                                        };
+                                        let result_value =
+                                            if json.get("method").and_then(|m| m.as_str())
+                                                == Some("logsNotification")
+                                            {
+                                                json.get("params")
+                                                    .and_then(|p| p.get("result"))
+                                                    .and_then(|r| r.get("value"))
+                                            } else {
+                                                json.get("result")
+                                            };
 
                                         if let Some(result) = result_value {
-                                            if let Some(signature_str) = result.get("signature").and_then(|s| s.as_str()) {
-                                                if let Ok(signature) = Signature::from_str(signature_str) {
+                                            if let Some(signature_str) =
+                                                result.get("signature").and_then(|s| s.as_str())
+                                            {
+                                                if let Ok(signature) =
+                                                    Signature::from_str(signature_str)
+                                                {
                                                     // Extract slot from context
-                                                    let _slot = json.get("params")
+                                                    let _slot = json
+                                                        .get("params")
                                                         .and_then(|p| p.get("result"))
                                                         .and_then(|r| r.get("context"))
                                                         .and_then(|c| c.get("slot"))
@@ -215,9 +233,14 @@ impl WsListener {
                                                         .unwrap_or(0);
 
                                                     // Check if logs contain relevant program mentions
-                                                    let logs = result.get("logs")
+                                                    let logs = result
+                                                        .get("logs")
                                                         .and_then(|l| l.as_array())
-                                                        .map(|arr| arr.iter().filter_map(|l| l.as_str()).collect::<Vec<_>>())
+                                                        .map(|arr| {
+                                                            arr.iter()
+                                                                .filter_map(|l| l.as_str())
+                                                                .collect::<Vec<_>>()
+                                                        })
                                                         .unwrap_or_default();
 
                                                     let relevant = logs.iter().any(|log_line| {
@@ -237,7 +260,8 @@ impl WsListener {
                                                         // Deduplication check
                                                         let sig_str = signature.to_string();
                                                         {
-                                                            let mut seen = seen_signatures.lock().await;
+                                                            let mut seen =
+                                                                seen_signatures.lock().await;
                                                             if seen.contains(&sig_str) {
                                                                 continue; // Skip duplicate
                                                             }
@@ -254,7 +278,8 @@ impl WsListener {
                                                         );
 
                                                         // Create RPC client
-                                                        let rpc_client = RpcClient::new(rpc_url.to_string());
+                                                        let rpc_client =
+                                                            RpcClient::new(rpc_url.to_string());
 
                                                         // Process transaction with rate limiting
                                                         match Self::process_transaction(
@@ -264,7 +289,9 @@ impl WsListener {
                                                             &program_ids_set,
                                                             commitment,
                                                             &rate_limiter,
-                                                        ).await {
+                                                        )
+                                                        .await
+                                                        {
                                                             Ok(_) => {
                                                                 account_updates_count += 1;
                                                                 info!(signature = %signature, count = account_updates_count, "Successfully processed transaction");
@@ -303,7 +330,8 @@ impl WsListener {
                             error!("Max reconnect attempts reached, giving up");
                             break;
                         }
-                        let backoff = (base_backoff * 2u32.pow(reconnect_attempts)).min(max_backoff);
+                        let backoff =
+                            (base_backoff * 2u32.pow(reconnect_attempts)).min(max_backoff);
                         warn!("Reconnecting in {:?}...", backoff);
                         sleep(backoff).await;
                         reconnect_attempts += 1;
@@ -355,7 +383,10 @@ impl WsListener {
             .context("Failed to fetch transaction")?;
 
         let slot = transaction.slot;
-        let transaction_meta = transaction.transaction.meta.context("Transaction without meta")?;
+        let transaction_meta = transaction
+            .transaction
+            .meta
+            .context("Transaction without meta")?;
 
         // Parse logs to detect DEX-specific patterns
         let logs = transaction_meta.log_messages.as_ref();
@@ -363,10 +394,10 @@ impl WsListener {
             info!("Transaction has no logs, skipping");
             return Ok(()); // No logs to parse
         }
-        
+
         let logs_slice = logs.unwrap();
         info!(log_count = logs_slice.len(), "Parsing logs for signal");
-        
+
         let signal = Self::parse_logs_for_signal(logs_slice, slot)?;
 
         if let Some(sig) = signal {
@@ -377,12 +408,12 @@ impl WsListener {
                 instruction_type = ?sig.instruction_type,
                 "Sending DEX signal to channel"
             );
-            
+
             // Create synthetic AccountUpdate compatible with test expectations
             // Test expects: update.account = pool_address, update.data contains mint at offset 8
             let mut data = vec![0u8; 8 + 32]; // Reserve space for mint at offset 8
-            data[8..8+32].copy_from_slice(&sig.mint.to_bytes());
-            
+            data[8..8 + 32].copy_from_slice(&sig.mint.to_bytes());
+
             let account_update = AccountUpdate {
                 account: sig.pool_address, // Pool address as the account key
                 slot,
@@ -391,9 +422,15 @@ impl WsListener {
                 owner: sig.dex_program_id,
                 executable: false,
                 rent_epoch: 0,
+                timestamp_ms: SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64,
             };
-            
-            tx.send(account_update).await.context("Failed to send account update")?;
+
+            tx.send(account_update)
+                .await
+                .context("Failed to send account update")?;
         }
 
         Ok(())
@@ -452,10 +489,11 @@ impl WsListener {
                         if let Ok(pubkey) = Pubkey::from_str(part) {
                             // Exclude system programs and known program IDs
                             let pubkey_str = pubkey.to_string();
-                            if !pubkey_str.contains("11111111111111111111111111111111") &&
-                               !pubkey_str.starts_with("ComputeBudget") &&
-                               !pubkey_str.starts_with("Token") &&
-                               !pubkey_str.starts_with("AToken") {
+                            if !pubkey_str.contains("11111111111111111111111111111111")
+                                && !pubkey_str.starts_with("ComputeBudget")
+                                && !pubkey_str.starts_with("Token")
+                                && !pubkey_str.starts_with("AToken")
+                            {
                                 info!(potential_mint = %pubkey, "Found valid mint in logs");
                                 return Some(Signal {
                                     mint: pubkey,

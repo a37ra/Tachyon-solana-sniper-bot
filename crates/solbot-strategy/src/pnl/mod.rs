@@ -27,14 +27,10 @@ impl FeeBreakdown {
 /// - Gross P&L = (exit_price - entry_price) × size_sol
 /// - Total Fees = priority_fees + jito_tips + ata_rent - ata_refund
 /// - Net P&L = Gross P&L - Total Fees
-pub fn compute_pnl_net(
-    position: &Position,
-    exit_price_sol: f64,
-    fees: &FeeBreakdown,
-) -> f64 {
+pub fn compute_pnl_net(position: &Position, exit_price_sol: f64, fees: &FeeBreakdown) -> f64 {
     let gross_pnl = (exit_price_sol - position.entry_price_sol) * position.size_sol;
     let total_fees = fees.total_fees();
-    
+
     gross_pnl - total_fees
 }
 
@@ -53,10 +49,10 @@ pub fn estimate_default_fees(
     num_transactions: usize, // buy + exit transactions
 ) -> FeeBreakdown {
     let base_priority_fee = match tier {
-        CapitalTier::Micro => 0.00001,   // ~10k lamports
-        CapitalTier::Small => 0.00005,   // ~50k lamports
-        CapitalTier::Medium => 0.0001,   // ~100k lamports
-        CapitalTier::Large => 0.0005,    // ~500k lamports
+        CapitalTier::Micro => 0.00001, // ~10k lamports
+        CapitalTier::Small => 0.00005, // ~50k lamports
+        CapitalTier::Medium => 0.0001, // ~100k lamports
+        CapitalTier::Large => 0.0005,  // ~500k lamports
     };
 
     let priority_fees_sol = base_priority_fee * num_transactions as f64;
@@ -81,6 +77,7 @@ pub fn estimate_default_fees(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use solbot_common::types::position::PositionStatus;
 
     #[test]
     fn test_pnl_calculation_positive() {
@@ -90,7 +87,7 @@ mod tests {
             pool_address: "test_pool".to_string(),
             dex_program_id: "test_dex".to_string(),
             tier: CapitalTier::Micro,
-            status: Default::default(),
+            status: PositionStatus::Open,
             entry_price_sol: 1.0,
             size_sol: 10.0,
             size_pct_of_capital: 1.0,
@@ -112,7 +109,7 @@ mod tests {
 
         let exit_price = 1.5;
         let pnl = compute_pnl_net(&position, exit_price, &fees);
-        
+
         // Gross: (1.5 - 1.0) * 10 = 5.0 SOL
         // Fees: 0.00002 + 0 + 0 = 0.00002 SOL
         // Net: 5.0 - 0.00002 = 4.99998 SOL
@@ -127,7 +124,7 @@ mod tests {
             pool_address: "test_pool".to_string(),
             dex_program_id: "test_dex".to_string(),
             tier: CapitalTier::Micro,
-            status: Default::default(),
+            status: PositionStatus::Open,
             entry_price_sol: 1.0,
             size_sol: 10.0,
             size_pct_of_capital: 1.0,
@@ -149,7 +146,7 @@ mod tests {
 
         let exit_price = 0.8;
         let pnl = compute_pnl_net(&position, exit_price, &fees);
-        
+
         // Gross: (0.8 - 1.0) * 10 = -2.0 SOL
         // Fees: 0.00002 SOL
         // Net: -2.0 - 0.00002 = -2.00002 SOL

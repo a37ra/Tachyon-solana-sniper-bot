@@ -110,7 +110,7 @@ impl signer_proto::transaction_signer_service_server::TransactionSignerService f
             .ok()
             .and_then(|s| s.parse::<bool>().ok())
             .unwrap_or(false);
-        
+
         let mut allowed_programs: Vec<&str> = DexProgram::all_program_ids().to_vec();
         if allow_system_program {
             allowed_programs.push("11111111111111111111111111111111");
@@ -152,42 +152,25 @@ impl signer_proto::transaction_signer_service_server::TransactionSignerService f
                 (Ok(()), true) => {
                     // All checks passed → sign the transaction
                     if internal_req.unsigned_transaction_base64.is_empty() {
-                        (
-                            "rejected",
-                            Some("MissingUnsignedTransaction"),
-                            None,
-                            None,
-                        )
+                        ("rejected", Some("MissingUnsignedTransaction"), None, None)
                     } else {
                         match sign_transaction(
                             &internal_req.unsigned_transaction_base64,
                             self.keypair.keypair(),
                         ) {
-                            Ok((signed, sig)) => {
-                                ("accepted", None, Some(signed), Some(sig))
-                            }
+                            Ok((signed, sig)) => ("accepted", None, Some(signed), Some(sig)),
                             Err(e) => {
                                 tracing::error!(
                                     error = %e,
                                     context_key = %context_key,
                                     "Transaction signing failed"
                                 );
-                                (
-                                    "rejected",
-                                    Some("SigningFailed"),
-                                    None,
-                                    None,
-                                )
+                                ("rejected", Some("SigningFailed"), None, None)
                             }
                         }
                     }
                 }
-                (Err(reason), _) => (
-                    "rejected",
-                    Some(reason.as_str()),
-                    None,
-                    None,
-                ),
+                (Err(reason), _) => ("rejected", Some(reason.as_str()), None, None),
                 (_, false) => (
                     "rejected",
                     Some(RejectionReason::RateLimitExceeded.as_str()),

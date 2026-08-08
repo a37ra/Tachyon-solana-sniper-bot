@@ -1,13 +1,8 @@
 use anyhow::{anyhow, Result};
-use solana_sdk::{
-    instruction::Instruction,
-    pubkey::Pubkey,
-};
+use solana_sdk::{instruction::Instruction, pubkey::Pubkey};
+use spl_associated_token_account::get_associated_token_address;
 use spl_token::instruction as spl_token_ix;
 use std::str::FromStr;
-
-const TOKEN_PROGRAM_ID: &str = "TokenkegQfeZyiNwAJsyFbPVwwQQfhardt1PNjAupC";
-const ASSOCIATED_TOKEN_PROGRAM_ID: &str = "ATokenGPvbdGVqstVQmcLsNZAqeEbtQaMy63sSAHeFBc";
 
 /// Manages automatic WSOL (Wrapped SOL) unwrapping for position closes.
 ///
@@ -22,7 +17,9 @@ pub struct WsolManager {
 
 impl WsolManager {
     pub fn new(unwrap_threshold_sol: f64) -> Self {
-        Self { unwrap_threshold_sol }
+        Self {
+            unwrap_threshold_sol,
+        }
     }
 
     /// Check WSOL balance and create unwrap instruction if needed.
@@ -48,8 +45,7 @@ impl WsolManager {
 
             // Build CloseAccount instruction to unwrap and recover SOL
             let close_account_ix = spl_token_ix::close_account(
-                &Pubkey::from_str(TOKEN_PROGRAM_ID)
-                    .map_err(|e| anyhow!("Invalid TOKEN_PROGRAM_ID: {}", e))?,
+                &spl_token::id(),
                 &self.derive_wsol_ata(&wallet)?,
                 &wallet,
                 &wallet,
@@ -70,28 +66,8 @@ impl WsolManager {
         let wsol_mint = Pubkey::from_str("So11111111111111111111111111111111111111112")
             .map_err(|e| anyhow!("Failed to parse WSOL mint: {}", e))?;
 
-        let token_program = Pubkey::from_str(TOKEN_PROGRAM_ID)
-            .map_err(|e| anyhow!("Invalid TOKEN_PROGRAM_ID: {}", e))?;
-
-        // Derive ATA: find_program_address(["account", wallet, token_program, mint], spl_associated_token)
-        let (ata, _bump) = Pubkey::find_program_address(
-            &[
-                b"account",
-                &wallet.to_bytes(),
-                &token_program.to_bytes(),
-                &wsol_mint.to_bytes(),
-            ],
-            &spl_associated_token_program_id(),
-        );
-
-        Ok(ata)
+        Ok(get_associated_token_address(wallet, &wsol_mint))
     }
-}
-
-/// SPL Associated Token Program ID
-fn spl_associated_token_program_id() -> Pubkey {
-    Pubkey::from_str(ASSOCIATED_TOKEN_PROGRAM_ID)
-        .expect("Failed to parse SPL Associated Token Program ID")
 }
 
 #[cfg(test)]

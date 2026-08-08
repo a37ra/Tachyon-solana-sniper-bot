@@ -1,6 +1,6 @@
 pub mod lifecycle_manager;
-pub mod positions_repo;
 pub mod position_lifecycle;
+pub mod positions_repo;
 pub mod scam_blacklist_repo;
 pub mod smart_money_hits_repo;
 pub mod state_transitions_repo;

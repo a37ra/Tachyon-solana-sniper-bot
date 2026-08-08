@@ -30,7 +30,7 @@ pub struct DlmmPoolState {
     pub active_id: i32,
     pub reserve_x_balance: u64,
     pub reserve_y_balance: u64,
-    pub bin_step: u16,  // Price step between bins
+    pub bin_step: u16, // Price step between bins
 }
 
 impl DlmmPoolState {
@@ -53,9 +53,9 @@ impl DlmmPoolState {
                     .and_then(|s| s.try_into().ok())
                     .unwrap_or([0; 4]),
             ),
-            reserve_x_balance: 0,  // Set separately via RPC
-            reserve_y_balance: 0,   // Set separately via RPC
-            bin_step: 1,            // Default, should be parsed from pool state
+            reserve_x_balance: 0, // Set separately via RPC
+            reserve_y_balance: 0, // Set separately via RPC
+            bin_step: 1,          // Default, should be parsed from pool state
         })
     }
 
@@ -79,16 +79,17 @@ impl DlmmPoolState {
         if self.reserve_x_balance == 0 || self.reserve_y_balance == 0 {
             return 0;
         }
-        
+
         // Determine which reserve is SOL and which is token
-        let (reserve_in, reserve_out) = if self.token_y_mint.to_string() == "So11111111111111111111111111111111111111112" {
-            // SOL is token_y, token is token_x
-            (self.reserve_y_balance, self.reserve_x_balance)
-        } else {
-            // SOL is token_x, token is token_y
-            (self.reserve_x_balance, self.reserve_y_balance)
-        };
-        
+        let (reserve_in, reserve_out) =
+            if self.token_y_mint.to_string() == "So11111111111111111111111111111111111111112" {
+                // SOL is token_y, token is token_x
+                (self.reserve_y_balance, self.reserve_x_balance)
+            } else {
+                // SOL is token_x, token is token_y
+                (self.reserve_x_balance, self.reserve_y_balance)
+            };
+
         // Warn if order size is large relative to reserves (may cross bin boundary)
         // This is a heuristic - actual bin boundary depends on liquidity distribution
         if sol_amount > reserve_in / 10 {
@@ -98,7 +99,7 @@ impl DlmmPoolState {
                 "DLMM order size > 10% of reserve - may cross bin boundary, pricing may be inaccurate"
             );
         }
-        
+
         // Use constant product formula with 0.25% fee (typical DLMM fee)
         self.calculate_output(sol_amount, reserve_in, reserve_out)
     }
@@ -110,15 +111,16 @@ impl DlmmPoolState {
         if self.reserve_x_balance == 0 || self.reserve_y_balance == 0 {
             return 0;
         }
-        
-        let (reserve_in, reserve_out) = if self.token_y_mint.to_string() == "So11111111111111111111111111111111111111112" {
-            // SOL is token_y, token is token_x
-            (self.reserve_x_balance, self.reserve_y_balance)
-        } else {
-            // SOL is token_x, token is token_y
-            (self.reserve_y_balance, self.reserve_x_balance)
-        };
-        
+
+        let (reserve_in, reserve_out) =
+            if self.token_y_mint.to_string() == "So11111111111111111111111111111111111111112" {
+                // SOL is token_y, token is token_x
+                (self.reserve_x_balance, self.reserve_y_balance)
+            } else {
+                // SOL is token_x, token is token_y
+                (self.reserve_y_balance, self.reserve_x_balance)
+            };
+
         self.calculate_output(token_amount, reserve_in, reserve_out)
     }
 
@@ -126,29 +128,29 @@ impl DlmmPoolState {
     /// This is a single-bin approximation - full implementation would traverse bins.
     fn calculate_output(&self, amount_in: u64, reserve_in: u64, reserve_out: u64) -> u64 {
         const FEE_DENOMINATOR: u64 = 10_000;
-        const FEE_NUMERATOR: u64 = 25;  // 0.25%
-        
+        const FEE_NUMERATOR: u64 = 25; // 0.25%
+
         // amount_in_with_fee = amount_in * (FEE_DENOMINATOR - FEE_NUMERATOR) / FEE_DENOMINATOR
         let amount_in_with_fee = (amount_in as u128)
             .saturating_mul((FEE_DENOMINATOR - FEE_NUMERATOR) as u128)
             / FEE_DENOMINATOR as u128;
-        
+
         if amount_in_with_fee == 0 {
             return 0;
         }
-        
+
         // numerator = reserve_out * amount_in_with_fee
         let numerator = (reserve_out as u128).saturating_mul(amount_in_with_fee);
-        
+
         // denominator = reserve_in * FEE_DENOMINATOR + amount_in_with_fee
         let denominator = (reserve_in as u128)
             .saturating_mul(FEE_DENOMINATOR as u128)
             .saturating_add(amount_in_with_fee);
-        
+
         if denominator == 0 {
             return 0;
         }
-        
+
         (numerator / denominator) as u64
     }
 }
@@ -173,10 +175,7 @@ pub fn bin_array_index_from_bin_id(bin_id: i32) -> i64 {
 }
 
 /// Build Meteora DLMM swap instructions.
-pub fn build_swap(
-    params: &SwapParams,
-    pool_state: &DlmmPoolState,
-) -> Result<SwapInstructions> {
+pub fn build_swap(params: &SwapParams, pool_state: &DlmmPoolState) -> Result<SwapInstructions> {
     let wallet = &params.wallet;
     let mut setup_instructions = Vec::new();
     let mut cleanup_instructions = Vec::new();
@@ -185,8 +184,8 @@ pub fn build_swap(
 
     // Determine swap direction: x_to_y or y_to_x
     let swap_for_y = match params.direction {
-        SwapDirection::Buy => !is_mint_x,  // buying token_x means y→x, buying token_y means x→y
-        SwapDirection::Sell => is_mint_x,   // selling token_x means x→y
+        SwapDirection::Buy => !is_mint_x, // buying token_x means y→x, buying token_y means x→y
+        SwapDirection::Sell => is_mint_x, // selling token_x means x→y
     };
 
     // Setup ATAs
@@ -197,7 +196,11 @@ pub fn build_swap(
             let (token_ata, token_ixs) = ata::ensure_token_ata_instructions(wallet, &params.mint);
             setup_instructions.extend(token_ixs);
             cleanup_instructions.push(ata::close_wsol_account_instruction(wallet)?);
-            if swap_for_y { (wsol_ata, token_ata) } else { (token_ata, wsol_ata) }
+            if swap_for_y {
+                (wsol_ata, token_ata)
+            } else {
+                (token_ata, wsol_ata)
+            }
         }
         SwapDirection::Sell => {
             let token_ata = ata::derive_ata(wallet, &params.mint);
@@ -233,7 +236,9 @@ pub fn build_swap(
         accounts: vec![
             AccountMeta::new(pool_state.lb_pair, false),
             AccountMeta::new_readonly(
-                pool_state.bin_array_bitmap_extension.unwrap_or(METEORA_DLMM_PROGRAM),
+                pool_state
+                    .bin_array_bitmap_extension
+                    .unwrap_or(METEORA_DLMM_PROGRAM),
                 false,
             ),
             AccountMeta::new(pool_state.reserve_x, false),
@@ -304,20 +309,23 @@ mod tests {
 
         let amount_in = 1_000_000_000; // 1 SOL
         let output = pool_state.calculate_buy_output(amount_in);
-        
+
         // Manually calculated constant-product formula:
         // amount_in_with_fee = 1_000_000_000 * 9975 / 10000 = 997_500_000
         // numerator = 150_000_000_000_000 * 997_500_000 = 149,625,000,000,000,000,000,000
         // denominator = 1_000_000_000_000 * 10000 + 997_500_000 = 10,000,000,997,500,000
         // output = 149,625,000,000,000,000,000,000 / 10,000,000,997,500,000 = 14,962,498
-        assert_eq!(output, 14_962_498, "Constant product formula calculation mismatch");
+        assert_eq!(
+            output, 14_962_498,
+            "Constant product formula calculation mismatch"
+        );
     }
 
     #[test]
     fn test_dlmm_bin_boundary_warning() {
         // Initialize tracing subscriber to capture warnings
         let _ = tracing_subscriber::fmt().with_test_writer().try_init();
-        
+
         let pool_state = DlmmPoolState {
             lb_pair: Pubkey::new_unique(),
             bin_array_bitmap_extension: None,
@@ -335,7 +343,7 @@ mod tests {
         // Order size > 10% of reserve (200M SOL vs 1M SOL reserve)
         let amount_in = 200_000_000_000; // 200 SOL
         let output = pool_state.calculate_buy_output(amount_in);
-        
+
         // Should trigger warning but still calculate
         assert!(output > 0);
     }

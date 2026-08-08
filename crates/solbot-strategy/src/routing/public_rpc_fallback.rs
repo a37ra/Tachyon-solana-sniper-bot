@@ -100,7 +100,8 @@ impl PublicRpcClient {
     fn rotate_endpoint(&mut self) {
         let start = self.current_endpoint_index;
         loop {
-            self.current_endpoint_index = (self.current_endpoint_index + 1) % self.config.endpoints.len();
+            self.current_endpoint_index =
+                (self.current_endpoint_index + 1) % self.config.endpoints.len();
             if self.config.endpoints[self.current_endpoint_index].healthy {
                 break;
             }
@@ -122,7 +123,11 @@ impl PublicRpcClient {
     }
 
     /// Submit transaction with retry logic and fallback.
-    pub async fn submit_transaction(&mut self, transaction: Transaction, priority_fee_lamports: u64) -> Result<SubmitResult> {
+    pub async fn submit_transaction(
+        &mut self,
+        transaction: Transaction,
+        priority_fee_lamports: u64,
+    ) -> Result<SubmitResult> {
         let endpoint_name = self.current_endpoint().name.clone();
         let endpoint_url = self.current_endpoint().url.clone();
         let rpc = RpcClient::new(endpoint_url.clone());
@@ -137,7 +142,9 @@ impl PublicRpcClient {
         let mut last_error = None;
 
         for attempt in 0..=self.config.max_retries {
-            let result = self.submit_with_retry(&rpc, &transaction, priority_fee_lamports, attempt).await;
+            let result = self
+                .submit_with_retry(&rpc, &transaction, priority_fee_lamports, attempt)
+                .await;
 
             match result {
                 Ok(result) => return Ok(result),
@@ -162,7 +169,10 @@ impl PublicRpcClient {
             }
         }
 
-        Err(anyhow!("All retries exhausted. Last error: {}", last_error.unwrap_or_else(|| anyhow!("Unknown error"))))
+        Err(anyhow!(
+            "All retries exhausted. Last error: {}",
+            last_error.unwrap_or_else(|| anyhow!("Unknown error"))
+        ))
     }
 
     /// Submit transaction to a specific RPC endpoint.
@@ -206,9 +216,10 @@ impl PublicRpcClient {
             }
 
             let sig_clone = signature_clone.clone();
-            let sig = Signature::from_str(&sig_clone).map_err(|e| anyhow!("Invalid signature: {}", e))?;
+            let sig =
+                Signature::from_str(&sig_clone).map_err(|e| anyhow!("Invalid signature: {}", e))?;
             let rpc_url_for_poll = rpc_url.to_string();
-            
+
             let result = tokio::task::spawn_blocking(move || {
                 let rpc = RpcClient::new(rpc_url_for_poll);
                 rpc.get_signature_status(&sig)

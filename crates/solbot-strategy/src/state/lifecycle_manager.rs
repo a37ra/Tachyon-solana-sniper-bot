@@ -1,8 +1,8 @@
+use crate::exit::{ExitAction, TpLevel};
+use crate::state::position_lifecycle::PositionLifecycle;
 use anyhow::Result;
 use solbot_common::types::event::PositionLifecycleEvent;
 use solbot_common::types::position::{Position, PositionStatus};
-use crate::exit::{ExitAction, TpLevel};
-use crate::state::position_lifecycle::PositionLifecycle;
 use std::sync::mpsc::Sender;
 
 /// Position lifecycle manager with event emission.
@@ -16,12 +16,17 @@ pub struct PositionLifecycleManager {
 
 impl PositionLifecycleManager {
     pub fn new(lifecycle: PositionLifecycle, event_tx: Sender<PositionLifecycleEvent>) -> Self {
-        Self { lifecycle, event_tx }
+        Self {
+            lifecycle,
+            event_tx,
+        }
     }
 
     /// Handle position opening (Opening → Open).
     pub async fn on_position_opened(&self, position: &Position) -> Result<()> {
-        self.lifecycle.transition(position, PositionStatus::Open, None).await?;
+        self.lifecycle
+            .transition(position, PositionStatus::Open, None)
+            .await?;
 
         self.emit_event(PositionLifecycleEvent::PositionOpened {
             position_id: position.position_id.clone(),
@@ -47,7 +52,9 @@ impl PositionLifecycleManager {
         realized_pnl: f64,
     ) -> Result<()> {
         let new_status = crate::exit::take_profit_ladder::next_status_after_tp(tp_level);
-        self.lifecycle.transition(position, new_status, None).await?;
+        self.lifecycle
+            .transition(position, new_status, None)
+            .await?;
 
         let tp_level_str = match tp_level {
             TpLevel::Tp1 => "tp1",
@@ -82,7 +89,10 @@ impl PositionLifecycleManager {
 
     /// Handle stop loss trigger.
     pub async fn on_stop_loss(&self, position: &Position, current_price: f64) -> Result<()> {
-        let _transition = self.lifecycle.transition(position, PositionStatus::Closing, None).await?;
+        let _transition = self
+            .lifecycle
+            .transition(position, PositionStatus::Closing, None)
+            .await?;
 
         self.emit_event(PositionLifecycleEvent::StopLossTriggered {
             position_id: position.position_id.clone(),
@@ -107,7 +117,10 @@ impl PositionLifecycleManager {
         trigger_price: f64,
         high_water: f64,
     ) -> Result<()> {
-        let _transition = self.lifecycle.transition(position, PositionStatus::Closing, None).await?;
+        let _transition = self
+            .lifecycle
+            .transition(position, PositionStatus::Closing, None)
+            .await?;
 
         self.emit_event(PositionLifecycleEvent::TrailingStopTriggered {
             position_id: position.position_id.clone(),
@@ -131,14 +144,20 @@ impl PositionLifecycleManager {
         position: &Position,
         tx_signature: String,
     ) -> Result<()> {
-        let _transition = self.lifecycle.transition(position, PositionStatus::Closed, Some(tx_signature.clone())).await?;
+        let _transition = self
+            .lifecycle
+            .transition(position, PositionStatus::Closed, Some(tx_signature.clone()))
+            .await?;
 
-        let duration = position.closed_at_utc.unwrap_or_else(|| chrono::Utc::now().timestamp() as u64)
+        let duration = position
+            .closed_at_utc
+            .unwrap_or_else(|| chrono::Utc::now().timestamp() as u64)
             .saturating_sub(position.opened_at_utc);
 
         self.emit_event(PositionLifecycleEvent::PositionClosed {
             position_id: position.position_id.clone(),
-            final_status: crate::state::positions_repo::status_to_string(&PositionStatus::Closed).to_string(),
+            final_status: crate::state::positions_repo::status_to_string(&PositionStatus::Closed)
+                .to_string(),
             total_pnl_sol: position.realized_pnl_net_sol,
             duration_seconds: duration,
         });
@@ -160,17 +179,20 @@ impl PositionLifecycleManager {
         position: &Position,
         reason: String,
     ) -> Result<()> {
-        self.lifecycle.transition_with_reason(
-            position,
-            PositionStatus::StuckManualInterventionRequired,
-            reason.clone(),
-            None,
-        ).await?;
+        self.lifecycle
+            .transition_with_reason(
+                position,
+                PositionStatus::StuckManualInterventionRequired,
+                reason.clone(),
+                None,
+            )
+            .await?;
 
         self.emit_event(PositionLifecycleEvent::ManualInterventionRequired {
             position_id: position.position_id.clone(),
             reason: reason.clone(),
-            current_status: crate::state::positions_repo::status_to_string(&position.status).to_string(),
+            current_status: crate::state::positions_repo::status_to_string(&position.status)
+                .to_string(),
         });
 
         tracing::warn!(
@@ -189,12 +211,14 @@ impl PositionLifecycleManager {
         reason: String,
         escalation_stage: u32,
     ) -> Result<()> {
-        self.lifecycle.transition_with_reason(
-            position,
-            PositionStatus::StuckManualInterventionRequired,
-            reason.clone(),
-            None,
-        ).await?;
+        self.lifecycle
+            .transition_with_reason(
+                position,
+                PositionStatus::StuckManualInterventionRequired,
+                reason.clone(),
+                None,
+            )
+            .await?;
 
         self.emit_event(PositionLifecycleEvent::PositionStuck {
             position_id: position.position_id.clone(),
@@ -213,15 +237,25 @@ impl PositionLifecycleManager {
     }
 
     /// Handle manual resolution of stuck position.
-    pub async fn on_manual_resolved(&self, position: &Position, tx_signature: String) -> Result<()> {
-        let _transition = self.lifecycle.transition(position, PositionStatus::Closed, Some(tx_signature.clone())).await?;
+    pub async fn on_manual_resolved(
+        &self,
+        position: &Position,
+        tx_signature: String,
+    ) -> Result<()> {
+        let _transition = self
+            .lifecycle
+            .transition(position, PositionStatus::Closed, Some(tx_signature.clone()))
+            .await?;
 
-        let duration = position.closed_at_utc.unwrap_or_else(|| chrono::Utc::now().timestamp() as u64)
+        let duration = position
+            .closed_at_utc
+            .unwrap_or_else(|| chrono::Utc::now().timestamp() as u64)
             .saturating_sub(position.opened_at_utc);
 
         self.emit_event(PositionLifecycleEvent::PositionClosed {
             position_id: position.position_id.clone(),
-            final_status: crate::state::positions_repo::status_to_string(&PositionStatus::Closed).to_string(),
+            final_status: crate::state::positions_repo::status_to_string(&PositionStatus::Closed)
+                .to_string(),
             total_pnl_sol: position.realized_pnl_net_sol,
             duration_seconds: duration,
         });
@@ -252,17 +286,21 @@ impl PositionLifecycleManager {
                 // Estimate PnL (simplified - should be calculated from actual sell)
                 let pnl_pct = (current_price / position.entry_price_sol - 1.0) * level.sell_pct();
                 let realized_pnl = position.size_sol * pnl_pct;
-                
-                self.on_take_profit(position, *level, current_price, realized_pnl).await
+
+                self.on_take_profit(position, *level, current_price, realized_pnl)
+                    .await
             }
-            ExitAction::TrailingStop { trigger_price, high_water_mark } => {
-                self.on_trailing_stop(position, *trigger_price, *high_water_mark).await
+            ExitAction::TrailingStop {
+                trigger_price,
+                high_water_mark,
+            } => {
+                self.on_trailing_stop(position, *trigger_price, *high_water_mark)
+                    .await
             }
-            ExitAction::HardStopLoss => {
-                self.on_stop_loss(position, current_price).await
-            }
+            ExitAction::HardStopLoss => self.on_stop_loss(position, current_price).await,
             ExitAction::Emergency { reason } => {
-                self.on_manual_intervention_required(position, reason.clone()).await
+                self.on_manual_intervention_required(position, reason.clone())
+                    .await
             }
         }
     }
@@ -305,7 +343,7 @@ mod tests {
     #[test]
     fn test_event_emission() {
         let (tx, rx) = channel();
-        
+
         // Verify the channel works for event emission
         let event = PositionLifecycleEvent::PositionOpened {
             position_id: "test".to_string(),
@@ -313,10 +351,13 @@ mod tests {
             entry_price_sol: 1.0,
             size_sol: 0.5,
         };
-        
+
         tx.send(event).unwrap();
         let received = rx.recv().unwrap();
-        
-        assert!(matches!(received, PositionLifecycleEvent::PositionOpened { .. }));
+
+        assert!(matches!(
+            received,
+            PositionLifecycleEvent::PositionOpened { .. }
+        ));
     }
 }

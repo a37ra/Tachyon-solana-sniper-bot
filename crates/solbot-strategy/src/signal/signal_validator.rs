@@ -4,7 +4,7 @@
 
 use anyhow::Result;
 use solbot_common::types::Signal;
-use tracing::{warn, info};
+use tracing::{info, warn};
 
 /// Maximum allowed signal age in slots.
 /// Signals older than this are rejected to avoid acting on stale data.
@@ -15,12 +15,15 @@ pub const MAX_SIGNAL_AGE_SLOTS: u64 = 30;
 pub struct SignalValidatorConfig {
     /// Maximum allowed signal age in slots
     pub max_signal_age_slots: u64,
+    /// Maximum allowed signal age in milliseconds
+    pub max_signal_age_ms: u64,
 }
 
 impl Default for SignalValidatorConfig {
     fn default() -> Self {
         Self {
             max_signal_age_slots: MAX_SIGNAL_AGE_SLOTS,
+            max_signal_age_ms: 0, // Disabled by default - configure via env/config for production
         }
     }
 }
@@ -47,7 +50,8 @@ impl SignalValidator {
 
     /// Update the current slot (should be called regularly from slot updates).
     pub fn update_current_slot(&self, slot: u64) {
-        self.current_slot.store(slot, std::sync::atomic::Ordering::SeqCst);
+        self.current_slot
+            .store(slot, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// Get the current slot.
@@ -55,7 +59,7 @@ impl SignalValidator {
         self.current_slot.load(std::sync::atomic::Ordering::SeqCst)
     }
 
-    /// Validate a signal based on slot age.
+    /// Validate a signal based on slot age and time age.
     ///
     /// Returns `Ok(true)` if the signal is valid, `Ok(false)` if it should be filtered out,
     /// or `Err` if there's an error.
@@ -73,10 +77,10 @@ impl SignalValidator {
             return Ok(true);
         }
 
-        // Calculate signal age
+        // Calculate signal age in slots
         let slot_age = current_slot.saturating_sub(signal.slot);
 
-        // Check if signal is too old
+        // Check if signal is too old (slot-based)
         if slot_age > self.config.max_signal_age_slots {
             warn!(
                 mint = %signal.mint,
@@ -84,9 +88,33 @@ impl SignalValidator {
                 current_slot,
                 slot_age,
                 max_age = self.config.max_signal_age_slots,
-                "Signal rejected: too old"
+                "Signal rejected: too old (slot-based)"
             );
             return Ok(false);
+        }
+
+        // Calculate signal age in milliseconds
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+
+        if signal.received_at > 0 && self.config.max_signal_age_ms > 0 {
+            let time_age_ms = now_ms.saturating_sub(signal.received_at);
+
+            // Check if signal is too old (time-based)
+            // Only check if max_signal_age_ms > 0 (0 means disabled)
+            if time_age_ms > self.config.max_signal_age_ms {
+                warn!(
+                    mint = %signal.mint,
+                    received_at = signal.received_at,
+                    now_ms,
+                    time_age_ms,
+                    max_age_ms = self.config.max_signal_age_ms,
+                    "Signal rejected: too old (time-based)"
+                );
+                return Ok(false);
+            }
         }
 
         // Signal is valid
@@ -104,13 +132,11 @@ impl SignalValidator {
     pub fn validate_signals(&self, signals: &[Signal]) -> Vec<Signal> {
         signals
             .iter()
-            .filter(|signal| {
-                match self.validate_signal(signal) {
-                    Ok(valid) => valid,
-                    Err(e) => {
-                        warn!(error = %e, mint = %signal.mint, "Error validating signal, rejecting");
-                        false
-                    }
+            .filter(|signal| match self.validate_signal(signal) {
+                Ok(valid) => valid,
+                Err(e) => {
+                    warn!(error = %e, mint = %signal.mint, "Error validating signal, rejecting");
+                    false
                 }
             })
             .cloned()
