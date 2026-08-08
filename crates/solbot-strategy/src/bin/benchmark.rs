@@ -56,6 +56,8 @@ async fn run_microbenchmarking_test(iterations: usize) -> Result<()> {
         signal_source: "ws".to_string(),
         slot: 250_000_000,
         received_at: chrono::Utc::now().timestamp_millis() as u64,
+        raw_pool_account_data: None,
+        raw_pool_account_owner: None,
     };
 
     let user_pubkey = Pubkey::new_unique();

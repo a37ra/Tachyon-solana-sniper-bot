@@ -139,11 +139,12 @@ async fn test_cpmm_buy_pipeline_fail_closed_pool_account_not_found() {
         trading_mode: TradingMode::Live,
         rpc_url: Some(rpc_url.clone()),
         wallet: Pubkey::new_unique(),
-        signer_client: Some(SignerClient::new("/tmp/mock_signer.sock".to_string())),
+        signer_client: Some(Arc::new(SignerClient::new("/tmp/mock_signer.sock".to_string()))),
         router: Some(TransactionRouter::new(RoutingConfig::default()).unwrap()),
         tier_params: make_test_tier_params(),
         risk_gate_config: RiskGateConfig {
             rpc_url,
+            rpc_client: None,
             mint_freeze_timeout_ms: 5000,
             lp_lock_timeout_ms: 10000,
             token2022_timeout_ms: 5000,
@@ -197,11 +198,12 @@ async fn test_dlmm_buy_pipeline_fail_closed_pool_account_not_found() {
         trading_mode: TradingMode::Live,
         rpc_url: Some(rpc_url.clone()),
         wallet: Pubkey::new_unique(),
-        signer_client: Some(SignerClient::new("/tmp/mock_signer.sock".to_string())),
+        signer_client: Some(Arc::new(SignerClient::new("/tmp/mock_signer.sock".to_string()))),
         router: Some(TransactionRouter::new(RoutingConfig::default()).unwrap()),
         tier_params: make_test_tier_params(),
         risk_gate_config: RiskGateConfig {
             rpc_url,
+            rpc_client: None,
             mint_freeze_timeout_ms: 5000,
             lp_lock_timeout_ms: 10000,
             token2022_timeout_ms: 5000,
@@ -346,7 +348,7 @@ async fn test_buy_pipeline_fail_closed_no_router() {
         trading_mode: TradingMode::Live,
         rpc_url: Some("https://api.mainnet-beta.solana.com".to_string()),
         wallet: Pubkey::new_unique(),
-        signer_client: Some(SignerClient::new("/tmp/mock_signer.sock".to_string())), // Mock signer_client present
+        signer_client: Some(Arc::new(SignerClient::new("/tmp/mock_signer.sock".to_string()))), // Mock signer_client present
         router: None, // Missing router - this should trigger the router guard
         tier_params: make_test_tier_params(),
         risk_gate_config: make_test_risk_gate_config(),
@@ -420,7 +422,7 @@ async fn test_exit_pipeline_fail_closed_no_router() {
         trading_mode: TradingMode::Live,
         rpc_url: Some("https://api.mainnet-beta.solana.com".to_string()),
         wallet: Pubkey::new_unique(),
-        signer_client: Some(SignerClient::new("/tmp/mock_signer.sock".to_string())), // Mock signer_client present
+        signer_client: Some(Arc::new(SignerClient::new("/tmp/mock_signer.sock".to_string()))), // Mock signer_client present
         router: None, // Missing router - this should trigger the router guard
         tier_params: make_test_tier_params(),
         risk_gate_config: make_test_risk_gate_config(),

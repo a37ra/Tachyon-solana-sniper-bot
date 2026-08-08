@@ -10,7 +10,11 @@ use solbot_common::types::Signal;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-const PRE_BUY_CHECK_RPC_TIMEOUT_MS: u64 = 80;
+// TEMP: Increased for current non-co-located network conditions.
+// Current measured RPC RTT is around 120-130ms, so 80ms is too aggressive
+// for real Helius/remote RPC traffic. Reduce back to 80ms after moving the
+// bot nearer to the RPC provider or colocating with a low-latency endpoint.
+const PRE_BUY_CHECK_RPC_TIMEOUT_MS: u64 = 200;
 
 /// Context holding pre-fetched account data to avoid redundant RPC calls.
 /// This optimization reduces latency by:
@@ -369,70 +373,216 @@ pub async fn run_pre_buy_checks(signal: &Signal, config: &RiskGateConfig) -> Ris
     // Create shared nonblocking RPC client with connection pooling
     let rpc = Arc::new(RpcClient::new(config.rpc_url.clone()));
 
-    // Fetch accounts in parallel to minimize latency
-    let context = match PreBuyCheckContext::fetch(&rpc, &signal.mint, &signal.pool_address, None)
-        .await
-    {
-        Ok(ctx) => ctx,
-        Err(e) => {
-            tracing::warn!(
-                "Failed to fetch pre-buy check context: {}, falling back to individual RPC calls",
-                e
-            );
-            // Fallback to individual checks if context fetch fails
-            let (freeze_result, lp_result, token2022_result, simulate_result) = tokio::join!(
-                mint_freeze_authority::check(&signal.mint, &config.rpc_url),
-                lp_lock_check::check(&signal.pool_address, &signal.dex_program, &config.rpc_url),
-                token2022_extensions::check(&signal.mint, &config.rpc_url, config),
-                simulate_sell::check(
-                    &signal.mint,
-                    &signal.pool_address,
-                    config.simulate_size_lamports,
-                    &config.rpc_url
-                )
-            );
+    // Try 1-RTT path when WS-provided pool bytes are available.
+    let context = {
+        if let (Some(pool_data), Some(pool_owner_str)) = (
+            &signal.raw_pool_account_data,
+            &signal.raw_pool_account_owner,
+        ) {
+            if let Ok(pool_owner_pk) = Pubkey::try_from(pool_owner_str.as_str()) {
+                match PreBuyCheckContext::from_ws_update(&rpc, &signal.mint, pool_data.clone(), pool_owner_pk).await {
+                    Ok(ctx) => ctx,
+                    Err(e) => {
+                        tracing::warn!("Failed to build pre-buy context from WS update: {}, falling back to RPC fetch", e);
+                        match PreBuyCheckContext::fetch(&rpc, &signal.mint, &signal.pool_address, None).await {
+                            Ok(ctx2) => ctx2,
+                            Err(e2) => {
+                                tracing::warn!(
+                                    "Failed to fetch pre-buy check context: {}, falling back to individual RPC calls",
+                                    e2
+                                );
+                                // Fallback to individual checks if both optimized paths failed
+                                let (freeze_result, lp_result, token2022_result, simulate_result) = tokio::join!(
+                                    mint_freeze_authority::check(&signal.mint, &config.rpc_url),
+                                    lp_lock_check::check(&signal.pool_address, &signal.dex_program, &config.rpc_url),
+                                    token2022_extensions::check(&signal.mint, &config.rpc_url, config),
+                                    simulate_sell::check(
+                                        &signal.mint,
+                                        &signal.pool_address,
+                                        config.simulate_size_lamports,
+                                        &config.rpc_url
+                                    )
+                                );
 
-            let elapsed = start.elapsed();
-            tracing::info!(
-                "Pre-buy checks completed in {}ms (fallback mode)",
-                elapsed.as_millis()
-            );
+                                let elapsed = start.elapsed();
+                                tracing::info!(
+                                    "Pre-buy checks completed in {}ms (fallback mode)",
+                                    elapsed.as_millis()
+                                );
 
-            let verdict = if !freeze_result.passed {
-                RiskGateVerdict::Reject {
-                    reason: freeze_result
-                        .reason
-                        .unwrap_or_else(|| "Mint freeze authority check failed".to_string()),
-                }
-            } else if !lp_result.passed {
-                RiskGateVerdict::Reject {
-                    reason: lp_result
-                        .reason
-                        .unwrap_or_else(|| "LP lock check failed".to_string()),
-                }
-            } else if !token2022_result.passed {
-                RiskGateVerdict::Reject {
-                    reason: token2022_result
-                        .reason
-                        .unwrap_or_else(|| "Token2022 extensions check failed".to_string()),
-                }
-            } else if !simulate_result.passed {
-                RiskGateVerdict::Reject {
-                    reason: simulate_result
-                        .reason
-                        .unwrap_or_else(|| "Simulate sell check failed".to_string()),
+                                let verdict = if !freeze_result.passed {
+                                    RiskGateVerdict::Reject {
+                                        reason: freeze_result
+                                            .reason
+                                            .unwrap_or_else(|| "Mint freeze authority check failed".to_string()),
+                                    }
+                                } else if !lp_result.passed {
+                                    RiskGateVerdict::Reject {
+                                        reason: lp_result
+                                            .reason
+                                            .unwrap_or_else(|| "LP lock check failed".to_string()),
+                                    }
+                                } else if !token2022_result.passed {
+                                    RiskGateVerdict::Reject {
+                                        reason: token2022_result
+                                            .reason
+                                            .unwrap_or_else(|| "Token2022 extensions check failed".to_string()),
+                                    }
+                                } else if !simulate_result.passed {
+                                    RiskGateVerdict::Reject {
+                                        reason: simulate_result
+                                            .reason
+                                            .unwrap_or_else(|| "Simulate sell check failed".to_string()),
+                                    }
+                                } else {
+                                    RiskGateVerdict::Accept
+                                };
+
+                                if is_cacheable(&verdict) {
+                                    config.cache.insert(cache_key.clone(), verdict.clone());
+                                }
+
+                                return verdict;
+                            }
+                        }
+                    }
                 }
             } else {
-                RiskGateVerdict::Accept
-            };
+                // Owner string parse failed - fallback to fetch
+                match PreBuyCheckContext::fetch(&rpc, &signal.mint, &signal.pool_address, None).await {
+                    Ok(ctx) => ctx,
+                    Err(e) => {
+                        tracing::warn!(
+                            "Failed to fetch pre-buy check context: {}, falling back to individual RPC calls",
+                            e
+                        );
+                        let (freeze_result, lp_result, token2022_result, simulate_result) = tokio::join!(
+                            mint_freeze_authority::check(&signal.mint, &config.rpc_url),
+                            lp_lock_check::check(&signal.pool_address, &signal.dex_program, &config.rpc_url),
+                            token2022_extensions::check(&signal.mint, &config.rpc_url, config),
+                            simulate_sell::check(
+                                &signal.mint,
+                                &signal.pool_address,
+                                config.simulate_size_lamports,
+                                &config.rpc_url
+                            )
+                        );
 
-            if is_cacheable(&verdict) {
-                config.cache.insert(cache_key.clone(), verdict.clone());
+                        let elapsed = start.elapsed();
+                        tracing::info!(
+                            "Pre-buy checks completed in {}ms (fallback mode)",
+                            elapsed.as_millis()
+                        );
+
+                        let verdict = if !freeze_result.passed {
+                            RiskGateVerdict::Reject {
+                                reason: freeze_result
+                                    .reason
+                                    .unwrap_or_else(|| "Mint freeze authority check failed".to_string()),
+                            }
+                        } else if !lp_result.passed {
+                            RiskGateVerdict::Reject {
+                                reason: lp_result
+                                    .reason
+                                    .unwrap_or_else(|| "LP lock check failed".to_string()),
+                            }
+                        } else if !token2022_result.passed {
+                            RiskGateVerdict::Reject {
+                                reason: token2022_result
+                                    .reason
+                                    .unwrap_or_else(|| "Token2022 extensions check failed".to_string()),
+                            }
+                        } else if !simulate_result.passed {
+                            RiskGateVerdict::Reject {
+                                reason: simulate_result
+                                    .reason
+                                    .unwrap_or_else(|| "Simulate sell check failed".to_string()),
+                            }
+                        } else {
+                            RiskGateVerdict::Accept
+                        };
+
+                        if is_cacheable(&verdict) {
+                            config.cache.insert(cache_key.clone(), verdict.clone());
+                        }
+
+                        return verdict;
+                    }
+                }
             }
+        } else {
+            // No WS-provided pool bytes; perform standard fetch
+            match PreBuyCheckContext::fetch(&rpc, &signal.mint, &signal.pool_address, None).await {
+                Ok(ctx) => ctx,
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to fetch pre-buy check context: {}, falling back to individual RPC calls",
+                        e
+                    );
 
-            return verdict;
+                    let (freeze_result, lp_result, token2022_result, simulate_result) = tokio::join!(
+                        mint_freeze_authority::check(&signal.mint, &config.rpc_url),
+                        lp_lock_check::check(&signal.pool_address, &signal.dex_program, &config.rpc_url),
+                        token2022_extensions::check(&signal.mint, &config.rpc_url, config),
+                        simulate_sell::check(
+                            &signal.mint,
+                            &signal.pool_address,
+                            config.simulate_size_lamports,
+                            &config.rpc_url
+                        )
+                    );
+
+                    let elapsed = start.elapsed();
+                    tracing::info!(
+                        "Pre-buy checks completed in {}ms (fallback mode)",
+                        elapsed.as_millis()
+                    );
+
+                    let verdict = if !freeze_result.passed {
+                        RiskGateVerdict::Reject {
+                            reason: freeze_result
+                                .reason
+                                .unwrap_or_else(|| "Mint freeze authority check failed".to_string()),
+                        }
+                    } else if !lp_result.passed {
+                        RiskGateVerdict::Reject {
+                            reason: lp_result
+                                .reason
+                                .unwrap_or_else(|| "LP lock check failed".to_string()),
+                        }
+                    } else if !token2022_result.passed {
+                        RiskGateVerdict::Reject {
+                            reason: token2022_result
+                                .reason
+                                .unwrap_or_else(|| "Token2022 extensions check failed".to_string()),
+                        }
+                    } else if !simulate_result.passed {
+                        RiskGateVerdict::Reject {
+                            reason: simulate_result
+                                .reason
+                                .unwrap_or_else(|| "Simulate sell check failed".to_string()),
+                        }
+                    } else {
+                        RiskGateVerdict::Accept
+                    };
+
+                    if is_cacheable(&verdict) {
+                        config.cache.insert(cache_key.clone(), verdict.clone());
+                    }
+
+                    return verdict;
+                }
+            }
         }
     };
+
+    // Log whether we used WS-provided pool bytes (1-RTT) or RPC fetch (2-RTT)
+    tracing::info!(
+        mint = %signal.mint,
+        pool = %signal.pool_address,
+        pool_data_from_ws = %context.pool_data_from_ws,
+        "Pre-buy context source"
+    );
 
     // Use optimized checks with pre-fetched account data
     let (freeze_result, lp_result, token2022_result, simulate_result) = tokio::join!(

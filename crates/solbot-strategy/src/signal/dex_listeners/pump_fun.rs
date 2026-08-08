@@ -157,7 +157,7 @@ impl PumpFunListener {
             if is_complete {
                 // Token has migrated to Raydium!
                 // Extract mint to track the Raydium pool
-                if let Ok(mint) = read_pubkey_bytes(&account_data, 8) {
+                    if let Ok(mint) = read_pubkey_bytes(&account_data, 8) {
                     return Some(Signal {
                         mint: mint.to_string(),
                         pool_address: update.account.to_string(),
@@ -165,6 +165,8 @@ impl PumpFunListener {
                         signal_source: "pump_fun_migration".to_string(),
                         slot: update.slot,
                         received_at: update.timestamp_ms,
+                        raw_pool_account_data: Some(account_data.clone()),
+                        raw_pool_account_owner: Some(update.owner.to_string()),
                     });
                 }
             }
@@ -179,6 +181,8 @@ impl PumpFunListener {
                         signal_source: signal_source.clone(),
                         slot: update.slot,
                         received_at: update.timestamp_ms,
+                        raw_pool_account_data: Some(account_data.clone()),
+                        raw_pool_account_owner: Some(update.owner.to_string()),
                     });
                 }
             }

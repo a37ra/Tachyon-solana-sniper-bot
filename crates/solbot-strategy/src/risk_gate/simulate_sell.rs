@@ -19,7 +19,9 @@ use solana_transaction::Transaction;
 use std::time::Duration;
 
 /// Maximum simulation time in milliseconds (aggressively optimized: 80ms → 30ms)
-const SIMULATION_TIMEOUT_MS: u64 = 30;
+/// TEMP: Raised to 120ms for current remote RPC latency. This should be
+/// tightened once the bot runs from a lower-latency colocated host.
+const SIMULATION_TIMEOUT_MS: u64 = 120;
 
 pub async fn check(
     mint: &str,

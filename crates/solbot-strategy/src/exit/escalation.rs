@@ -319,24 +319,22 @@ impl EscalationState {
 /// - `Err(e)` on unrecoverable errors
 pub async fn run_escalation<SignFn, SubmitFn, PersistFn>(
     state: &mut EscalationState,
-    sign_fn: &SignFn,
-    submit_fn: &SubmitFn,
-    persist_fn: &PersistFn,
+    mut sign_fn: SignFn,
+    mut submit_fn: SubmitFn,
+    mut persist_fn: PersistFn,
 ) -> Result<bool>
 where
-    SignFn: Fn(
+    SignFn: Send + FnMut(
         &EscalationState,
-    )
-        -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String>> + Send + '_>>,
-    SubmitFn: Fn(
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String>> + Send + '_>>,
+    SubmitFn: Send + FnMut(
         &EscalationState,
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<Option<(String, u64)>>> + Send + '_>,
     >,
-    PersistFn: Fn(
+    PersistFn: Send + FnMut(
         &EscalationState,
-    )
-        -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + '_>>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + '_>>,
 {
     loop {
         if state.completed {

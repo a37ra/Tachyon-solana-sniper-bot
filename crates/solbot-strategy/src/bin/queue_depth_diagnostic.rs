@@ -37,6 +37,8 @@ async fn main() -> Result<()> {
             signal_source: "test".to_string(),
             slot: 250_000_000 + i as u64,
             received_at: chrono::Utc::now().timestamp_millis() as u64,
+            raw_pool_account_data: None,
+            raw_pool_account_owner: None,
         };
 
         signal_tx.send(signal).await.ok();
