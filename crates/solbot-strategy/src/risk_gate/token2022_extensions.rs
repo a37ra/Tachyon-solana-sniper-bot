@@ -11,7 +11,8 @@
 
 use super::{CheckResult, RiskGateConfig};
 use solana_pubkey::Pubkey;
-use solana_rpc_client::rpc_client::RpcClient;
+use solana_rpc_client::nonblocking::rpc_client::RpcClient;
+use std::sync::Arc;
 use std::time::Duration;
 
 /// SPL Token program ID (legacy)
@@ -29,10 +30,8 @@ const CLOSE_AUTHORITY_EXTENSION_TYPE: u16 = 6;
 /// Base mint data size (82 bytes) - same as legacy SPL Token
 const MINT_DATA_SIZE: usize = 82;
 
-pub async fn check(mint: &str, rpc_url: &str, config: &RiskGateConfig) -> CheckResult {
+pub async fn check(mint: &str, rpc: Arc<RpcClient>, config: &RiskGateConfig) -> CheckResult {
     let start = std::time::Instant::now();
-
-    let rpc = RpcClient::new(rpc_url.to_string());
     let mint_pubkey = match Pubkey::try_from(mint) {
         Ok(pk) => pk,
         Err(e) => {
@@ -47,128 +46,121 @@ pub async fn check(mint: &str, rpc_url: &str, config: &RiskGateConfig) -> CheckR
     let blocklist = config.token2022_blocklist.clone();
     let allowlist = config.token2022_allowlist.clone();
 
-    match tokio::task::spawn_blocking(move || {
-        let account_info = rpc.get_account(&mint_pubkey)?;
-        Ok::<_, anyhow::Error>((account_info, start.elapsed()))
-    })
-    .await
-    {
-        Ok(Ok((account_info, elapsed))) => {
-            if elapsed > Duration::from_millis(25) {
-                tracing::warn!(
-                    "Token2022 extensions check exceeded 25ms: {}ms",
-                    elapsed.as_millis()
-                );
-            }
-
-            let owner = account_info.owner.to_string();
-
-            // If it's legacy SPL Token, no extensions to check
-            if owner == TOKEN_PROGRAM_ID {
-                tracing::debug!(mint = %mint, "Legacy SPL Token - no extensions to check");
-                return CheckResult {
-                    passed: true,
-                    reason: None,
-                    duration_ms: elapsed.as_millis() as u64,
-                };
-            }
-
-            // If it's not Token-2022, reject
-            if owner != TOKEN2022_PROGRAM_ID {
-                return CheckResult {
-                    passed: false,
-                    reason: Some(format!(
-                        "Mint owner is not SPL Token or Token-2022 (owner: {})",
-                        owner
-                    )),
-                    duration_ms: elapsed.as_millis() as u64,
-                };
-            }
-
-            // Parse TLV extensions from Token-2022 mint data
-            let extensions = match parse_tlv_extensions(&account_info.data) {
-                Ok(exts) => exts,
-                Err(e) => {
-                    tracing::error!(
-                        mint = %mint,
-                        error = %e,
-                        data_len = account_info.data.len(),
-                        "Failed to parse Token-2022 TLV extensions"
-                    );
-                    return CheckResult {
-                        passed: false,
-                        reason: Some(format!("Failed to parse Token-2022 extensions: {}", e)),
-                        duration_ms: elapsed.as_millis() as u64,
-                    };
-                }
+    let account_info = match rpc.get_account(&mint_pubkey).await {
+        Ok(acc) => acc,
+        Err(e) => {
+            return CheckResult {
+                passed: false,
+                reason: Some(format!("RPC error fetching mint account: {}", e)),
+                duration_ms: start.elapsed().as_millis() as u64,
             };
+        }
+    };
 
-            tracing::debug!(
+    let elapsed = start.elapsed();
+    if elapsed > Duration::from_millis(25) {
+        tracing::warn!(
+            "Token2022 extensions check exceeded 25ms: {}ms",
+            elapsed.as_millis()
+        );
+    }
+
+    let owner = account_info.owner.to_string();
+
+    // If it's legacy SPL Token, no extensions to check
+    if owner == TOKEN_PROGRAM_ID {
+        tracing::debug!(mint = %mint, "Legacy SPL Token - no extensions to check");
+        return CheckResult {
+            passed: true,
+            reason: None,
+            duration_ms: elapsed.as_millis() as u64,
+        };
+    }
+
+    // If it's not Token-2022, reject
+    if owner != TOKEN2022_PROGRAM_ID {
+        return CheckResult {
+            passed: false,
+            reason: Some(format!(
+                "Mint owner is not SPL Token or Token-2022 (owner: {})",
+                owner
+            )),
+            duration_ms: elapsed.as_millis() as u64,
+        };
+    }
+
+    // Parse TLV extensions from Token-2022 mint data
+    let extensions = match parse_tlv_extensions(&account_info.data) {
+        Ok(exts) => exts,
+        Err(e) => {
+            tracing::error!(
                 mint = %mint,
-                extensions = ?extensions,
-                "Token-2022 extensions detected"
+                error = %e,
+                data_len = account_info.data.len(),
+                "Failed to parse Token-2022 TLV extensions"
             );
+            return CheckResult {
+                passed: false,
+                reason: Some(format!("Failed to parse Token-2022 extensions: {}", e)),
+                duration_ms: elapsed.as_millis() as u64,
+            };
+        }
+    };
 
-            // Check if mint is in allowlist
-            if !allowlist.is_empty() {
-                if allowlist.contains(&"*".to_string()) {
-                    // Wildcard allowlist - all Token-2022 tokens accepted
-                    tracing::debug!(mint = %mint, "Token-2022 in wildcard allowlist");
-                    return CheckResult {
-                        passed: true,
-                        reason: None,
-                        duration_ms: elapsed.as_millis() as u64,
-                    };
-                }
+    tracing::debug!(
+        mint = %mint,
+        extensions = ?extensions,
+        "Token-2022 extensions detected"
+    );
 
-                if !allowlist.contains(&mint.to_string()) {
-                    return CheckResult {
-                        passed: false,
-                        reason: Some(format!("Token-2022 mint not in allowlist")),
-                        duration_ms: elapsed.as_millis() as u64,
-                    };
-                }
-            }
-
-            // Check for blocked extensions
-            for extension in &extensions {
-                let extension_name = extension_type_to_name(extension.extension_type);
-
-                if blocklist.contains(&extension_name) {
-                    tracing::warn!(
-                        mint = %mint,
-                        extension = %extension_name,
-                        "Token-2022 has blocked extension"
-                    );
-                    return CheckResult {
-                        passed: false,
-                        reason: Some(format!(
-                            "Token-2022 has blocked extension: {}",
-                            extension_name
-                        )),
-                        duration_ms: elapsed.as_millis() as u64,
-                    };
-                }
-            }
-
-            // If no blocked extensions found, pass
-            tracing::debug!(mint = %mint, "Token-2022 extensions check PASSED");
-            CheckResult {
+    // Check if mint is in allowlist
+    if !allowlist.is_empty() {
+        if allowlist.contains(&"*".to_string()) {
+            // Wildcard allowlist - all Token-2022 tokens accepted
+            tracing::debug!(mint = %mint, "Token-2022 in wildcard allowlist");
+            return CheckResult {
                 passed: true,
                 reason: None,
                 duration_ms: elapsed.as_millis() as u64,
-            }
+            };
         }
-        Ok(Err(e)) => CheckResult {
-            passed: false,
-            reason: Some(format!("RPC error: {}", e)),
-            duration_ms: start.elapsed().as_millis() as u64,
-        },
-        Err(e) => CheckResult {
-            passed: false,
-            reason: Some(format!("Task join error: {}", e)),
-            duration_ms: start.elapsed().as_millis() as u64,
-        },
+
+        if !allowlist.contains(&mint.to_string()) {
+            return CheckResult {
+                passed: false,
+                reason: Some(format!("Token-2022 mint not in allowlist")),
+                duration_ms: elapsed.as_millis() as u64,
+            };
+        }
+    }
+
+    // Check for blocked extensions
+    for extension in &extensions {
+        let extension_name = extension_type_to_name(extension.extension_type);
+
+        if blocklist.contains(&extension_name) {
+            tracing::warn!(
+                mint = %mint,
+                extension = %extension_name,
+                "Token-2022 has blocked extension"
+            );
+            return CheckResult {
+                passed: false,
+                reason: Some(format!(
+                    "Token-2022 has blocked extension: {}",
+                    extension_name
+                )),
+                duration_ms: elapsed.as_millis() as u64,
+            };
+        }
+    }
+
+    // If no blocked extensions found, pass
+    tracing::debug!(mint = %mint, "Token-2022 extensions check PASSED");
+    CheckResult {
+        passed: true,
+        reason: None,
+        duration_ms: elapsed.as_millis() as u64,
     }
 }
 

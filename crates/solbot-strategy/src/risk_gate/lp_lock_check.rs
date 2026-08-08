@@ -24,8 +24,9 @@
 
 use super::CheckResult;
 use solana_pubkey::Pubkey;
-use solana_rpc_client::rpc_client::RpcClient;
+use solana_rpc_client::nonblocking::rpc_client::RpcClient;
 use std::str::FromStr;
+use std::sync::Arc;
 use std::time::Duration;
 
 /// System program ID (used for burn checks)
@@ -64,10 +65,8 @@ enum LpMintResult {
     NotApplicableDlmm,
 }
 
-pub async fn check(pool_address: &str, dex_program: &str, rpc_url: &str) -> CheckResult {
+pub async fn check(pool_address: &str, dex_program: &str, rpc: Arc<RpcClient>) -> CheckResult {
     let start = std::time::Instant::now();
-
-    let rpc = RpcClient::new(rpc_url.to_string());
     let pool_pubkey = match Pubkey::try_from(pool_address) {
         Ok(pk) => pk,
         Err(e) => {
@@ -80,163 +79,152 @@ pub async fn check(pool_address: &str, dex_program: &str, rpc_url: &str) -> Chec
     };
 
     let dex_program_clone = dex_program.to_string();
-    let _pool_address_clone = pool_address.to_string();
 
-    match tokio::task::spawn_blocking(move || {
-        // Step 1: Get pool account data
-        let pool_account = rpc.get_account(&pool_pubkey)?;
-
-        if pool_account.data.is_empty() {
-            return Ok::<_, anyhow::Error>((
-                LpMintResult::NotApplicableBondingCurve,
-                None,
-                start.elapsed(),
-            ));
-        }
-
-        // Step 2: Extract LP mint address based on DEX type
-        let lp_mint_result = extract_lp_mint(
-            &pool_account.data,
-            &pool_account.owner.to_string(),
-            &dex_program_clone,
-        )?;
-
-        // Short-circuit for DEX types without fungible LP tokens
-        match &lp_mint_result {
-            LpMintResult::NotApplicableBondingCurve
-            | LpMintResult::NotApplicableClmm
-            | LpMintResult::NotApplicableDlmm => {
-                return Ok::<_, anyhow::Error>((lp_mint_result, None, start.elapsed()));
-            }
-            LpMintResult::Found(_) => {}
-        }
-
-        let lp_mint = match &lp_mint_result {
-            LpMintResult::Found(pk) => *pk,
-            _ => unreachable!(),
-        };
-
-        // Step 3: Get LP mint account info
-        let lp_mint_account = rpc.get_account(&lp_mint)?;
-
-        if lp_mint_account.data.is_empty() {
-            return Ok::<_, anyhow::Error>((lp_mint_result, None, start.elapsed()));
-        }
-
-        Ok::<_, anyhow::Error>((lp_mint_result, Some(lp_mint_account), start.elapsed()))
-    })
-    .await
-    {
-        Ok(Ok((LpMintResult::Found(lp_mint), Some(lp_mint_account), elapsed))) => {
-            if elapsed > Duration::from_millis(30) {
-                tracing::warn!("LP lock check exceeded 30ms: {}ms", elapsed.as_millis());
-            }
-
-            let lp_mint_owner = lp_mint_account.owner;
-            let lp_mint_owner_str = lp_mint_owner.to_string();
-
-            tracing::debug!(
-                pool = %pool_address,
-                lp_mint = %lp_mint,
-                lp_mint_owner = %lp_mint_owner_str,
-                "LP lock check: extracted LP mint and owner"
-            );
-
-            if is_burn_address(&lp_mint_owner_str) {
-                tracing::info!(
-                    pool = %pool_address,
-                    lp_mint = %lp_mint,
-                    "LP lock check PASSED: LP mint owner is burn address"
-                );
-                return CheckResult {
-                    passed: true,
-                    reason: None,
-                    duration_ms: elapsed.as_millis() as u64,
-                };
-            }
-
-            if is_timelock_program(&lp_mint_owner_str) {
-                tracing::info!(
-                    pool = %pool_address,
-                    lp_mint = %lp_mint,
-                    lp_mint_owner = %lp_mint_owner_str,
-                    "LP lock check PASSED: LP mint owner is timelock program"
-                );
-                return CheckResult {
-                    passed: true,
-                    reason: None,
-                    duration_ms: elapsed.as_millis() as u64,
-                };
-            }
-
-            tracing::warn!(
-                pool = %pool_address,
-                lp_mint = %lp_mint,
-                lp_mint_owner = %lp_mint_owner_str,
-                "LP lock check FAILED: LP mint owner is not burn address or timelock"
-            );
-            CheckResult {
+    // Step 1: Get pool account data
+    let pool_account = match rpc.get_account(&pool_pubkey).await {
+        Ok(acc) => acc,
+        Err(e) => {
+            return CheckResult {
                 passed: false,
-                reason: Some(format!(
-                    "LP mint owner ({}) is not burn address or timelock program - rug risk",
-                    lp_mint_owner_str
-                )),
-                duration_ms: elapsed.as_millis() as u64,
-            }
+                reason: Some(format!("RPC error fetching pool account: {}", e)),
+                duration_ms: start.elapsed().as_millis() as u64,
+            };
         }
+    };
 
-        // Fungible LP mint found but its account was empty (shouldn't happen normally)
-        Ok(Ok((LpMintResult::Found(lp_mint), None, elapsed))) => CheckResult {
-            passed: false,
-            reason: Some(format!("LP mint account not found: {}", lp_mint)),
+    if pool_account.data.is_empty() {
+        return CheckResult {
+            passed: true,
+            reason: Some("Pool account data is empty - bonding curve".to_string()),
+            duration_ms: start.elapsed().as_millis() as u64,
+        };
+    }
+
+    // Step 2: Extract LP mint address based on DEX type
+    let lp_mint_result = match extract_lp_mint(
+        &pool_account.data,
+        &pool_account.owner.to_string(),
+        &dex_program_clone,
+    ) {
+        Ok(result) => result,
+        Err(e) => {
+            return CheckResult {
+                passed: false,
+                reason: Some(format!("Failed to extract LP mint: {}", e)),
+                duration_ms: start.elapsed().as_millis() as u64,
+            };
+        }
+    };
+
+    // Short-circuit for DEX types without fungible LP tokens
+    match &lp_mint_result {
+        LpMintResult::NotApplicableBondingCurve => {
+            return CheckResult {
+                passed: true,
+                reason: Some("Pump.fun bonding curve - no LP mint".to_string()),
+                duration_ms: start.elapsed().as_millis() as u64,
+            };
+        }
+        LpMintResult::NotApplicableClmm => {
+            return CheckResult {
+                passed: true,
+                reason: Some("Raydium CLMM - no fungible LP mint".to_string()),
+                duration_ms: start.elapsed().as_millis() as u64,
+            };
+        }
+        LpMintResult::NotApplicableDlmm => {
+            return CheckResult {
+                passed: true,
+                reason: Some("Meteora DLMM - no fungible LP mint".to_string()),
+                duration_ms: start.elapsed().as_millis() as u64,
+            };
+        }
+        LpMintResult::Found(_) => {}
+    }
+
+    let lp_mint = match &lp_mint_result {
+        LpMintResult::Found(pk) => *pk,
+        _ => unreachable!(),
+    };
+
+    // Step 3: Get LP mint account info
+    let lp_mint_account = match rpc.get_account(&lp_mint).await {
+        Ok(acc) => acc,
+        Err(e) => {
+            return CheckResult {
+                passed: false,
+                reason: Some(format!("RPC error fetching LP mint account: {}", e)),
+                duration_ms: start.elapsed().as_millis() as u64,
+            };
+        }
+    };
+
+    if lp_mint_account.data.is_empty() {
+        return CheckResult {
+            passed: true,
+            reason: Some("LP mint account data is empty".to_string()),
+            duration_ms: start.elapsed().as_millis() as u64,
+        };
+    }
+
+    let elapsed = start.elapsed();
+    if elapsed > Duration::from_millis(30) {
+        tracing::warn!("LP lock check exceeded 30ms: {}ms", elapsed.as_millis());
+    }
+
+    let lp_mint_owner = lp_mint_account.owner;
+    let lp_mint_owner_str = lp_mint_owner.to_string();
+
+    tracing::debug!(
+        pool = %pool_address,
+        lp_mint = %lp_mint,
+        lp_mint_owner = %lp_mint_owner_str,
+        "LP lock check: extracted LP mint and owner"
+    );
+
+    if is_burn_address(&lp_mint_owner_str) {
+        tracing::info!(
+            pool = %pool_address,
+            lp_mint = %lp_mint,
+            "LP lock check PASSED: LP mint owner is burn address"
+        );
+        return CheckResult {
+            passed: true,
+            reason: None,
             duration_ms: elapsed.as_millis() as u64,
-        },
+        };
+    }
 
-        // Pump.fun: liquidity is protocol-owned inside the bonding curve PDA.
-        // There is no LP mint to check — this is by design.
-        Ok(Ok((LpMintResult::NotApplicableBondingCurve, _, elapsed))) => {
-            tracing::debug!(pool = %pool_address, "LP lock check skipped: Pump.fun bonding curve (protocol-owned liquidity until migration)");
-            CheckResult {
-                passed: true,
-                reason: Some("lp_lock:not_applicable:bonding_curve".to_string()),
-                duration_ms: elapsed.as_millis() as u64,
-            }
-        }
+    if is_timelock_program(&lp_mint_owner_str) {
+        tracing::info!(
+            pool = %pool_address,
+            lp_mint = %lp_mint,
+            lp_mint_owner = %lp_mint_owner_str,
+            "LP lock check PASSED: LP mint owner is timelock program"
+        );
+        return CheckResult {
+            passed: true,
+            reason: None,
+            duration_ms: elapsed.as_millis() as u64,
+        };
+    }
 
-        // Raydium CLMM: concentrated liquidity via NFT positions, no fungible LP mint.
-        // Honeypot protection delegated to simulate_sell (3.4).
-        Ok(Ok((LpMintResult::NotApplicableClmm, _, elapsed))) => {
-            tracing::debug!(pool = %pool_address, "LP lock check skipped: Raydium CLMM (concentrated position NFTs, no fungible LP mint — sell-sim handles honeypot detection)");
-            CheckResult {
-                passed: true,
-                reason: Some("lp_lock:not_applicable:clmm".to_string()),
-                duration_ms: elapsed.as_millis() as u64,
-            }
-        }
-
-        // Meteora DLMM: bin-based liquidity, no fungible LP mint.
-        // Honeypot protection delegated to simulate_sell (3.4).
-        Ok(Ok((LpMintResult::NotApplicableDlmm, _, elapsed))) => {
-            tracing::debug!(pool = %pool_address, "LP lock check skipped: Meteora DLMM (bin-based positions, no fungible LP mint — sell-sim handles honeypot detection)");
-            CheckResult {
-                passed: true,
-                reason: Some("lp_lock:not_applicable:dlmm".to_string()),
-                duration_ms: elapsed.as_millis() as u64,
-            }
-        }
-
-        Ok(Err(e)) => CheckResult {
-            passed: false,
-            reason: Some(format!("RPC error: {}", e)),
-            duration_ms: start.elapsed().as_millis() as u64,
-        },
-        Err(e) => CheckResult {
-            passed: false,
-            reason: Some(format!("Task join error: {}", e)),
-            duration_ms: start.elapsed().as_millis() as u64,
-        },
+    tracing::warn!(
+        pool = %pool_address,
+        lp_mint = %lp_mint,
+        lp_mint_owner = %lp_mint_owner_str,
+        "LP lock check FAILED: LP mint owner is not burn address or timelock"
+    );
+    CheckResult {
+        passed: false,
+        reason: Some(format!(
+            "LP mint owner ({}) is not burn address or timelock program - rug risk",
+            lp_mint_owner_str
+        )),
+        duration_ms: elapsed.as_millis() as u64,
     }
 }
+
 fn extract_lp_mint(
     pool_data: &[u8],
     pool_owner: &str,

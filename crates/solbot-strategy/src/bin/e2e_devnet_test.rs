@@ -183,10 +183,11 @@ async fn main() -> Result<()> {
 
     // Use WSOL mint (known to pass freeze authority check)
     let wsol_mint = "So11111111111111111111111111111111111111112";
+    let rpc = std::sync::Arc::new(solana_rpc_client::nonblocking::rpc_client::RpcClient::new(DEVNET_RPC.to_string()));
 
     // 2.1: Mint Freeze Authority Check
     let mint_freeze_start = Instant::now();
-    let mint_freeze_result = mint_freeze_authority::check(wsol_mint, DEVNET_RPC).await;
+    let mint_freeze_result = mint_freeze_authority::check(wsol_mint, rpc.clone()).await;
     metrics.risk_gate_mint_freeze = mint_freeze_start.elapsed().as_millis() as u64;
     println!(
         "Mint freeze check: {}ms - passed={}, reason={:?}",
@@ -196,7 +197,7 @@ async fn main() -> Result<()> {
     // 2.2: LP Lock Check (using devnet Raydium pool)
     let lp_lock_start = Instant::now();
     let lp_lock_result =
-        lp_lock_check::check(DEVNET_RAYDIUM_POOL, RAYDIUM_AMM_V4_PROGRAM, DEVNET_RPC).await;
+        lp_lock_check::check(DEVNET_RAYDIUM_POOL, RAYDIUM_AMM_V4_PROGRAM, rpc.clone()).await;
     let lp_lock_duration = lp_lock_start.elapsed().as_millis() as u64;
     println!(
         "LP lock check: {}ms - passed={}, reason={:?}",
@@ -207,7 +208,7 @@ async fn main() -> Result<()> {
     let token2022_start = Instant::now();
     let token2022_config = solbot_strategy::risk_gate::RiskGateConfig::default();
     let token2022_result =
-        token2022_extensions::check(wsol_mint, DEVNET_RPC, &token2022_config).await;
+        token2022_extensions::check(wsol_mint, rpc.clone(), &token2022_config).await;
     let token2022_duration = token2022_start.elapsed().as_millis() as u64;
     println!(
         "Token2022 extensions check: {}ms - passed={}, reason={:?}",
@@ -236,7 +237,7 @@ async fn main() -> Result<()> {
 
     // Fetch blockhash
     let blockhash_start = Instant::now();
-    let blockhash = rpc.get_latest_blockhash()?;
+    let blockhash = rpc.get_latest_blockhash().await?;
     metrics.fetch_blockhash = blockhash_start.elapsed().as_millis() as u64;
     println!("Blockhash: {} ({}ms)", blockhash, metrics.fetch_blockhash);
 
@@ -351,7 +352,7 @@ async fn main() -> Result<()> {
             skip_preflight: false,
             ..Default::default()
         },
-    )?;
+    ).await?;
     metrics.routing_submit = submit_start.elapsed().as_millis() as u64;
     println!(
         "Transaction submitted: {} ({}ms)",
@@ -367,7 +368,7 @@ async fn main() -> Result<()> {
     let poll_interval = Duration::from_millis(500);
 
     while confirm_start.elapsed() < max_wait {
-        if let Some(status) = rpc.get_signature_status(&signature)? {
+        if let Some(status) = rpc.get_signature_status(&signature).await? {
             if status.is_ok() {
                 confirmed = true;
                 break;

@@ -218,6 +218,19 @@ async fn process_signals(
             continue;
         }
 
+        // Filter out system program and native mint addresses to avoid wasting RPC quota
+        const SYSTEM_PROGRAM: &str = "11111111111111111111111111111111";
+        const NATIVE_MINT: &str = "So11111111111111111111111111111111111111112";
+        if signal.mint == SYSTEM_PROGRAM || signal.mint == NATIVE_MINT {
+            let seq_num = signal_count.fetch_add(1, Ordering::SeqCst);
+            tracing::warn!(
+                "[SIGNAL DROPPED - SYSTEM/NATIVE] seq={}, mint={} is system program or native mint",
+                seq_num,
+                signal.mint
+            );
+            continue;
+        }
+
         let seq_num = signal_count.fetch_add(1, Ordering::SeqCst);
         tracing::info!(
             "[SIGNAL QUEUED] seq={}, mint={}, queue_depth={}, inbound_age_ms={:.2}",

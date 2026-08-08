@@ -8,7 +8,17 @@ use solana_pubkey::Pubkey;
 use solana_rpc_client::nonblocking::rpc_client::RpcClient;
 use solbot_common::types::Signal;
 use std::sync::Arc;
+use std::sync::LazyLock;
 use std::time::{Duration, Instant};
+use tokio::sync::Notify;
+
+/// Request coalescing cache for pool_address fetches under 10 RPS limits.
+static FETCH_COALESCER: LazyLock<DashMap<String, Arc<FetchState>>> = LazyLock::new(|| DashMap::new());
+
+struct FetchState {
+    notify: Arc<Notify>,
+    result: Arc<std::sync::Mutex<Option<Result<PreBuyCheckContext, String>>>>,
+}
 
 // TEMP: Increased for current non-co-located network conditions (200 → 300ms).
 // Current measured RPC RTT is around 120-130ms, but single RPC calls are timing out at 200ms.
@@ -36,6 +46,8 @@ pub struct PreBuyCheckContext {
 impl PreBuyCheckContext {
     /// Загружает все необходимые аккаунты.
     /// Если lp_mint известна заранее (или передана из dex_listeners), сокращает сеть до 1 RTT.
+    /// Uses request coalescing: if multiple signals arrive for the same pool, they wait
+    /// for the first fetch instead of launching duplicate RPC calls.
     pub async fn fetch(
         rpc: &Arc<RpcClient>,
         mint: &str,
@@ -45,11 +57,83 @@ impl PreBuyCheckContext {
         let mint_pubkey = Pubkey::try_from(mint)?;
         let pool_pubkey = Pubkey::try_from(pool_address)?;
 
+        // Request coalescing: check if there's already a fetch in progress for this pool
+        let cache_key = format!("{}:{}", mint, pool_address);
+        let state = FETCH_COALESCER.entry(cache_key.clone()).or_insert_with(|| {
+            Arc::new(FetchState {
+                notify: Arc::new(Notify::new()),
+                result: Arc::new(std::sync::Mutex::new(None)),
+            })
+        });
+
+        // Check if result is already available
+        {
+            let result_guard = state.result.lock().unwrap();
+            if let Some(ref result) = *result_guard {
+                return result.clone().map_err(|e| anyhow::anyhow!("{}", e));
+            }
+        }
+
+        // If not, we need to perform the fetch
+        // First, check if we're the first one (result is still None)
+        let should_fetch = {
+            let mut result_guard = state.result.lock().unwrap();
+            if result_guard.is_some() {
+                // Someone else just finished, return their result
+                return result_guard.as_ref().unwrap().clone().map_err(|e| anyhow::anyhow!("{}", e));
+            }
+            // We're the first, set a marker to indicate we're fetching
+            result_guard.is_none()
+        };
+
+        if should_fetch {
+            // Perform the actual fetch
+            let result = Self::fetch_internal(rpc, &mint_pubkey, &pool_pubkey, mint, pool_address, known_lp_mint).await;
+            let result_str = result.as_ref().map(|ctx| ctx.clone()).map_err(|e| e.to_string());
+
+            // Store the result and notify waiters
+            {
+                let mut result_guard = state.result.lock().unwrap();
+                *result_guard = Some(result_str);
+            }
+            state.notify.notify_waiters();
+
+            // Clean up the cache entry after a short delay
+            let cache_key_clone = cache_key.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_secs(5)).await;
+                FETCH_COALESCER.remove(&cache_key_clone);
+            });
+
+            result
+        } else {
+            // Wait for the first fetcher to complete
+            loop {
+                {
+                    let result_guard = state.result.lock().unwrap();
+                    if let Some(ref result) = *result_guard {
+                        return result.clone().map_err(|e| anyhow::anyhow!("{}", e));
+                    }
+                }
+                state.notify.notified().await;
+            }
+        }
+    }
+
+    async fn fetch_internal(
+        rpc: &Arc<RpcClient>,
+        mint_pubkey: &Pubkey,
+        pool_pubkey: &Pubkey,
+        mint: &str,
+        pool_address: &str,
+        known_lp_mint: Option<Pubkey>,
+    ) -> anyhow::Result<Self> {
+
         // Вариант А: Если LP Mint известна заранее, запрашиваем 3 аккаунта за 1 RTT
         if let Some(lp_pubkey) = known_lp_mint {
             let accounts = match tokio::time::timeout(
                 Duration::from_millis(PRE_BUY_CHECK_RPC_TIMEOUT_MS),
-                rpc.get_multiple_accounts(&[mint_pubkey, pool_pubkey, lp_pubkey]),
+                rpc.get_multiple_accounts(&[*mint_pubkey, *pool_pubkey, lp_pubkey]),
             )
             .await
             {
@@ -87,7 +171,7 @@ impl PreBuyCheckContext {
         // Вариант Б: LP Mint не известна. Шаг 1 — батч mint + pool (1 RTT)
         let accounts = match tokio::time::timeout(
             Duration::from_millis(PRE_BUY_CHECK_RPC_TIMEOUT_MS),
-            rpc.get_multiple_accounts(&[mint_pubkey, pool_pubkey]),
+            rpc.get_multiple_accounts(&[*mint_pubkey, *pool_pubkey]),
         )
         .await
         {
@@ -359,6 +443,46 @@ mod tests {
     }
 }
 
+/// Helper function to compute verdict from check results (eliminates 4x code duplication)
+fn compute_verdict(
+    freeze_result: &CheckResult,
+    lp_result: &CheckResult,
+    token2022_result: &CheckResult,
+    simulate_result: &CheckResult,
+) -> RiskGateVerdict {
+    if !freeze_result.passed {
+        RiskGateVerdict::Reject {
+            reason: freeze_result
+                .reason
+                .clone()
+                .unwrap_or_else(|| "Mint freeze authority check failed".to_string()),
+        }
+    } else if !lp_result.passed {
+        RiskGateVerdict::Reject {
+            reason: lp_result
+                .reason
+                .clone()
+                .unwrap_or_else(|| "LP lock check failed".to_string()),
+        }
+    } else if !token2022_result.passed {
+        RiskGateVerdict::Reject {
+            reason: token2022_result
+                .reason
+                .clone()
+                .unwrap_or_else(|| "Token2022 extensions check failed".to_string()),
+        }
+    } else if !simulate_result.passed {
+        RiskGateVerdict::Reject {
+            reason: simulate_result
+                .reason
+                .clone()
+                .unwrap_or_else(|| "Simulate sell check failed".to_string()),
+        }
+    } else {
+        RiskGateVerdict::Accept
+    }
+}
+
 pub async fn run_pre_buy_checks(signal: &Signal, config: &RiskGateConfig) -> RiskGateVerdict {
     let start = std::time::Instant::now();
 
@@ -370,8 +494,8 @@ pub async fn run_pre_buy_checks(signal: &Signal, config: &RiskGateConfig) -> Ris
         return cached_verdict;
     }
 
-    // Create shared nonblocking RPC client with connection pooling
-    let rpc = Arc::new(RpcClient::new(config.rpc_url.clone()));
+    // Use shared RPC client from config (connection pooling enabled)
+    let rpc = config.rpc.clone();
 
     // Try 1-RTT path when WS-provided pool bytes are available.
     let context = {
@@ -397,14 +521,15 @@ pub async fn run_pre_buy_checks(signal: &Signal, config: &RiskGateConfig) -> Ris
                                 );
                                 // Fallback to individual checks if both optimized paths failed
                                 let (freeze_result, lp_result, token2022_result, simulate_result) = tokio::join!(
-                                    mint_freeze_authority::check(&signal.mint, &config.rpc_url),
-                                    lp_lock_check::check(&signal.pool_address, &signal.dex_program, &config.rpc_url),
-                                    token2022_extensions::check(&signal.mint, &config.rpc_url, config),
+                                    mint_freeze_authority::check(&signal.mint, config.rpc.clone()),
+                                    lp_lock_check::check(&signal.pool_address, &signal.dex_program, config.rpc.clone()),
+                                    token2022_extensions::check(&signal.mint, config.rpc.clone(), config),
                                     simulate_sell::check(
                                         &signal.mint,
                                         &signal.pool_address,
                                         config.simulate_size_lamports,
-                                        config.rpc.clone()
+                                        config.rpc.clone(),
+                                        config.simulate_sell_timeout_ms
                                     )
                                 );
 
@@ -414,33 +539,7 @@ pub async fn run_pre_buy_checks(signal: &Signal, config: &RiskGateConfig) -> Ris
                                     elapsed.as_millis()
                                 );
 
-                                let verdict = if !freeze_result.passed {
-                                    RiskGateVerdict::Reject {
-                                        reason: freeze_result
-                                            .reason
-                                            .unwrap_or_else(|| "Mint freeze authority check failed".to_string()),
-                                    }
-                                } else if !lp_result.passed {
-                                    RiskGateVerdict::Reject {
-                                        reason: lp_result
-                                            .reason
-                                            .unwrap_or_else(|| "LP lock check failed".to_string()),
-                                    }
-                                } else if !token2022_result.passed {
-                                    RiskGateVerdict::Reject {
-                                        reason: token2022_result
-                                            .reason
-                                            .unwrap_or_else(|| "Token2022 extensions check failed".to_string()),
-                                    }
-                                } else if !simulate_result.passed {
-                                    RiskGateVerdict::Reject {
-                                        reason: simulate_result
-                                            .reason
-                                            .unwrap_or_else(|| "Simulate sell check failed".to_string()),
-                                    }
-                                } else {
-                                    RiskGateVerdict::Accept
-                                };
+                                let verdict = compute_verdict(&freeze_result, &lp_result, &token2022_result, &simulate_result);
 
                                 if is_cacheable(&verdict) {
                                     config.cache.insert(cache_key.clone(), verdict.clone());
@@ -461,14 +560,15 @@ pub async fn run_pre_buy_checks(signal: &Signal, config: &RiskGateConfig) -> Ris
                             e
                         );
                         let (freeze_result, lp_result, token2022_result, simulate_result) = tokio::join!(
-                            mint_freeze_authority::check(&signal.mint, &config.rpc_url),
-                            lp_lock_check::check(&signal.pool_address, &signal.dex_program, &config.rpc_url),
-                            token2022_extensions::check(&signal.mint, &config.rpc_url, config),
+                            mint_freeze_authority::check(&signal.mint, config.rpc.clone()),
+                            lp_lock_check::check(&signal.pool_address, &signal.dex_program, config.rpc.clone()),
+                            token2022_extensions::check(&signal.mint, config.rpc.clone(), config),
                             simulate_sell::check(
                                 &signal.mint,
                                 &signal.pool_address,
                                 config.simulate_size_lamports,
-                                config.rpc.clone()
+                                config.rpc.clone(),
+                                config.simulate_sell_timeout_ms
                             )
                         );
 
@@ -478,33 +578,7 @@ pub async fn run_pre_buy_checks(signal: &Signal, config: &RiskGateConfig) -> Ris
                             elapsed.as_millis()
                         );
 
-                        let verdict = if !freeze_result.passed {
-                            RiskGateVerdict::Reject {
-                                reason: freeze_result
-                                    .reason
-                                    .unwrap_or_else(|| "Mint freeze authority check failed".to_string()),
-                            }
-                        } else if !lp_result.passed {
-                            RiskGateVerdict::Reject {
-                                reason: lp_result
-                                    .reason
-                                    .unwrap_or_else(|| "LP lock check failed".to_string()),
-                            }
-                        } else if !token2022_result.passed {
-                            RiskGateVerdict::Reject {
-                                reason: token2022_result
-                                    .reason
-                                    .unwrap_or_else(|| "Token2022 extensions check failed".to_string()),
-                            }
-                        } else if !simulate_result.passed {
-                            RiskGateVerdict::Reject {
-                                reason: simulate_result
-                                    .reason
-                                    .unwrap_or_else(|| "Simulate sell check failed".to_string()),
-                            }
-                        } else {
-                            RiskGateVerdict::Accept
-                        };
+                        let verdict = compute_verdict(&freeze_result, &lp_result, &token2022_result, &simulate_result);
 
                         if is_cacheable(&verdict) {
                             config.cache.insert(cache_key.clone(), verdict.clone());
@@ -525,14 +599,15 @@ pub async fn run_pre_buy_checks(signal: &Signal, config: &RiskGateConfig) -> Ris
                     );
 
                     let (freeze_result, lp_result, token2022_result, simulate_result) = tokio::join!(
-                        mint_freeze_authority::check(&signal.mint, &config.rpc_url),
-                        lp_lock_check::check(&signal.pool_address, &signal.dex_program, &config.rpc_url),
-                        token2022_extensions::check(&signal.mint, &config.rpc_url, config),
+                        mint_freeze_authority::check(&signal.mint, config.rpc.clone()),
+                        lp_lock_check::check(&signal.pool_address, &signal.dex_program, config.rpc.clone()),
+                        token2022_extensions::check(&signal.mint, config.rpc.clone(), config),
                         simulate_sell::check(
                             &signal.mint,
                             &signal.pool_address,
                             config.simulate_size_lamports,
-                            config.rpc.clone()
+                            config.rpc.clone(),
+                            config.simulate_sell_timeout_ms
                         )
                     );
 
@@ -542,33 +617,7 @@ pub async fn run_pre_buy_checks(signal: &Signal, config: &RiskGateConfig) -> Ris
                         elapsed.as_millis()
                     );
 
-                    let verdict = if !freeze_result.passed {
-                        RiskGateVerdict::Reject {
-                            reason: freeze_result
-                                .reason
-                                .unwrap_or_else(|| "Mint freeze authority check failed".to_string()),
-                        }
-                    } else if !lp_result.passed {
-                        RiskGateVerdict::Reject {
-                            reason: lp_result
-                                .reason
-                                .unwrap_or_else(|| "LP lock check failed".to_string()),
-                        }
-                    } else if !token2022_result.passed {
-                        RiskGateVerdict::Reject {
-                            reason: token2022_result
-                                .reason
-                                .unwrap_or_else(|| "Token2022 extensions check failed".to_string()),
-                        }
-                    } else if !simulate_result.passed {
-                        RiskGateVerdict::Reject {
-                            reason: simulate_result
-                                .reason
-                                .unwrap_or_else(|| "Simulate sell check failed".to_string()),
-                        }
-                    } else {
-                        RiskGateVerdict::Accept
-                    };
+                    let verdict = compute_verdict(&freeze_result, &lp_result, &token2022_result, &simulate_result);
 
                     if is_cacheable(&verdict) {
                         config.cache.insert(cache_key.clone(), verdict.clone());
@@ -597,7 +646,8 @@ pub async fn run_pre_buy_checks(signal: &Signal, config: &RiskGateConfig) -> Ris
             &signal.mint,
             &signal.pool_address,
             config.simulate_size_lamports,
-            config.rpc.clone()
+            config.rpc.clone(),
+            config.simulate_sell_timeout_ms
         )
     );
 
@@ -607,39 +657,7 @@ pub async fn run_pre_buy_checks(signal: &Signal, config: &RiskGateConfig) -> Ris
         elapsed.as_millis()
     );
 
-    if !freeze_result.passed {
-        return RiskGateVerdict::Reject {
-            reason: freeze_result
-                .reason
-                .unwrap_or_else(|| "Mint freeze authority check failed".to_string()),
-        };
-    }
-
-    if !lp_result.passed {
-        return RiskGateVerdict::Reject {
-            reason: lp_result
-                .reason
-                .unwrap_or_else(|| "LP lock check failed".to_string()),
-        };
-    }
-
-    if !token2022_result.passed {
-        return RiskGateVerdict::Reject {
-            reason: token2022_result
-                .reason
-                .unwrap_or_else(|| "Token2022 extensions check failed".to_string()),
-        };
-    }
-
-    let verdict = if !simulate_result.passed {
-        RiskGateVerdict::Reject {
-            reason: simulate_result
-                .reason
-                .unwrap_or_else(|| "Simulate sell check failed".to_string()),
-        }
-    } else {
-        RiskGateVerdict::Accept
-    };
+    let verdict = compute_verdict(&freeze_result, &lp_result, &token2022_result, &simulate_result);
 
     if is_cacheable(&verdict) {
         config.cache.insert(cache_key, verdict.clone());
@@ -710,8 +728,8 @@ impl Default for RiskGateConfig {
             mint_freeze_timeout_ms: 10,     // Further optimized: 15 → 10
             lp_lock_timeout_ms: 15,         // Further optimized: 20 → 15
             token2022_timeout_ms: 10,       // Further optimized: 15 → 10
-            simulate_sell_timeout_ms: 30,   // Further optimized: 50 → 30
-            pre_buy_checks_timeout_ms: 3000, // Increased to 3000ms to account for simulate_sell RPC latency with connection pooling
+            simulate_sell_timeout_ms: 150,  // Increased from 30ms to 150ms - baseline RTT is ~43ms, need buffer for jitter
+            pre_buy_checks_timeout_ms: 600, // Reduced from 3000ms - with connection pooling and request coalescing, 600ms is sufficient
             simulate_size_lamports: 100_000_000, // Reduced: 1B → 100M (faster simulation)
             token2022_blocklist: vec![
                 "transferFee".to_string(),
