@@ -43,7 +43,10 @@ async fn main() -> Result<()> {
 /// Test 1. Stress-test of internal code latency (Microbenchmarking)
 async fn run_microbenchmarking_test(iterations: usize) -> Result<()> {
     println!("--- TEST 1: Stress-Test Internal Code Latency (Microbenchmarking) ---");
-    println!("Running {} iterations of Parse -> Risk Gate -> TX Build...", iterations);
+    println!(
+        "Running {} iterations of Parse -> Risk Gate -> TX Build...",
+        iterations
+    );
 
     let risk_config = RiskGateConfig::default();
     let signal = Signal {
@@ -73,7 +76,9 @@ async fn run_microbenchmarking_test(iterations: usize) -> Result<()> {
         // 2. Risk Gate internal rules (Token-2022 extension check & freeze authority verification)
         let _freeze_authority_none: Option<Pubkey> = None;
         let _is_freeze_ok = _freeze_authority_none.is_none();
-        let _is_blocklist_ok = !risk_config.token2022_blocklist.contains(&"transferFee".to_string());
+        let _is_blocklist_ok = !risk_config
+            .token2022_blocklist
+            .contains(&"transferFee".to_string());
 
         // 3. TX Build & Sign Intent
         let _cu_ixs = compute_budget::create_compute_budget_instructions(200_000, 100_000);
@@ -115,7 +120,12 @@ async fn run_microbenchmarking_test(iterations: usize) -> Result<()> {
     let max = latencies_us[iterations - 1] as f64 / 1000.0;
     let avg = (latencies_us.iter().sum::<u64>() as f64 / iterations as f64) / 1000.0;
 
-    println!("Total Execution Time: {:.2}s for {} ops ({:.0} ops/sec)", elapsed_total.as_secs_f64(), iterations, iterations as f64 / elapsed_total.as_secs_f64());
+    println!(
+        "Total Execution Time: {:.2}s for {} ops ({:.0} ops/sec)",
+        elapsed_total.as_secs_f64(),
+        iterations,
+        iterations as f64 / elapsed_total.as_secs_f64()
+    );
     println!("├── Min Code Latency:     {:>6.3} ms", min);
     println!("├── P50 (Median) Latency: {:>6.3} ms", p50);
     println!("├── P90 Latency:          {:>6.3} ms", p90);
@@ -131,24 +141,44 @@ async fn run_microbenchmarking_test(iterations: usize) -> Result<()> {
 async fn run_jito_network_rtt_test() -> Result<()> {
     println!("--- TEST 2: Network RTT to Jito Block Engines ---");
     let regions = vec![
-        ("frankfurt", "https://frankfurt.mainnet.block-engine.jito.wtf"),
+        (
+            "frankfurt",
+            "https://frankfurt.mainnet.block-engine.jito.wtf",
+        ),
         ("tokyo", "https://tokyo.mainnet.block-engine.jito.wtf"),
         ("ashburn", "https://ashburn.mainnet.block-engine.jito.wtf"),
-        ("amsterdam", "https://amsterdam.mainnet.block-engine.jito.wtf"),
+        (
+            "amsterdam",
+            "https://amsterdam.mainnet.block-engine.jito.wtf",
+        ),
         ("ny", "https://ny.mainnet.block-engine.jito.wtf"),
     ];
 
     let pings = JitoClient::ping_all_regions(&regions).await;
 
-    println!("{:<12} {:<45} {:<12} {:<10}", "REGION", "gRPC ENDPOINT", "RTT (ms)", "STATUS");
+    println!(
+        "{:<12} {:<45} {:<12} {:<10}",
+        "REGION", "gRPC ENDPOINT", "RTT (ms)", "STATUS"
+    );
     println!("----------------------------------------------------------------------------------");
     for p in &pings {
         let status = if p.success { "OK" } else { "FAILED" };
-        let rtt_str = if p.success { format!("{:.2} ms", p.rtt_ms) } else { "TIMEOUT".to_string() };
-        println!("{:<12} {:<45} {:<12} {:<10}", p.name, p.grpc_endpoint, rtt_str, status);
+        let rtt_str = if p.success {
+            format!("{:.2} ms", p.rtt_ms)
+        } else {
+            "TIMEOUT".to_string()
+        };
+        println!(
+            "{:<12} {:<45} {:<12} {:<10}",
+            p.name, p.grpc_endpoint, rtt_str, status
+        );
     }
     if let Some(best) = pings.iter().find(|p| p.success) {
-        println!("\n⭐ Recommended Jito Region: {} ({:.2} ms RTT)\n", best.name.to_uppercase(), best.rtt_ms);
+        println!(
+            "\n⭐ Recommended Jito Region: {} ({:.2} ms RTT)\n",
+            best.name.to_uppercase(),
+            best.rtt_ms
+        );
     } else {
         println!("\n⚠️ Note: Block Engines reachable via mainnet routing.\n");
     }
@@ -183,7 +213,10 @@ async fn run_inbound_stream_latency_test() -> Result<()> {
     let signal_time = now_ms.saturating_sub(18); // 18ms simulated stream delay
 
     let stream_latency_ms = (now_ms - signal_time) as f64;
-    println!("Inbound WebSocket/Geyser packet arrival delay: {:.2} ms", stream_latency_ms);
+    println!(
+        "Inbound WebSocket/Geyser packet arrival delay: {:.2} ms",
+        stream_latency_ms
+    );
     println!("├── Target Inbound SLA:   < 50.00 ms");
     println!("└── Stream Status:        EXCELLENT (within 1 slot = 400ms)\n");
 

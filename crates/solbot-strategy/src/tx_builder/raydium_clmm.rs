@@ -15,9 +15,6 @@ use std::str::FromStr;
 pub const RAYDIUM_CLMM_PROGRAM: Pubkey =
     solana_pubkey::pubkey!("CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK");
 
-/// Anchor discriminator for swap_v2
-const SWAP_V2_DISCRIMINATOR: [u8; 8] = [0x2b, 0x04, 0xed, 0x0b, 0x1a, 0xc9, 0x1e, 0x62];
-
 /// Anchor discriminator for legacy swap (V1) - global:swap
 const SWAP_V1_DISCRIMINATOR: [u8; 8] = [0xf8, 0xc6, 0x9e, 0x91, 0xe1, 0x75, 0x87, 0xc8];
 
@@ -76,23 +73,24 @@ impl ClmmPoolState {
         // 359-365: padding [u8; 6] = 6 bytes
         // 365-872: reward_infos [RewardInfo; 3] = 507 bytes
         // 872-1000: tick_array_bitmap [u64; 16] = 128 bytes
-        
+
         let base_offset = 9; // discriminator(8) + bump(1)
-        
+
         // Calculate offsets based on official structure
         let tick_spacing_offset = base_offset + 224 + 2; // after observation_key(32*7=224) + mint_decimals(2)
         let tick_current_offset = tick_spacing_offset + 2 + 16 + 16; // after tick_spacing(2) + liquidity(16) + sqrt_price_x64(16)
         let tick_array_bitmap_offset = 872; // after reward_infos (365 + 507 = 872)
-        
+
         // Read tick_array_bitmap (16 u64 = 128 bytes)
         let mut tick_array_bitmap = [0u64; 16];
         for i in 0..16 {
             let offset = tick_array_bitmap_offset + i * 8;
             if offset + 8 <= data.len() {
-                tick_array_bitmap[i] = u64::from_le_bytes(data[offset..offset + 8].try_into().unwrap_or([0; 8]));
+                tick_array_bitmap[i] =
+                    u64::from_le_bytes(data[offset..offset + 8].try_into().unwrap_or([0; 8]));
             }
         }
-        
+
         Ok(Self {
             pool_id: Pubkey::default(), // pool_id is the account address itself
             amm_config: read_pubkey(data, base_offset)?,
@@ -105,10 +103,14 @@ impl ClmmPoolState {
             tick_array_bitmap_extension: None, // loaded separately if needed
             tick_array_bitmap,
             tick_current: i32::from_le_bytes(
-                data[tick_current_offset..tick_current_offset + 4].try_into().unwrap_or([0; 4])
+                data[tick_current_offset..tick_current_offset + 4]
+                    .try_into()
+                    .unwrap_or([0; 4]),
             ),
             tick_spacing: u16::from_le_bytes(
-                data[tick_spacing_offset..tick_spacing_offset + 2].try_into().unwrap_or([0; 2])
+                data[tick_spacing_offset..tick_spacing_offset + 2]
+                    .try_into()
+                    .unwrap_or([0; 2]),
             ),
         })
     }
@@ -130,14 +132,17 @@ pub struct TickArrayBitmapExtension {
 impl TickArrayBitmapExtension {
     pub fn from_account_data(data: &[u8]) -> Result<Self> {
         if data.len() < 32 + 64 * EXTENSION_TICKARRAY_BITMAP_SIZE * 2 {
-            bail!("TickArrayBitmapExtension data too short: {} bytes", data.len());
+            bail!(
+                "TickArrayBitmapExtension data too short: {} bytes",
+                data.len()
+            );
         }
 
         let pool_id = Pubkey::try_from(&data[0..32])?;
-        
+
         let mut positive_tick_array_bitmap = [[0u64; 8]; EXTENSION_TICKARRAY_BITMAP_SIZE];
         let mut negative_tick_array_bitmap = [[0u64; 8]; EXTENSION_TICKARRAY_BITMAP_SIZE];
-        
+
         let offset = 32;
         for i in 0..EXTENSION_TICKARRAY_BITMAP_SIZE {
             let bitmap_offset = offset + i * 64;
@@ -145,12 +150,14 @@ impl TickArrayBitmapExtension {
                 let limb_offset = bitmap_offset + j * 8;
                 if limb_offset + 8 <= data.len() {
                     positive_tick_array_bitmap[i][j] = u64::from_le_bytes(
-                        data[limb_offset..limb_offset + 8].try_into().unwrap_or([0; 8])
+                        data[limb_offset..limb_offset + 8]
+                            .try_into()
+                            .unwrap_or([0; 8]),
                     );
                 }
             }
         }
-        
+
         let neg_offset = offset + 64 * EXTENSION_TICKARRAY_BITMAP_SIZE;
         for i in 0..EXTENSION_TICKARRAY_BITMAP_SIZE {
             let bitmap_offset = neg_offset + i * 64;
@@ -158,29 +165,32 @@ impl TickArrayBitmapExtension {
                 let limb_offset = bitmap_offset + j * 8;
                 if limb_offset + 8 <= data.len() {
                     negative_tick_array_bitmap[i][j] = u64::from_le_bytes(
-                        data[limb_offset..limb_offset + 8].try_into().unwrap_or([0; 8])
+                        data[limb_offset..limb_offset + 8]
+                            .try_into()
+                            .unwrap_or([0; 8]),
                     );
                 }
             }
         }
-        
+
         Ok(Self {
             pool_id,
             positive_tick_array_bitmap,
             negative_tick_array_bitmap,
         })
     }
-    
+
     /// Get bitmap offset for a given tick index in extension
     fn get_bitmap_offset(tick_index: i32, tick_spacing: u16) -> Result<usize> {
-        let ticks_in_one_bitmap = i32::from(tick_spacing) * TICK_ARRAY_SIZE * TICK_ARRAY_BITMAP_SIZE;
+        let ticks_in_one_bitmap =
+            i32::from(tick_spacing) * TICK_ARRAY_SIZE * TICK_ARRAY_BITMAP_SIZE;
         let mut offset = tick_index.abs() / ticks_in_one_bitmap - 1;
         if tick_index < 0 && tick_index.abs() % ticks_in_one_bitmap == 0 {
             offset -= 1;
         }
         Ok(offset as usize)
     }
-    
+
     /// Check if tick array is initialized in extension
     pub fn check_tick_array_is_initialized(
         &self,
@@ -191,24 +201,25 @@ impl TickArrayBitmapExtension {
             Ok(o) => o,
             Err(_) => return false,
         };
-        
+
         if offset >= EXTENSION_TICKARRAY_BITMAP_SIZE {
             return false;
         }
-        
+
         let bitmap = if tick_array_start_index < 0 {
             self.negative_tick_array_bitmap[offset]
         } else {
             self.positive_tick_array_bitmap[offset]
         };
-        
+
         let ticks_per_bitmap = i32::from(tick_spacing) * TICK_ARRAY_SIZE * TICK_ARRAY_BITMAP_SIZE;
-        let array_offset_in_bitmap = (tick_array_start_index.abs() % ticks_per_bitmap) / (i32::from(tick_spacing) * TICK_ARRAY_SIZE);
+        let array_offset_in_bitmap = (tick_array_start_index.abs() % ticks_per_bitmap)
+            / (i32::from(tick_spacing) * TICK_ARRAY_SIZE);
         let bit_pos = array_offset_in_bitmap as usize;
-        
+
         let limb_index = bit_pos / 64;
         let bit_in_limb = bit_pos % 64;
-        
+
         if limb_index < 8 {
             (bitmap[limb_index] & (1u64 << bit_in_limb)) != 0
         } else {
@@ -239,18 +250,21 @@ pub fn next_initialized_tick_array_start_index(
 ) -> Option<i32> {
     let ticks_per_array = i32::from(tick_spacing) * TICK_ARRAY_SIZE;
     let offset = -TICK_ARRAY_BITMAP_SIZE; // -512 for inline pool bitmap
-    
+
     // Calculate threshold using TypeScript SDK formula: tick / (tickSpacing * TICK_ARRAY_SIZE) - offset
     // This gives us the bit position threshold
-    let threshold = (last_tick_array_start_index as f64 / (ticks_per_array as f64)) - (offset as f64);
-    
+    let threshold =
+        (last_tick_array_start_index as f64 / (ticks_per_array as f64)) - (offset as f64);
+
     let total_bits: usize = 1024; // 16 u64 * 64 bits
-    
+
     if zero_for_one {
         // zeroForOne: tick from upper to lower - search from threshold down to 0
         // TypeScript uses Math.floor(threshold) for lte
-        let end_bit = (threshold.floor() as i32).max(0).min((total_bits - 1) as i32) as usize;
-        
+        let end_bit = (threshold.floor() as i32)
+            .max(0)
+            .min((total_bits - 1) as i32) as usize;
+
         for bit_pos in (0..=end_bit).rev() {
             let limb_index = bit_pos / 64;
             let bit_in_limb = bit_pos % 64;
@@ -268,8 +282,10 @@ pub fn next_initialized_tick_array_start_index(
     } else {
         // oneForZero: tick from lower to upper - search from threshold up to total_bits-1
         // TypeScript uses Math.ceil(threshold) for gte
-        let start_bit = (threshold.ceil() as i32).max(0).min((total_bits - 1) as i32) as usize;
-        
+        let start_bit = (threshold.ceil() as i32)
+            .max(0)
+            .min((total_bits - 1) as i32) as usize;
+
         for bit_pos in start_bit..total_bits {
             let limb_index = bit_pos / 64;
             let bit_in_limb = bit_pos % 64;
@@ -287,10 +303,7 @@ pub fn next_initialized_tick_array_start_index(
 }
 
 /// Derive tick array address for a given start tick index.
-pub fn derive_tick_array_address(
-    pool_id: &Pubkey,
-    start_tick_index: i32,
-) -> Result<Pubkey> {
+pub fn derive_tick_array_address(pool_id: &Pubkey, start_tick_index: i32) -> Result<Pubkey> {
     let (address, _bump) = Pubkey::find_program_address(
         &[
             b"tick_array",
@@ -318,7 +331,7 @@ pub fn build_swap(
     // Determine swap direction in pool terms (a_to_b or b_to_a)
     let a_to_b = match params.direction {
         SwapDirection::Buy => !is_mint_token0, // buying token0 means b→a, buying token1 means a→b
-        SwapDirection::Sell => is_mint_token0,   // selling token0 means a→b
+        SwapDirection::Sell => is_mint_token0, // selling token0 means a→b
     };
 
     // Determine input and output mints based on swap direction
@@ -364,22 +377,25 @@ pub fn build_swap(
     // Derive tick array accounts using bitmap navigation
     let start_idx = tick_array_start_index(pool_state.tick_current, pool_state.tick_spacing);
     let mut tick_arrays = Vec::new();
-    
+
     println!("📊 Using bitmap navigation:");
     println!("  tick_current: {}", pool_state.tick_current);
     println!("  start_idx: {}", start_idx);
     println!("  tick_spacing: {}", pool_state.tick_spacing);
     println!("  a_to_b: {}", a_to_b);
-    
+
     // Add current tick array
     let current_tick_array_addr = derive_tick_array_address(pool_id, start_idx)?;
     tick_arrays.push(current_tick_array_addr);
-    println!("  Current tick array: idx={}, addr={}", start_idx, current_tick_array_addr);
-    
+    println!(
+        "  Current tick array: idx={}, addr={}",
+        start_idx, current_tick_array_addr
+    );
+
     // Find next initialized tick arrays using bitmap
     let mut last_idx = start_idx;
     let zero_for_one = a_to_b;
-    
+
     for _ in 0..4 {
         if let Some(next_idx) = next_initialized_tick_array_start_index(
             &pool_state.tick_array_bitmap,
@@ -389,18 +405,21 @@ pub fn build_swap(
         ) {
             let next_addr = derive_tick_array_address(pool_id, next_idx)?;
             tick_arrays.push(next_addr);
-            println!("  Found next tick array: idx={}, addr={}", next_idx, next_addr);
+            println!(
+                "  Found next tick array: idx={}, addr={}",
+                next_idx, next_addr
+            );
             last_idx = next_idx;
         } else {
             println!("  No more initialized tick arrays found in bitmap");
             break;
         }
     }
-    
+
     if tick_arrays.is_empty() {
         bail!("No initialized tick arrays found via bitmap navigation");
     }
-    
+
     println!("📊 Tick arrays found:");
     for (i, addr) in tick_arrays.iter().enumerate() {
         println!("  [{}]: {}", i, addr);
@@ -418,9 +437,9 @@ pub fn build_swap(
     instruction_data.push(if a_to_b { 1 } else { 0 }); // is_base_input = true for swap_base_in
 
     let mut accounts = vec![
-        AccountMeta::new_readonly(*wallet, true),          // payer
+        AccountMeta::new_readonly(*wallet, true), // payer
         AccountMeta::new_readonly(pool_state.amm_config, false),
-        AccountMeta::new(*pool_id, false),                 // pool state
+        AccountMeta::new(*pool_id, false), // pool state
         AccountMeta::new(user_input_ata, false),
         AccountMeta::new(user_output_ata, false),
         AccountMeta::new(*input_vault, false),
@@ -428,12 +447,12 @@ pub fn build_swap(
         AccountMeta::new(pool_state.observation_key, false),
         AccountMeta::new_readonly(spl_token::id(), false), // token_program (V1 only needs one)
     ];
-    
+
     // Add tick arrays
     for tick_array in tick_arrays {
         accounts.push(AccountMeta::new(tick_array, false));
     }
-    
+
     let swap_ix = Instruction {
         program_id: RAYDIUM_CLMM_PROGRAM,
         accounts,

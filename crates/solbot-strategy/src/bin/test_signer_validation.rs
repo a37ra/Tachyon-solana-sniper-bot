@@ -8,13 +8,13 @@ use anyhow::Result;
 use base64::Engine;
 use chrono::Utc;
 use solana_keypair::Keypair;
-use solana_sdk::signature::Signer;
 use solana_pubkey::Pubkey;
+use solana_sdk::signature::Signer;
 use solana_transaction::Transaction;
 use tracing_subscriber;
 
-use solbot_strategy::signer_client::SignerClient;
 use solbot_common::types::intent::{IntentType, SignerIntentRequest, VerdictStatus};
+use solbot_strategy::signer_client::SignerClient;
 
 const TEST_SIGNER_SOCKET: &str = "/tmp/solbot-signer-test.sock";
 const TEST_KEYPAIR_PATH: &str = "/tmp/test-keypair.json";

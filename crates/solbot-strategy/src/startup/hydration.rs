@@ -1,15 +1,15 @@
 use anyhow::{anyhow, Result};
-use solbot_common::types::position::PositionStatus;
-use sqlx::SqlitePool;
 use solana_rpc_client::rpc_client::RpcClient;
 use solana_sdk::pubkey::Pubkey;
+use solbot_common::types::position::PositionStatus;
+use sqlx::SqlitePool;
 use std::str::FromStr;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::state::positions_repo::PositionsRepo;
 
 /// Hydrate system state after restart
-/// 
+///
 /// Steps:
 /// 1. Connect to SQLite and load open positions
 /// 2. Reconcile each position's pool account on-chain
@@ -24,8 +24,7 @@ pub async fn hydrate_system_state() -> Result<()> {
     tracing::info!("🔄 HYDRATION: System state recovery starting...");
     tracing::info!("═══════════════════════════════════════════════════════");
 
-    let db_url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "sqlite:solbot.db".to_string());
+    let db_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite:solbot.db".to_string());
 
     let pool = match SqlitePool::connect(&db_url).await {
         Ok(p) => {
@@ -33,7 +32,10 @@ pub async fn hydrate_system_state() -> Result<()> {
             p
         }
         Err(e) => {
-            tracing::warn!("⚠️  Step 1: SQLite connection failed (may be first startup): {}", e);
+            tracing::warn!(
+                "⚠️  Step 1: SQLite connection failed (may be first startup): {}",
+                e
+            );
             return Ok(()); // Not fatal for first startup
         }
     };
@@ -97,7 +99,10 @@ pub async fn hydrate_system_state() -> Result<()> {
     // Step 4: Check for in-flight transactions
     match check_in_flight_transactions(&rpc).await {
         Ok(count) => {
-            tracing::info!("✅ Step 4: Checked in-flight transactions (found {})", count);
+            tracing::info!(
+                "✅ Step 4: Checked in-flight transactions (found {})",
+                count
+            );
         }
         Err(e) => {
             tracing::warn!("⚠️  Step 4: Failed to check in-flight transactions: {}", e);
@@ -125,18 +130,18 @@ async fn reconcile_position_on_chain(
     rpc: &RpcClient,
     position: &solbot_common::types::position::Position,
 ) -> Result<PoolReconciliation> {
-    let pool_pubkey = Pubkey::from_str(&position.pool_address)
-        .map_err(|_| anyhow!("Invalid pool address"))?;
+    let pool_pubkey =
+        Pubkey::from_str(&position.pool_address).map_err(|_| anyhow!("Invalid pool address"))?;
 
     // Fetch pool account
     match rpc.get_account(&pool_pubkey) {
         Ok(account) => {
             // Check if pool is empty (rug pull indicator)
             let is_rug_pull = account.lamports == 0;
-            
+
             // Check if pool account is still owned by expected DEX program
-            let expected_program = Pubkey::from_str(&position.dex_program_id)
-                .unwrap_or_else(|_| Pubkey::new_unique());
+            let expected_program =
+                Pubkey::from_str(&position.dex_program_id).unwrap_or_else(|_| Pubkey::new_unique());
             let program_match = account.owner == expected_program;
 
             Ok(PoolReconciliation {
@@ -158,7 +163,7 @@ async fn check_in_flight_transactions(rpc: &RpcClient) -> Result<usize> {
     // This would query getSlot() and check getSignaturesForAddress
     // for the wallet address in the last 150 slots
     // For now, just log that we're ready
-    
+
     // Get current slot
     let current_slot = rpc.get_slot().unwrap_or(0);
     tracing::debug!(

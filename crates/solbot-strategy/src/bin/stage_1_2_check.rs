@@ -26,13 +26,14 @@ use solana_rpc_client::rpc_client::RpcClient;
 use solana_signer::Signer;
 use tokio::time::{timeout, Duration};
 
-use solbot_strategy::signal::geyser_client::{GeyserClient, GeyserConfig, AccountUpdate};
-use solbot_strategy::signal::ws_listener::{WsListener, WsConfig};
+use solbot_strategy::signal::geyser_client::{AccountUpdate, GeyserClient, GeyserConfig};
+use solbot_strategy::signal::ws_listener::{WsConfig, WsListener};
 use solbot_strategy::tx_builder::{
-    SwapParams, SwapDirection, build_unsigned_transaction,
-    pump_fun::{build_swap as pump_fun_build_swap, PumpFunBondingCurve, derive_bonding_curve},
-    raydium_amm_v4::{build_swap as raydium_build_swap, RaydiumAmmV4PoolState},
     blockhash_cache::BlockhashCache,
+    build_unsigned_transaction,
+    pump_fun::{build_swap as pump_fun_build_swap, derive_bonding_curve, PumpFunBondingCurve},
+    raydium_amm_v4::{build_swap as raydium_build_swap, RaydiumAmmV4PoolState},
+    SwapDirection, SwapParams,
 };
 
 /// Number of account updates to capture before proceeding to transaction building test
@@ -66,12 +67,11 @@ async fn main() -> Result<()> {
     // 1. Initialize from environment variables
     let geyser_endpoint = std::env::var("GEYSER_ENDPOINT")
         .unwrap_or_else(|_| "https://mainnet.helius-rpc.com".to_string());
-    let geyser_x_token = std::env::var("GEYSER_X_TOKEN")
-        .unwrap_or_else(|_| "".to_string());
-    let rpc_url = std::env::var("RPC_URL")
-        .unwrap_or_else(|_| "https://mainnet.helius-rpc.com".to_string());
-    let ws_url = std::env::var("WS_URL")
-        .unwrap_or_else(|_| "wss://mainnet.helius-rpc.com".to_string());
+    let geyser_x_token = std::env::var("GEYSER_X_TOKEN").unwrap_or_else(|_| "".to_string());
+    let rpc_url =
+        std::env::var("RPC_URL").unwrap_or_else(|_| "https://mainnet.helius-rpc.com".to_string());
+    let ws_url =
+        std::env::var("WS_URL").unwrap_or_else(|_| "wss://mainnet.helius-rpc.com".to_string());
     let use_websocket = std::env::var("USE_WEBSOCKET")
         .map(|v| v == "1")
         .unwrap_or(false);
@@ -85,7 +85,10 @@ async fn main() -> Result<()> {
     println!("  WebSocket URL: {}", ws_url);
     println!("  RPC URL: {}", rpc_url);
     println!("  Target Signals: {}", TARGET_SIGNALS);
-    println!("  Test Amount: {} SOL", TEST_AMOUNT_SOL as f64 / 1_000_000_000.0);
+    println!(
+        "  Test Amount: {} SOL",
+        TEST_AMOUNT_SOL as f64 / 1_000_000_000.0
+    );
     println!("  Skip Geyser: {}", skip_geyser);
     println!("  Use WebSocket: {}", use_websocket);
     println!();
@@ -121,7 +124,14 @@ async fn main() -> Result<()> {
 
         (signals, 0u128) // No parse time for mock data
     } else {
-        println!("📡 Stage 2: Testing {} Subscription", if use_websocket { "WebSocket" } else { "Geyser gRPC" });
+        println!(
+            "📡 Stage 2: Testing {} Subscription",
+            if use_websocket {
+                "WebSocket"
+            } else {
+                "Geyser gRPC"
+            }
+        );
         println!("-------------------------------------------");
 
         let mut account_updates = if use_websocket {
@@ -139,7 +149,10 @@ async fn main() -> Result<()> {
             let pump_fun_program = Pubkey::from_str("pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA")
                 .context("Invalid Pump.fun program ID")?;
 
-            println!("Subscribing to Pump.fun program via WebSocket: {}", pump_fun_program);
+            println!(
+                "Subscribing to Pump.fun program via WebSocket: {}",
+                pump_fun_program
+            );
 
             ws_listener
                 .subscribe_to_programs(vec![pump_fun_program])
@@ -160,7 +173,10 @@ async fn main() -> Result<()> {
             let pump_fun_program = Pubkey::from_str("6EF8rrecthR5Dkzon8Nwu78hRvfX4LctQnUBjWdK8nN2")
                 .context("Invalid Pump.fun program ID")?;
 
-            println!("Subscribing to Pump.fun program via Geyser: {}", pump_fun_program);
+            println!(
+                "Subscribing to Pump.fun program via Geyser: {}",
+                pump_fun_program
+            );
 
             geyser_client
                 .subscribe_to_programs(vec![pump_fun_program], None, false)
@@ -168,68 +184,81 @@ async fn main() -> Result<()> {
                 .context("Failed to subscribe to Geyser gRPC")?
         };
 
-        println!("✅ Connected to {}, waiting for signals...\n", if use_websocket { "WebSocket" } else { "Geyser gRPC" });
+        println!(
+            "✅ Connected to {}, waiting for signals...\n",
+            if use_websocket {
+                "WebSocket"
+            } else {
+                "Geyser gRPC"
+            }
+        );
 
         let mut captured_signals = Vec::new();
         let mut total_parse_time_us = 0u128;
 
         // Capture signals with timeout
-        let capture_result = timeout(
-            Duration::from_secs(TEST_TIMEOUT_SECS),
-            async {
-                while captured_signals.len() < TARGET_SIGNALS {
-                    match account_updates.recv().await {
-                        Some(update) => {
-                            let parse_start = Instant::now();
+        let capture_result = timeout(Duration::from_secs(TEST_TIMEOUT_SECS), async {
+            while captured_signals.len() < TARGET_SIGNALS {
+                match account_updates.recv().await {
+                    Some(update) => {
+                        let parse_start = Instant::now();
+
+                        println!(
+                            "📥 Received AccountUpdate: account={}, owner={}, data_len={}, slot={}",
+                            update.account,
+                            update.owner,
+                            update.data.len(),
+                            update.slot
+                        );
+
+                        // Parse the account update to extract mint
+                        if let Some(parsed) = parse_pump_fun_update(&update) {
+                            let parse_duration = parse_start.elapsed();
+                            let parse_us = parse_duration.as_micros();
+                            total_parse_time_us += parse_us;
 
                             println!(
-                                "📥 Received AccountUpdate: account={}, owner={}, data_len={}, slot={}",
-                                update.account,
-                                update.owner,
-                                update.data.len(),
-                                update.slot
+                                "📨 Signal #{}: Mint={}, Slot={}, Parse Time={}μs",
+                                captured_signals.len() + 1,
+                                parsed.mint,
+                                update.slot,
+                                parse_us
                             );
 
-                            // Parse the account update to extract mint
-                            if let Some(parsed) = parse_pump_fun_update(&update) {
-                                let parse_duration = parse_start.elapsed();
-                                let parse_us = parse_duration.as_micros();
-                                total_parse_time_us += parse_us;
-
-                                println!(
-                                    "📨 Signal #{}: Mint={}, Slot={}, Parse Time={}μs",
-                                    captured_signals.len() + 1,
-                                    parsed.mint,
-                                    update.slot,
-                                    parse_us
-                                );
-
-                                captured_signals.push(parsed);
-                            } else {
-                                println!("⚠️  Failed to parse account update as Pump.fun signal");
-                            }
-                        }
-                        None => {
-                            anyhow::bail!("Geyser stream closed unexpectedly");
+                            captured_signals.push(parsed);
+                        } else {
+                            println!("⚠️  Failed to parse account update as Pump.fun signal");
                         }
                     }
+                    None => {
+                        anyhow::bail!("Geyser stream closed unexpectedly");
+                    }
                 }
-                Ok::<_, anyhow::Error>(())
-            },
-        )
+            }
+            Ok::<_, anyhow::Error>(())
+        })
         .await;
 
         match capture_result {
             Ok(Ok(())) => {
-                println!("\n✅ Captured {} signals successfully", captured_signals.len());
-                println!("   Average parse time: {}μs", total_parse_time_us / captured_signals.len() as u128);
+                println!(
+                    "\n✅ Captured {} signals successfully",
+                    captured_signals.len()
+                );
+                println!(
+                    "   Average parse time: {}μs",
+                    total_parse_time_us / captured_signals.len() as u128
+                );
             }
             Ok(Err(e)) => {
                 eprintln!("❌ Error capturing signals: {}", e);
                 return Err(e);
             }
             Err(_) => {
-                panic!("⏱️  Timeout waiting for Geyser signals ({} seconds)", TEST_TIMEOUT_SECS);
+                panic!(
+                    "⏱️  Timeout waiting for Geyser signals ({} seconds)",
+                    TEST_TIMEOUT_SECS
+                );
             }
         }
 
@@ -248,12 +277,11 @@ async fn main() -> Result<()> {
 
     // Use the first captured signal for transaction building
     let signal = &captured_signals[0];
-    let mint = Pubkey::from_str(&signal.mint)
-        .context("Invalid mint from signal")?;
-    let pool_address = Pubkey::from_str(&signal.pool_address)
-        .context("Invalid pool address from signal")?;
-    let dex_program = Pubkey::from_str(&signal.dex_program)
-        .context("Invalid DEX program from signal")?;
+    let mint = Pubkey::from_str(&signal.mint).context("Invalid mint from signal")?;
+    let pool_address =
+        Pubkey::from_str(&signal.pool_address).context("Invalid pool address from signal")?;
+    let dex_program =
+        Pubkey::from_str(&signal.dex_program).context("Invalid DEX program from signal")?;
 
     println!("Using signal:");
     println!("  Mint: {}", mint);
@@ -279,7 +307,8 @@ async fn main() -> Result<()> {
 
     let build_start = Instant::now();
 
-    let swap_instructions = if signal.dex_program == "6EF8rrecthR5Dkzon8Nwu78hRvfX4LctQnUBjWdK8nN2" {
+    let swap_instructions = if signal.dex_program == "6EF8rrecthR5Dkzon8Nwu78hRvfX4LctQnUBjWdK8nN2"
+    {
         // Pump.fun
         println!("  DEX: Pump.fun Bonding Curve");
 
@@ -300,7 +329,7 @@ async fn main() -> Result<()> {
             complete: true,
             token_total_supply: 1_000_000_000_000,
         };
-        
+
         let params = SwapParams {
             mint,
             pool_address,
@@ -369,7 +398,7 @@ async fn main() -> Result<()> {
         // Pump.fun bonding curve
         let pump_fun_program = Pubkey::from_str("pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA")
             .context("Invalid Pump.fun program ID")?;
-        
+
         let params = SwapParams {
             mint,
             pool_address,
@@ -380,7 +409,7 @@ async fn main() -> Result<()> {
             minimum_amount_out: 0,
             slippage_bps: TEST_SLIPPAGE_BPS,
         };
-        
+
         // Mock bonding curve state for testing
         let mock_bonding_curve = PumpFunBondingCurve {
             bonding_curve: pool_address,
@@ -393,7 +422,7 @@ async fn main() -> Result<()> {
             token_total_supply: 1_000_000_000,
             complete: false,
         };
-        
+
         pump_fun_build_swap(&params, &mock_bonding_curve)
             .context("Failed to build Pump.fun swap instructions")?
     } else {
@@ -415,7 +444,10 @@ async fn main() -> Result<()> {
     println!("✅ Transaction built:");
     println!("   Build Time: {}ms", build_ms);
     println!("   Data Length: {} bytes", tx_base64.len());
-    println!("   Instructions: {}", unsigned_tx.message.instructions.len());
+    println!(
+        "   Instructions: {}",
+        unsigned_tx.message.instructions.len()
+    );
     println!();
 
     // 4. Sign the transaction
@@ -441,7 +473,10 @@ async fn main() -> Result<()> {
     println!("=========================================");
     println!("Stage 2 (Geyser gRPC):");
     println!("  Signals Captured: {}", captured_signals.len());
-    println!("  Avg Parse Time: {}μs", total_parse_time_us / captured_signals.len() as u128);
+    println!(
+        "  Avg Parse Time: {}μs",
+        total_parse_time_us / captured_signals.len() as u128
+    );
     println!();
     println!("Stage 1 (Transaction Builder):");
     println!("  Build Time: {}ms", build_ms);

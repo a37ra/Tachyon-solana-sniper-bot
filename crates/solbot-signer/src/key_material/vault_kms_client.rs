@@ -47,8 +47,8 @@ pub async fn load_keypair() -> Result<Keypair> {
     // 2. JSON byte array (dev/test only)
     if let Ok(json_str) = std::env::var("SOLBOT_KEYPAIR_JSON") {
         tracing::warn!("Loading keypair from SOLBOT_KEYPAIR_JSON env var — DEV/TEST ONLY");
-        let mut bytes: Vec<u8> =
-            serde_json::from_str(&json_str).context("Invalid JSON byte array in SOLBOT_KEYPAIR_JSON")?;
+        let mut bytes: Vec<u8> = serde_json::from_str(&json_str)
+            .context("Invalid JSON byte array in SOLBOT_KEYPAIR_JSON")?;
         let kp = Keypair::from_bytes(&bytes).map_err(|e| anyhow!("Invalid keypair bytes: {e}"))?;
         bytes.zeroize();
         return Ok(kp);
@@ -143,11 +143,7 @@ async fn load_from_encrypted_file(path: &str, password: &[u8]) -> Result<Keypair
 
 /// Encrypt a keypair and write to file. Used by `solbot-cli wallet encrypt`.
 #[allow(dead_code)]
-pub async fn encrypt_keypair_to_file(
-    keypair: &Keypair,
-    path: &str,
-    password: &[u8],
-) -> Result<()> {
+pub async fn encrypt_keypair_to_file(keypair: &Keypair, path: &str, password: &[u8]) -> Result<()> {
     use aes_gcm::aead::OsRng;
     use rand::RngCore;
 

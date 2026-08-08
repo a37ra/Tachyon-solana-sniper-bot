@@ -8,14 +8,14 @@ use anyhow::{Context, Result};
 use solana_pubkey::Pubkey;
 use solana_rpc_client::rpc_client::RpcClient;
 use sqlx::SqlitePool;
-use tokio::sync::mpsc;
-use tokio::time::{Duration, sleep, timeout};
-use tracing::{info, warn, error};
-use yellowstone_grpc_client::GeyserGrpcClient;
-use yellowstone_grpc_proto::prelude::*;
 use std::collections::HashMap;
 use std::sync::Arc;
+use tokio::sync::mpsc;
+use tokio::time::{sleep, timeout, Duration};
 use tonic::transport::ClientTlsConfig;
+use tracing::{error, info, warn};
+use yellowstone_grpc_client::GeyserGrpcClient;
+use yellowstone_grpc_proto::prelude::*;
 
 /// Configuration for Geyser gRPC subscription.
 #[derive(Debug, Clone)]
@@ -47,7 +47,9 @@ impl Default for GeyserConfig {
 
 impl GeyserConfig {
     /// Create GeyserConfig from BaseConfig (YAML)
-    pub fn from_base_config(base_config: &solbot_common::config::base_config::GeyserConfig) -> Self {
+    pub fn from_base_config(
+        base_config: &solbot_common::config::base_config::GeyserConfig,
+    ) -> Self {
         let commitment = match base_config.commitment.as_str() {
             "processed" => 0,
             "confirmed" => 1,
@@ -71,11 +73,14 @@ pub mod dex_programs {
     use std::str::FromStr;
 
     /// Raydium AMM v4
-    pub const RAYDIUM_AMM_V4: Pubkey = solana_pubkey::pubkey!("675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8");
+    pub const RAYDIUM_AMM_V4: Pubkey =
+        solana_pubkey::pubkey!("675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8");
     /// Meteora DLMM
-    pub const METEORA_DLMM: Pubkey = solana_pubkey::pubkey!("LBUZKhRxPF3XUpBCjp4kVn14nz88kZjgL6Xm1xS8bKp");
+    pub const METEORA_DLMM: Pubkey =
+        solana_pubkey::pubkey!("LBUZKhRxPF3XUpBCjp4kVn14nz88kZjgL6Xm1xS8bKp");
     /// Pump.fun bonding curve
-    pub const PUMP_FUN: Pubkey = solana_pubkey::pubkey!("6EF8rrecthR5Dkzon8Nwu78hRvfX4LctQnUBjWdK8nN2");
+    pub const PUMP_FUN: Pubkey =
+        solana_pubkey::pubkey!("6EF8rrecthR5Dkzon8Nwu78hRvfX4LctQnUBjWdK8nN2");
 
     /// Raydium CP-MM
     pub fn raydium_cp_mm() -> Pubkey {
@@ -101,10 +106,11 @@ pub struct AccountUpdate {
     pub owner: Pubkey,
     pub executable: bool,
     pub rent_epoch: u64,
+    pub timestamp_ms: u64, // Unix timestamp in milliseconds when this update was received
 }
 
 /// Extended history provider for backfilling missed slots.
-/// 
+///
 /// This provider checks open positions during gRPC reconnection to detect
 /// rug pulls, migrations, or other critical state changes.
 #[derive(Clone)]
@@ -143,12 +149,9 @@ impl ExtendedHistoryProvider {
     /// 5. Has a 150ms hard timeout to avoid blocking the main thread
     pub async fn perform_backfill(&self) -> Result<usize> {
         let backfill_start = std::time::Instant::now();
-        
-        let result = timeout(
-            Duration::from_millis(150),
-            self.perform_backfill_internal()
-        ).await;
-        
+
+        let result = timeout(Duration::from_millis(150), self.perform_backfill_internal()).await;
+
         match result {
             Ok(Ok(count)) => {
                 info!(
@@ -176,19 +179,19 @@ impl ExtendedHistoryProvider {
             SELECT position_id, mint, pool_address, dex_program_id, status
             FROM positions
             WHERE status IN ('opening', 'open')
-            "#
+            "#,
         )
         .fetch_all(&*self.db_pool)
         .await
         .context("Failed to fetch open positions from database")?;
 
         let mut checked_count = 0;
-        
+
         for position in positions {
             checked_count += 1;
-            
+
             let (position_id, _mint, pool_address, dex_program_id, _status) = position;
-            
+
             let pool_pubkey = match Pubkey::try_from(pool_address.as_str()) {
                 Ok(pk) => pk,
                 Err(e) => {
@@ -200,14 +203,17 @@ impl ExtendedHistoryProvider {
                     continue;
                 }
             };
-            
+
             // Fetch pool account via RPC
             let account_info = tokio::task::spawn_blocking({
                 let rpc = Arc::clone(&self.rpc);
-                move || rpc.get_account(&pool_pubkey).map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
+                move || {
+                    rpc.get_account(&pool_pubkey)
+                        .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
+                }
             })
             .await;
-            
+
             match account_info {
                 Ok(Ok(account)) => {
                     // Check for rug pull: pool account with zero lamports
@@ -220,7 +226,7 @@ impl ExtendedHistoryProvider {
                         // TODO: Send ControlEvent to trigger exit strategy
                         continue;
                     }
-                    
+
                     // Check for Pump.fun migration
                     if dex_program_id == "6EF8rrecthR5Dkzon8Nwu78hRvfX4LctQnUBjWdK8nN2" {
                         // Pump.fun bonding curve: check complete field at offset 72
@@ -254,7 +260,7 @@ impl ExtendedHistoryProvider {
                 }
             }
         }
-        
+
         Ok(checked_count)
     }
 }
@@ -295,7 +301,8 @@ impl GeyserClient {
 
     /// Get the last seen slot for backfill purposes.
     pub fn get_last_seen_slot(&self) -> u64 {
-        self.last_seen_slot.load(std::sync::atomic::Ordering::SeqCst)
+        self.last_seen_slot
+            .load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// Subscribe to account updates for specific program IDs.
@@ -332,26 +339,30 @@ impl GeyserClient {
                 );
 
                 // Create client with tonic 0.12
-                let client_builder = match GeyserGrpcClient::build_from_shared(config.endpoint.clone()) {
-                    Ok(builder) => builder,
-                    Err(e) => {
-                        error!(error = %e, "Failed to parse Geyser endpoint");
-                        if reconnect_attempts >= max_reconnect_attempts {
-                            error!("Max reconnect attempts reached, giving up");
-                            break;
+                let client_builder =
+                    match GeyserGrpcClient::build_from_shared(config.endpoint.clone()) {
+                        Ok(builder) => builder,
+                        Err(e) => {
+                            error!(error = %e, "Failed to parse Geyser endpoint");
+                            if reconnect_attempts >= max_reconnect_attempts {
+                                error!("Max reconnect attempts reached, giving up");
+                                break;
+                            }
+                            let backoff =
+                                (base_backoff * 2u32.pow(reconnect_attempts)).min(max_backoff);
+                            warn!("Reconnecting in {:?}...", backoff);
+                            sleep(backoff).await;
+                            reconnect_attempts += 1;
+                            continue;
                         }
-                        let backoff = (base_backoff * 2u32.pow(reconnect_attempts)).min(max_backoff);
-                        warn!("Reconnecting in {:?}...", backoff);
-                        sleep(backoff).await;
-                        reconnect_attempts += 1;
-                        continue;
-                    }
-                };
+                    };
 
                 // Apply TLS config for https endpoints (БЕЗ ОТКЛЮЧЕНИЯ!)
                 let client_builder = if config.endpoint.starts_with("https://") {
                     // Хардкодим домен Helius и используем системные сертификаты
-                    let domain = config.endpoint.strip_prefix("https://")
+                    let domain = config
+                        .endpoint
+                        .strip_prefix("https://")
                         .unwrap_or(&config.endpoint)
                         .split(':')
                         .next()
@@ -360,7 +371,7 @@ impl GeyserClient {
                     match client_builder.tls_config(
                         ClientTlsConfig::new()
                             .with_native_roots()
-                            .domain_name(domain)
+                            .domain_name(domain),
                     ) {
                         Ok(builder) => builder,
                         Err(e) => {
@@ -369,7 +380,8 @@ impl GeyserClient {
                                 error!("Max reconnect attempts reached, giving up");
                                 break;
                             }
-                            let backoff = (base_backoff * 2u32.pow(reconnect_attempts)).min(max_backoff);
+                            let backoff =
+                                (base_backoff * 2u32.pow(reconnect_attempts)).min(max_backoff);
                             warn!("Reconnecting in {:?}...", backoff);
                             sleep(backoff).await;
                             reconnect_attempts += 1;
@@ -390,7 +402,8 @@ impl GeyserClient {
                                 error!("Max reconnect attempts reached, giving up");
                                 break;
                             }
-                            let backoff = (base_backoff * 2u32.pow(reconnect_attempts)).min(max_backoff);
+                            let backoff =
+                                (base_backoff * 2u32.pow(reconnect_attempts)).min(max_backoff);
                             warn!("Reconnecting in {:?}...", backoff);
                             sleep(backoff).await;
                             reconnect_attempts += 1;
@@ -405,7 +418,9 @@ impl GeyserClient {
                     Ok(c) => c,
                     Err(e) => {
                         error!(error = %e, "Failed to connect to Geyser gRPC");
-                        let token_preview = config.x_token.as_ref()
+                        let token_preview = config
+                            .x_token
+                            .as_ref()
                             .and_then(|t| t.get(..8))
                             .unwrap_or("none");
                         error!("Endpoint: {}, Token: {}", config.endpoint, token_preview);
@@ -413,7 +428,8 @@ impl GeyserClient {
                             error!("Max reconnect attempts reached, giving up");
                             break;
                         }
-                        let backoff = (base_backoff * 2u32.pow(reconnect_attempts)).min(max_backoff);
+                        let backoff =
+                            (base_backoff * 2u32.pow(reconnect_attempts)).min(max_backoff);
                         warn!("Reconnecting in {:?}...", backoff);
                         sleep(backoff).await;
                         reconnect_attempts += 1;
@@ -422,7 +438,7 @@ impl GeyserClient {
                 };
 
                 info!("Connected to Geyser gRPC");
-                
+
                 // Perform backfill if this is a reconnection and backfill provider is configured
                 let was_reconnection = reconnect_attempts > 0;
                 reconnect_attempts = 0; // Reset on successful connection
@@ -447,8 +463,9 @@ impl GeyserClient {
                 // This filters accounts by owner (program_id) to receive all account updates
                 // owned by the specified DEX programs (Raydium, Meteora, Pump.fun, etc.)
                 let mut accounts_map = HashMap::new();
-                let owner_strings: Vec<String> = program_ids.iter().map(|p| p.to_string()).collect();
-                
+                let owner_strings: Vec<String> =
+                    program_ids.iter().map(|p| p.to_string()).collect();
+
                 accounts_map.insert(
                     "dex_accounts".to_string(),
                     SubscribeRequestFilterAccounts {
@@ -480,7 +497,8 @@ impl GeyserClient {
                             error!("Max reconnect attempts reached, giving up");
                             break;
                         }
-                        let backoff = (base_backoff * 2u32.pow(reconnect_attempts)).min(max_backoff);
+                        let backoff =
+                            (base_backoff * 2u32.pow(reconnect_attempts)).min(max_backoff);
                         warn!("Reconnecting in {:?}...", backoff);
                         sleep(backoff).await;
                         reconnect_attempts += 1;
@@ -498,7 +516,10 @@ impl GeyserClient {
                         Some(Ok(update)) => {
                             total_updates += 1;
                             if total_updates.is_multiple_of(100) {
-                                info!(total_updates, account_updates_count, "Geyser stream progress");
+                                info!(
+                                    total_updates,
+                                    account_updates_count, "Geyser stream progress"
+                                );
                             }
 
                             if let Some(update_oneof) = update.update_oneof {
@@ -530,6 +551,10 @@ impl GeyserClient {
                                                 owner,
                                                 executable: account.executable,
                                                 rent_epoch: account.rent_epoch,
+                                                timestamp_ms: std::time::SystemTime::now()
+                                                    .duration_since(std::time::UNIX_EPOCH)
+                                                    .unwrap_or_default()
+                                                    .as_millis() as u64,
                                             };
 
                                             // Update last seen slot

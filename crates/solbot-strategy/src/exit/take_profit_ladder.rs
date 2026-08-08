@@ -47,7 +47,9 @@ pub fn evaluate_tp(position: &Position, current_price: f64) -> Option<TpLevel> {
         // TP3 filled — moon bag, no more TPs
         PositionStatus::Tp3Filled => None,
         // Position is closing/closed/stuck — no TPs
-        PositionStatus::Closing | PositionStatus::Closed | PositionStatus::StuckManualInterventionRequired => None,
+        PositionStatus::Closing
+        | PositionStatus::Closed
+        | PositionStatus::StuckManualInterventionRequired => None,
     }
 }
 

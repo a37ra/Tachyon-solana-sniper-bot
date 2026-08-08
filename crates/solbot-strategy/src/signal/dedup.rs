@@ -36,7 +36,7 @@ impl DedupFilter {
 
     fn check_and_insert(&self, key: String) -> bool {
         let now = Instant::now();
-        
+
         if let Some(entry) = self.seen.get(&key) {
             if now.duration_since(*entry) < self.ttl {
                 return false;
@@ -49,7 +49,8 @@ impl DedupFilter {
 
     pub fn cleanup_expired(&self) {
         let now = Instant::now();
-        self.seen.retain(|_, instant| now.duration_since(*instant) < self.ttl);
+        self.seen
+            .retain(|_, instant| now.duration_since(*instant) < self.ttl);
     }
 }
 

@@ -95,34 +95,34 @@ pub struct LogsValue {
 /// Parse logsSubscribe message and extract DEX instructions
 pub fn parse_logs_message(text: &str) -> Result<Vec<ParsedSignal>> {
     let json: LogsMessage = serde_json::from_str(text)?;
-    
+
     // Check if this is a logsNotification
     if json.method.as_deref() != Some("logsNotification") {
         return Ok(vec![]);
     }
-    
+
     let params = json.params.ok_or_else(|| anyhow!("Missing params"))?;
     let result = params.result.ok_or_else(|| anyhow!("Missing result"))?;
-    
+
     let slot = result.context.slot;
     let signature = result.value.signature.clone();
     let logs = result.value.logs;
-    
+
     // Skip failed transactions
     if result.value.err.is_some() {
         return Ok(vec![]);
     }
-    
+
     let mut signals = Vec::new();
     let mut current_dex: Option<DexType> = None;
-    
+
     // Parse logs line by line
     for log in &logs {
         // Extract program ID from "Program <program_id> invoke" lines
         if let Some(program_id) = extract_program_id_from_invoke(log) {
             current_dex = DexType::from_pubkey(&program_id);
         }
-        
+
         // Parse instruction logs
         if let Some(dex) = current_dex {
             if let Some(signal) = parse_instruction_log(log, dex, slot, &signature) {
@@ -130,7 +130,7 @@ pub fn parse_logs_message(text: &str) -> Result<Vec<ParsedSignal>> {
             }
         }
     }
-    
+
     Ok(signals)
 }
 
@@ -146,21 +146,31 @@ fn extract_program_id_from_invoke(log: &str) -> Option<String> {
 }
 
 /// Parse instruction log line based on DEX type
-fn parse_instruction_log(log: &str, dex: DexType, slot: u64, signature: &str) -> Option<ParsedSignal> {
+fn parse_instruction_log(
+    log: &str,
+    dex: DexType,
+    slot: u64,
+    signature: &str,
+) -> Option<ParsedSignal> {
     // Check for instruction logs
     if !log.starts_with("Program log: Instruction:") {
         return None;
     }
-    
+
     // Extract instruction name
     let instruction_name = log.split(':').nth(2)?.trim();
-    
+
     // Log unknown instruction names for debugging
     static UNKNOWN_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let instruction_type = match instruction_name {
         // Swap instructions (various names across DEXs)
-        "Swap" | "Swap2" | "SwapWithPriceImpact2" | "SwapBaseInput" | 
-        "Buy" | "Sell" | "BuyExactQuoteInV2" => InstructionType::Swap,
+        "Swap"
+        | "Swap2"
+        | "SwapWithPriceImpact2"
+        | "SwapBaseInput"
+        | "Buy"
+        | "Sell"
+        | "BuyExactQuoteInV2" => InstructionType::Swap,
         // Pool creation instructions
         "InitializePool" | "CreatePool" => InstructionType::InitializePool,
         "InitBondingCurve" => InstructionType::InitBondingCurve,
@@ -170,12 +180,16 @@ fn parse_instruction_log(log: &str, dex: DexType, slot: u64, signature: &str) ->
         _ => {
             let count = UNKNOWN_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             if count < 20 {
-                tracing::warn!("Unknown instruction: '{}' for DEX: {:?}", instruction_name, dex);
+                tracing::warn!(
+                    "Unknown instruction: '{}' for DEX: {:?}",
+                    instruction_name,
+                    dex
+                );
             }
             InstructionType::Unknown
         }
     };
-    
+
     Some(ParsedSignal {
         timestamp: std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -186,7 +200,7 @@ fn parse_instruction_log(log: &str, dex: DexType, slot: u64, signature: &str) ->
         instruction_type,
         mint: None, // Will need to extract from account data or instruction data
         pool_address: Pubkey::default(),
-        in_amount: None, // Will need to extract from instruction data
+        in_amount: None,  // Will need to extract from instruction data
         out_amount: None, // Will need to extract from instruction data
         fee_amount: None,
         signer: None,

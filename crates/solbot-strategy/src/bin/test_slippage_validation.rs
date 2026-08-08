@@ -8,14 +8,14 @@ use anyhow::Result;
 use base64::Engine;
 use chrono::Utc;
 use solana_keypair::Keypair;
-use solana_sdk::signature::Signer;
 use solana_pubkey::Pubkey;
+use solana_sdk::signature::Signer;
 use solana_transaction::Transaction;
 use std::str::FromStr;
 use tracing_subscriber;
 
-use solbot_strategy::signer_client::SignerClient;
 use solbot_common::types::intent::{IntentType, SignerIntentRequest, VerdictStatus};
+use solbot_strategy::signer_client::SignerClient;
 
 const TEST_SIGNER_SOCKET: &str = "/tmp/solbot-signer-test.sock";
 const TEST_KEYPAIR_PATH: &str = "/tmp/test-keypair.json";
@@ -40,7 +40,7 @@ async fn main() -> Result<()> {
     // Format: discriminator (1 byte) + amount_in (u64) + minimum_amount_out (u64)
     let amount_in = 1_000_000_000u64; // 1 SOL
     let minimum_amount_out = 500_000_000u64; // 0.5 SOL (50% slippage!)
-    
+
     let mut instruction_data = Vec::with_capacity(17);
     instruction_data.push(9u8); // Raydium AMM v4 swap discriminator
     instruction_data.extend_from_slice(&amount_in.to_le_bytes());

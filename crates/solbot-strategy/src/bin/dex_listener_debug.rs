@@ -22,11 +22,11 @@ use solana_pubkey::Pubkey;
 use solana_rpc_client::rpc_client::RpcClient;
 use tokio::time::timeout;
 
-use solbot_strategy::signal::geyser_client::{GeyserClient, GeyserConfig, dex_programs};
-use solbot_strategy::tx_builder::raydium_cpmm::CpmmPoolState;
+use solbot_strategy::signal::geyser_client::{dex_programs, GeyserClient, GeyserConfig};
 use solbot_strategy::tx_builder::meteora_dlmm::DlmmPoolState;
 use solbot_strategy::tx_builder::meteora_dynamic::DynamicAmmPoolState;
 use solbot_strategy::tx_builder::pump_fun::PumpFunBondingCurve;
+use solbot_strategy::tx_builder::raydium_cpmm::CpmmPoolState;
 
 #[derive(Default, Debug)]
 struct Counters {
@@ -49,8 +49,8 @@ async fn main() -> Result<()> {
 
     let geyser_endpoint = std::env::var("GEYSER_ENDPOINT")
         .unwrap_or_else(|_| "https://mainnet.helius-rpc.com".to_string());
-    let geyser_x_token = std::env::var("GEYSER_X_TOKEN")
-        .context("GEYSER_X_TOKEN env var is required")?;
+    let geyser_x_token =
+        std::env::var("GEYSER_X_TOKEN").context("GEYSER_X_TOKEN env var is required")?;
     let rpc_url = std::env::var("RPC_URL").unwrap_or_else(|_| geyser_endpoint.clone());
     let listen_secs: u64 = std::env::var("LISTEN_SECONDS")
         .ok()
@@ -238,7 +238,9 @@ async fn main() -> Result<()> {
             return Err(e);
         }
         Err(_) => {
-            println!("\n⏱️  Listen window ({listen_secs}s) elapsed — this is expected, not a failure.");
+            println!(
+                "\n⏱️  Listen window ({listen_secs}s) elapsed — this is expected, not a failure."
+            );
         }
     }
 

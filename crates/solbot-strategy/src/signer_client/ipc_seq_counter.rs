@@ -15,14 +15,16 @@ impl IpcSeqCounter {
     }
 
     pub fn next_seq(&self, context_key: &str) -> u64 {
-        let counter = self.counters
+        let counter = self
+            .counters
             .entry(context_key.to_string())
             .or_insert_with(|| Arc::new(AtomicU64::new(0)));
         counter.fetch_add(1, Ordering::SeqCst) + 1
     }
 
     pub fn set_seq(&self, context_key: &str, last_seq: u64) {
-        let counter = self.counters
+        let counter = self
+            .counters
             .entry(context_key.to_string())
             .or_insert_with(|| Arc::new(AtomicU64::new(0)));
         counter.store(last_seq, Ordering::SeqCst);

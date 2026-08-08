@@ -16,7 +16,11 @@ pub struct PipelineMetrics {
 }
 
 impl PipelineMetrics {
-    pub fn new(mint: impl Into<String>, pool_address: impl Into<String>, dex: impl Into<String>) -> Self {
+    pub fn new(
+        mint: impl Into<String>,
+        pool_address: impl Into<String>,
+        dex: impl Into<String>,
+    ) -> Self {
         Self {
             mint: mint.into(),
             pool_address: pool_address.into(),
@@ -32,7 +36,11 @@ impl PipelineMetrics {
     /// Formats and outputs the exact tree log structure requested by the user.
     pub fn print_tree_log(&self) {
         let short_mint = if self.mint.len() > 10 {
-            format!("{}...{}", &self.mint[..4], &self.mint[self.mint.len() - 4..])
+            format!(
+                "{}...{}",
+                &self.mint[..4],
+                &self.mint[self.mint.len() - 4..]
+            )
         } else {
             self.mint.clone()
         };
@@ -49,7 +57,10 @@ impl PipelineMetrics {
         println!("├── TOTAL CODE LATENCY:   {:>6.2} ms", total_ms);
         println!("└── RPC Simulation RTT:  {:>6.2} ms", self.rpc_sim_rtt_ms);
         if self.inbound_stream_latency_ms > 0.0 {
-            println!("    (Inbound Stream Age: {:>6.2} ms)", self.inbound_stream_latency_ms);
+            println!(
+                "    (Inbound Stream Age: {:>6.2} ms)",
+                self.inbound_stream_latency_ms
+            );
         }
     }
 }

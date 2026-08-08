@@ -35,8 +35,8 @@ async fn main() -> Result<()> {
     }
 
     // Database connection
-    let db_path = std::env::var("SOLBOT_DB_PATH")
-        .unwrap_or_else(|_| "sqlite:../../solbot.db".to_string());
+    let db_path =
+        std::env::var("SOLBOT_DB_PATH").unwrap_or_else(|_| "sqlite:../../solbot.db".to_string());
 
     let pool = SqlitePoolOptions::new()
         .max_connections(5)
@@ -83,7 +83,7 @@ async fn main() -> Result<()> {
     let service = SignerService::new(ledger, audit_log, compromise_detection, keypair, pool);
 
     tracing::info!(socket = %socket_path, "Signer listening");
-    
+
     use crate::ipc_server::signer_proto::transaction_signer_service_server::TransactionSignerServiceServer;
     Server::builder()
         .add_service(TransactionSignerServiceServer::new(service))

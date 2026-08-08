@@ -100,7 +100,9 @@ impl DurableNonceClient {
         .map_err(|e| anyhow!("Task join error: {}", e))??;
 
         if account_data.data.len() < 72 {
-            return Err(anyhow!("Nonce account data too short (must be >= 72 bytes)"));
+            return Err(anyhow!(
+                "Nonce account data too short (must be >= 72 bytes)"
+            ));
         }
 
         // Solana Nonce Account Data Layout:
@@ -134,10 +136,7 @@ impl DurableNonceClient {
             .map_err(|e| anyhow!("Invalid nonce authority pubkey: {}", e))?;
 
         // Construct advance nonce instruction (for inclusion or offline verification)
-        let _advance_ix = system_instruction::advance_nonce_account(
-            &nonce_account,
-            &authority,
-        );
+        let _advance_ix = system_instruction::advance_nonce_account(&nonce_account, &authority);
 
         let nonce_data = self.fetch_nonce_account().await?;
         self.current_nonce = Some(nonce_data.nonce.clone());
@@ -159,7 +158,9 @@ impl DurableNonceClient {
             Some(n) => n.clone(),
             None => {
                 if self.config.nonce_account.is_empty() {
-                    return Err(anyhow!("No durable nonce available: nonce_account is empty"));
+                    return Err(anyhow!(
+                        "No durable nonce available: nonce_account is empty"
+                    ));
                 }
                 return Ok(transaction);
             }
@@ -198,7 +199,10 @@ impl DurableNonceClient {
     }
 
     /// Submit transaction using durable nonce.
-    pub async fn submit_durable_nonce_tx(&mut self, transaction: Transaction) -> Result<SubmitResult> {
+    pub async fn submit_durable_nonce_tx(
+        &mut self,
+        transaction: Transaction,
+    ) -> Result<SubmitResult> {
         tracing::warn!(
             nonce_account = %self.config.nonce_account,
             "Submitting Durable Nonce transaction (Stage 3 emergency)"
@@ -244,8 +248,8 @@ impl DurableNonceClient {
             }
 
             let sig_clone = signature_clone.clone();
-            let sig = Signature::from_str(&sig_clone)
-                .map_err(|e| anyhow!("Invalid signature: {}", e))?;
+            let sig =
+                Signature::from_str(&sig_clone).map_err(|e| anyhow!("Invalid signature: {}", e))?;
             let rpc_url_for_poll = rpc_url.to_string();
 
             let result = tokio::task::spawn_blocking(move || {
@@ -325,7 +329,7 @@ mod tests {
     fn test_should_advance_nonce() {
         let config = DurableNonceConfig::default();
         let client = DurableNonceClient::new(config);
-        
+
         // Should advance if never advanced
         assert!(client.should_advance_nonce());
     }

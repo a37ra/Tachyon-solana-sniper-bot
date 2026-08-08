@@ -19,7 +19,10 @@ pub enum DexLiveReadiness {
 impl DexLiveReadiness {
     /// Check if Live mode is allowed for this DEX.
     pub fn is_live_allowed(&self) -> bool {
-        matches!(self, DexLiveReadiness::Ready | DexLiveReadiness::Approximate)
+        matches!(
+            self,
+            DexLiveReadiness::Ready | DexLiveReadiness::Approximate
+        )
     }
 }
 

@@ -1,12 +1,11 @@
-
 pub fn kelly_fraction(p: f64, b: f64) -> f64 {
     if b <= 0.0 || p <= 0.0 || p >= 1.0 {
         return 0.0;
     }
-    
+
     let q = 1.0 - p;
     let f_star = p - (q / b);
-    
+
     f_star.max(0.0)
 }
 
@@ -14,7 +13,7 @@ pub fn fractional_kelly(f_star: f64, fraction: f64) -> f64 {
     if fraction <= 0.0 || fraction > 1.0 {
         return f_star;
     }
-    
+
     f_star * fraction
 }
 

@@ -108,7 +108,8 @@ pub async fn check(mint: &str, rpc_url: &str) -> CheckResult {
                         CheckResult {
                             passed: false,
                             reason: Some(
-                                "Token has mint_authority (creator can mint unlimited supply)".to_string()
+                                "Token has mint_authority (creator can mint unlimited supply)"
+                                    .to_string(),
                             ),
                             duration_ms: elapsed.as_millis() as u64,
                         }
@@ -121,7 +122,8 @@ pub async fn check(mint: &str, rpc_url: &str) -> CheckResult {
                         CheckResult {
                             passed: false,
                             reason: Some(
-                                "Token has freeze_authority (creator can freeze your tokens)".to_string()
+                                "Token has freeze_authority (creator can freeze your tokens)"
+                                    .to_string(),
                             ),
                             duration_ms: elapsed.as_millis() as u64,
                         }
@@ -168,6 +170,98 @@ pub async fn check(mint: &str, rpc_url: &str) -> CheckResult {
     }
 }
 
+/// Optimized check using pre-fetched account data to avoid redundant RPC calls.
+pub async fn check_with_context(
+    mint: &str,
+    context: &crate::risk_gate::PreBuyCheckContext,
+) -> CheckResult {
+    let start = std::time::Instant::now();
+
+    let mint_pubkey = match Pubkey::try_from(mint) {
+        Ok(pk) => pk,
+        Err(e) => {
+            return CheckResult {
+                passed: false,
+                reason: Some(format!("Invalid mint pubkey: {}", e)),
+                duration_ms: start.elapsed().as_millis() as u64,
+            };
+        }
+    };
+
+    let (account_data, owner) = match (&context.mint_data, &context.mint_owner) {
+        (Some(data), Some(owner)) => (data.clone(), owner.to_string()),
+        _ => {
+            return CheckResult {
+                passed: false,
+                reason: Some("Mint account not available in context".to_string()),
+                duration_ms: start.elapsed().as_millis() as u64,
+            };
+        }
+    };
+
+    let elapsed = start.elapsed();
+
+    if owner != TOKEN_PROGRAM_ID && owner != TOKEN_2022_PROGRAM_ID {
+        return CheckResult {
+            passed: false,
+            reason: Some(format!(
+                "Mint account owner is not SPL Token or Token-2022 (owner: {})",
+                owner
+            )),
+            duration_ms: elapsed.as_millis() as u64,
+        };
+    }
+
+    let is_token_2022 = owner == TOKEN_2022_PROGRAM_ID;
+
+    let mint_data = spl_token::state::Mint::unpack(&account_data);
+
+    match mint_data {
+        Ok(mint_state) => {
+            let has_mint_authority = mint_state.mint_authority.is_some();
+            let has_freeze_authority = mint_state.freeze_authority.is_some();
+
+            if has_mint_authority && has_freeze_authority {
+                CheckResult {
+                    passed: false,
+                    reason: Some(
+                        "Token has both mint_authority and freeze_authority (rug + honeypot risk)"
+                            .to_string(),
+                    ),
+                    duration_ms: elapsed.as_millis() as u64,
+                }
+            } else if has_mint_authority {
+                CheckResult {
+                    passed: false,
+                    reason: Some(
+                        "Token has mint_authority (creator can mint unlimited supply)".to_string(),
+                    ),
+                    duration_ms: elapsed.as_millis() as u64,
+                }
+            } else if has_freeze_authority {
+                CheckResult {
+                    passed: false,
+                    reason: Some(
+                        "Token has freeze_authority (creator can freeze your tokens)".to_string(),
+                    ),
+                    duration_ms: elapsed.as_millis() as u64,
+                }
+            } else {
+                CheckResult {
+                    passed: true,
+                    reason: None,
+                    duration_ms: elapsed.as_millis() as u64,
+                }
+            }
+        }
+        Err(e) => CheckResult {
+            passed: false,
+            reason: Some(format!("Failed to parse mint data: {}", e)),
+            duration_ms: elapsed.as_millis() as u64,
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -183,7 +277,10 @@ mod tests {
     #[test]
     fn test_invalid_pubkey_rejected() {
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let result = rt.block_on(check("not_a_valid_pubkey", "https://api.mainnet-beta.solana.com"));
+        let result = rt.block_on(check(
+            "not_a_valid_pubkey",
+            "https://api.mainnet-beta.solana.com",
+        ));
         assert!(!result.passed);
         assert!(result.reason.unwrap().contains("Invalid mint pubkey"));
     }

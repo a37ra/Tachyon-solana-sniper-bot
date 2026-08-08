@@ -16,20 +16,20 @@ use anyhow::Result;
 use base64::Engine;
 use chrono::Utc;
 use solana_keypair::Keypair;
-use solana_sdk::signature::Signer;
 use solana_pubkey::Pubkey;
 use solana_rpc_client::rpc_client::RpcClient;
 use solana_rpc_client_api::config::RpcSendTransactionConfig;
+use solana_sdk::signature::Signer;
 use solana_transaction::Transaction;
 use std::time::{Duration, Instant};
-use tracing::{warn, error};
+use tracing::{error, warn};
 use tracing_subscriber;
 
-use solbot_strategy::signer_client::SignerClient;
 use solbot_common::types::intent::{IntentType, SignerIntentRequest, VerdictStatus};
-use solbot_strategy::risk_gate::mint_freeze_authority;
 use solbot_strategy::risk_gate::lp_lock_check;
+use solbot_strategy::risk_gate::mint_freeze_authority;
 use solbot_strategy::risk_gate::token2022_extensions;
+use solbot_strategy::signer_client::SignerClient;
 
 /// Devnet RPC endpoint
 const DEVNET_RPC: &str = "https://api.devnet.solana.com";
@@ -85,11 +85,20 @@ impl LatencyMetrics {
         println!("{}", "-".repeat(45));
         println!("{:<30} | {:>10}", "RPC Ping (getHealth)", self.rpc_ping);
         println!("{:<30} | {:>10}", "Risk Gate Total", self.risk_gate_total);
-        println!("{:<30} | {:>10}", "  - Mint Freeze Check", self.risk_gate_mint_freeze);
+        println!(
+            "{:<30} | {:>10}",
+            "  - Mint Freeze Check", self.risk_gate_mint_freeze
+        );
         println!("{:<30} | {:>10}", "Sizing Compute", self.sizing_compute);
         println!("{:<30} | {:>10}", "Build Transaction", self.build_tx);
-        println!("{:<30} | {:>10}", "  - Fetch Blockhash", self.fetch_blockhash);
-        println!("{:<30} | {:>10}", "Signer Round-trip", self.signer_roundtrip);
+        println!(
+            "{:<30} | {:>10}",
+            "  - Fetch Blockhash", self.fetch_blockhash
+        );
+        println!(
+            "{:<30} | {:>10}",
+            "Signer Round-trip", self.signer_roundtrip
+        );
         println!("{:<30} | {:>10}", "Routing Submit", self.routing_submit);
         println!("{:<30} | {:>10}", "Confirmation", self.confirmation);
         println!("{:<30} | {:>10}", "END-TO-END", self.end_to_end);
@@ -125,8 +134,10 @@ async fn main() -> Result<()> {
         println!("Test signer socket NOT found: {}", TEST_SIGNER_SOCKET);
         println!("Will sign directly with test keypair (signer client not tested)");
         println!("To test signer client, start:");
-        println!("  SOLBOT_SIGNER_SOCKET={} SOLBOT_KEYPAIR_JSON={} cargo run --release -p solbot-signer",
-                 TEST_SIGNER_SOCKET, TEST_KEYPAIR_PATH);
+        println!(
+            "  SOLBOT_SIGNER_SOCKET={} SOLBOT_KEYPAIR_JSON={} cargo run --release -p solbot-signer",
+            TEST_SIGNER_SOCKET, TEST_KEYPAIR_PATH
+        );
     }
 
     // Generate or load test keypair
@@ -148,7 +159,10 @@ async fn main() -> Result<()> {
                 tokio::time::sleep(Duration::from_secs(5)).await;
             }
             Err(e) => {
-                warn!("Airdrop failed: {}. Please request manually from https://faucet.solana.com", e);
+                warn!(
+                    "Airdrop failed: {}. Please request manually from https://faucet.solana.com",
+                    e
+                );
             }
         }
     }
@@ -169,29 +183,40 @@ async fn main() -> Result<()> {
 
     // Use WSOL mint (known to pass freeze authority check)
     let wsol_mint = "So11111111111111111111111111111111111111112";
-    
+
     // 2.1: Mint Freeze Authority Check
     let mint_freeze_start = Instant::now();
     let mint_freeze_result = mint_freeze_authority::check(wsol_mint, DEVNET_RPC).await;
     metrics.risk_gate_mint_freeze = mint_freeze_start.elapsed().as_millis() as u64;
-    println!("Mint freeze check: {}ms - passed={}, reason={:?}", metrics.risk_gate_mint_freeze, mint_freeze_result.passed, mint_freeze_result.reason);
+    println!(
+        "Mint freeze check: {}ms - passed={}, reason={:?}",
+        metrics.risk_gate_mint_freeze, mint_freeze_result.passed, mint_freeze_result.reason
+    );
 
     // 2.2: LP Lock Check (using devnet Raydium pool)
     let lp_lock_start = Instant::now();
-    let lp_lock_result = lp_lock_check::check(DEVNET_RAYDIUM_POOL, RAYDIUM_AMM_V4_PROGRAM, DEVNET_RPC).await;
+    let lp_lock_result =
+        lp_lock_check::check(DEVNET_RAYDIUM_POOL, RAYDIUM_AMM_V4_PROGRAM, DEVNET_RPC).await;
     let lp_lock_duration = lp_lock_start.elapsed().as_millis() as u64;
-    println!("LP lock check: {}ms - passed={}, reason={:?}", lp_lock_duration, lp_lock_result.passed, lp_lock_result.reason);
+    println!(
+        "LP lock check: {}ms - passed={}, reason={:?}",
+        lp_lock_duration, lp_lock_result.passed, lp_lock_result.reason
+    );
 
     // 2.3: Token2022 Extensions Check (using WSOL - legacy token, so should be NotApplicable)
     let token2022_start = Instant::now();
     let token2022_config = solbot_strategy::risk_gate::RiskGateConfig::default();
-    let token2022_result = token2022_extensions::check(wsol_mint, DEVNET_RPC, &token2022_config).await;
+    let token2022_result =
+        token2022_extensions::check(wsol_mint, DEVNET_RPC, &token2022_config).await;
     let token2022_duration = token2022_start.elapsed().as_millis() as u64;
-    println!("Token2022 extensions check: {}ms - passed={}, reason={:?}", token2022_duration, token2022_result.passed, token2022_result.reason);
+    println!(
+        "Token2022 extensions check: {}ms - passed={}, reason={:?}",
+        token2022_duration, token2022_result.passed, token2022_result.reason
+    );
 
     // 2.4: Simulate Sell Check (skip for system transfer - only applicable for DEX swaps)
     println!("Simulate sell check: SKIPPED (not applicable to system transfer)");
-    
+
     metrics.risk_gate_total = risk_gate_start.elapsed().as_millis() as u64;
 
     // Step 3: Sizing Compute
@@ -200,7 +225,10 @@ async fn main() -> Result<()> {
     let position_size_sol = 0.01; // 0.01 SOL for test
     let amount_in_lamports = (position_size_sol * 1_000_000_000.0) as u64;
     metrics.sizing_compute = sizing_start.elapsed().as_millis() as u64;
-    println!("Position size: {} SOL ({}ms)", position_size_sol, metrics.sizing_compute);
+    println!(
+        "Position size: {} SOL ({}ms)",
+        position_size_sol, metrics.sizing_compute
+    );
 
     // Step 4: Build Transaction
     println!("\n--- Step 4: Build Transaction ---");
@@ -230,17 +258,18 @@ async fn main() -> Result<()> {
 
     // Step 5: Sign via Signer Client (or directly if socket not available)
     println!("\n--- Step 5: Signer Client ---");
-    
+
     let signed_tx = if use_signer {
         println!("Using real signer client via gRPC...");
-        
+
         // Convert unsigned transaction to base64
         let unsigned_tx_bytes = bincode::serialize(&unsigned_tx)?;
-        let unsigned_tx_base64 = base64::engine::general_purpose::STANDARD.encode(&unsigned_tx_bytes);
-        
+        let unsigned_tx_base64 =
+            base64::engine::general_purpose::STANDARD.encode(&unsigned_tx_bytes);
+
         // Create signer client
         let signer_client = SignerClient::new(TEST_SIGNER_SOCKET.to_string());
-        
+
         // Build signing intent request
         // For system transfer test, use System Program ID in metadata to match actual instructions
         // Use unique pool_address to avoid sequence conflicts (signer uses mint or pool_address as context_key)
@@ -261,25 +290,32 @@ async fn main() -> Result<()> {
             position_id: None,
             amount_or_pct: position_size_sol,
         };
-        
+
         // PRECISE TIMING: Measure ONLY the gRPC round-trip
         let grpc_start = Instant::now();
         let response = signer_client.sign_intent(sign_request).await?;
         let grpc_duration_us = grpc_start.elapsed().as_micros();
-        
+
         if response.status != VerdictStatus::Accepted {
-            let reason = response.rejection_reason.unwrap_or_else(|| "Unknown".to_string());
+            let reason = response
+                .rejection_reason
+                .unwrap_or_else(|| "Unknown".to_string());
             error!("Signer rejected intent: {}", reason);
             return Err(anyhow::anyhow!("Signer rejection: {}", reason));
         }
-        
+
         // Decode signed transaction from response
-        let signed_base64 = response.signed_transaction_base64
+        let signed_base64 = response
+            .signed_transaction_base64
             .ok_or_else(|| anyhow::anyhow!("No signed transaction returned"))?;
         let signed_bytes = base64::engine::general_purpose::STANDARD.decode(&signed_base64)?;
         let signed_tx_decoded: Transaction = bincode::deserialize(&signed_bytes)?;
-        
-        println!("Signer client gRPC round-trip: {}µs ({}ms)", grpc_duration_us, grpc_duration_us as f64 / 1000.0);
+
+        println!(
+            "Signer client gRPC round-trip: {}µs ({}ms)",
+            grpc_duration_us,
+            grpc_duration_us as f64 / 1000.0
+        );
         signed_tx_decoded
     } else {
         println!("Signing directly (signer client not available)");
@@ -290,7 +326,14 @@ async fn main() -> Result<()> {
 
     let signer_start = Instant::now();
     metrics.signer_roundtrip = signer_start.elapsed().as_millis() as u64;
-    println!("Transaction signed - {}", if use_signer { "via signer client gRPC" } else { "direct signing" });
+    println!(
+        "Transaction signed - {}",
+        if use_signer {
+            "via signer client gRPC"
+        } else {
+            "direct signing"
+        }
+    );
 
     // Step 6: Submit to Devnet
     println!("\n--- Step 6: Routing Submit ---");
@@ -310,12 +353,15 @@ async fn main() -> Result<()> {
         },
     )?;
     metrics.routing_submit = submit_start.elapsed().as_millis() as u64;
-    println!("Transaction submitted: {} ({}ms)", signature, metrics.routing_submit);
+    println!(
+        "Transaction submitted: {} ({}ms)",
+        signature, metrics.routing_submit
+    );
 
     // Step 7: Confirmation
     println!("\n--- Step 7: Confirmation ---");
     let confirm_start = Instant::now();
-    
+
     let mut confirmed = false;
     let max_wait = Duration::from_secs(30);
     let poll_interval = Duration::from_millis(500);
@@ -335,7 +381,10 @@ async fn main() -> Result<()> {
 
     if confirmed {
         println!("Transaction CONFIRMED ✓ ({}ms)", metrics.confirmation);
-        println!("Explorer: https://explorer.solana.com/tx/{}?cluster=devnet", signature);
+        println!(
+            "Explorer: https://explorer.solana.com/tx/{}?cluster=devnet",
+            signature
+        );
     } else {
         println!("Transaction NOT confirmed within timeout");
     }

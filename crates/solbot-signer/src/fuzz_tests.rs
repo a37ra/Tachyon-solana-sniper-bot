@@ -8,9 +8,9 @@
 #[cfg(test)]
 mod tests {
     use crate::validation::validate_intent;
-    use solbot_common::types::intent::{IntentType, SignerIntentRequest};
     use chrono::Utc;
     use rand::Rng;
+    use solbot_common::types::intent::{IntentType, SignerIntentRequest};
 
     const VALID_PROGRAM: &str = "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8";
     const PROGRAMS: &[&str] = &[
@@ -48,13 +48,13 @@ mod tests {
     /// Mutation type for fuzzing.
     #[derive(Debug, Clone, Copy)]
     enum Mutation {
-        None,              // valid — should pass
-        StaleTimestamp,     // issued_at way in the past
-        ReplayedSeq,       // ipc_seq <= last_seq
-        BadProgram,        // unknown program_id
-        OversizedAmount,   // max_size_lamports > cap
-        InsaneSlippage,    // hard_cap_bps > limit
-        BadDestination,    // destination not in whitelist
+        None,            // valid — should pass
+        StaleTimestamp,  // issued_at way in the past
+        ReplayedSeq,     // ipc_seq <= last_seq
+        BadProgram,      // unknown program_id
+        OversizedAmount, // max_size_lamports > cap
+        InsaneSlippage,  // hard_cap_bps > limit
+        BadDestination,  // destination not in whitelist
     }
 
     impl Mutation {
@@ -106,7 +106,7 @@ mod tests {
                 }
                 Mutation::StaleTimestamp => {
                     req.issued_at_unix_ms = 1000; // far in the past
-                    req.ipc_seq = last_seq + 1;   // valid seq so we hit staleness
+                    req.ipc_seq = last_seq + 1; // valid seq so we hit staleness
                 }
                 Mutation::ReplayedSeq => {
                     req.ipc_seq = last_seq.saturating_sub(rng.gen_range(0..5));
@@ -127,9 +127,8 @@ mod tests {
                     req.ipc_seq = last_seq + 1;
                 }
                 Mutation::BadDestination => {
-                    req.destination_addresses = vec![
-                        format!("attacker_{}", rng.gen_range(0..1000)),
-                    ];
+                    req.destination_addresses =
+                        vec![format!("attacker_{}", rng.gen_range(0..1000))];
                     req.ipc_seq = last_seq + 1;
                 }
             }
@@ -176,7 +175,7 @@ mod tests {
 
         // Invariant: at least some accepted, at least some rejected per category
         println!("Fuzz results: accepted={}, stats={:?}", accepted, stats);
-        
+
         // Must have caught at least some of each rejection type
         assert!(
             stats.get("StaleIntent").copied().unwrap_or(0) > 0,
@@ -212,7 +211,7 @@ mod tests {
         for _ in 0..10_000 {
             let req = SignerIntentRequest {
                 context_key: "x".to_string(),
-                ipc_seq: 0, // will be <= any last_seq > 0
+                ipc_seq: 0,           // will be <= any last_seq > 0
                 issued_at_unix_ms: 1, // stale
                 intent_type: IntentType::Buy,
                 unsigned_transaction_base64: String::new(),
