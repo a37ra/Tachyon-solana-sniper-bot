@@ -331,7 +331,7 @@ pub async fn check_with_context(
 
     let elapsed = start.elapsed();
 
-    // Skip LP lock check for DEX types without fungible LP tokens
+    // Skip LP lock for DEX types without classic fungible LP tokens
     if pool_owner == "CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK" {
         return CheckResult {
             passed: true,
@@ -340,10 +340,20 @@ pub async fn check_with_context(
         };
     }
 
-    if pool_owner == "LBUZKhRxPF3XUpBCjp4kVn14nz88kZjgL6Xm1xS8bKp" {
+    if pool_owner == "LBUZKhRxPF3XUpBCjp4kVn14nz88kZjgL6Xm1xS8bKp"
+        || pool_owner == "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo"
+    {
         return CheckResult {
             passed: true,
             reason: Some("lp_lock:not_applicable:dlmm".to_string()),
+            duration_ms: elapsed.as_millis() as u64,
+        };
+    }
+
+    if pool_owner == "cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG" {
+        return CheckResult {
+            passed: true,
+            reason: Some("lp_lock:not_applicable:damm_v2".to_string()),
             duration_ms: elapsed.as_millis() as u64,
         };
     }

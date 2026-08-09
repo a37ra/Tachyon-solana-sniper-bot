@@ -9,6 +9,7 @@
 pub mod ata;
 pub mod blockhash_cache;
 pub mod compute_budget;
+pub mod meteora_damm_v2;
 pub mod meteora_dlmm;
 pub mod meteora_dynamic;
 pub mod pump_fun;

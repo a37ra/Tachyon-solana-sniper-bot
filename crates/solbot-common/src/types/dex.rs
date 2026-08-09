@@ -16,8 +16,10 @@ impl DexProgram {
             DexProgram::RaydiumAmmV4 => "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8",
             DexProgram::RaydiumCpMm => "CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C",
             DexProgram::RaydiumClmm => "CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK",
-            DexProgram::MeteoraDlmm => "LBUZKhRxPF3XUpBCjp4kVn14nz88kZjgL6Xm1xS8bKp",
-            DexProgram::MeteoraDynamicAmm => "Eo7WjKq67rjJQSZxS6z3YKapzY3eMj6Xy8X5EQVn5UaB",
+            // Mainnet DLMM v2 (live WS owner). Legacy kVn14… kept in all_program_ids.
+            DexProgram::MeteoraDlmm => "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo",
+            // DAMM v2 (cpamdp). Legacy Dynamic AMM Eo7WjKq… also listed below.
+            DexProgram::MeteoraDynamicAmm => "cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG",
             DexProgram::PumpFun => "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P",
         }
     }
@@ -27,8 +29,10 @@ impl DexProgram {
             "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8",
             "CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C",
             "CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK",
+            "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo",
             "LBUZKhRxPF3XUpBCjp4kVn14nz88kZjgL6Xm1xS8bKp",
-            "Eo7WjKq67rjJQSZxS6z3YKapzY3eMj6Xy8X5EQVn5UaB",
+            "cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG",
+            "Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB",
             "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P",
         ]
     }

@@ -23,67 +23,122 @@
 - Coalescer с atomic claim.
 - `NewPoolSignal` → actor buy path с raw pool bytes.
 - Default `SIGNAL_SOURCE=helius_ws`.
-- Jito tip account из env / official tip pubkey.
-- `SOLBOT_SKIP_SIMULATE_SELL=true` для paper без sim RTT.
+- Jito tip account из env / official tip pubkey (invalid → panic, не `new_unique`).
+- `SOLBOT_SKIP_SIMULATE_SELL` — **только paper**; live abort через `assert_safe_for_live`.
+- Live hard-guards: `PUBLIC_RPC=true` / `max_signal_age_ms=0` / skip_sim → refuse start.
+- Freshness: entry + pre-submit (`assert_signal_still_fresh`).
+- Pump.fun ID: `6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P` (везде едино).
+- Strict pool filter: size / PDA / first-seen / warmup 15s.
+- DLMM mints @88/120; DAMM v2 pool 1112 B mints @168/200 (не 408 B junk).
+- Token-2022 TLV: AccountType @165, resilient truncated entries; official ExtensionType IDs.
+- Global stats: `PIPELINE STATS (global cumulative)` (не per-worker).
+- DAMM v2 builder + wire actor/simulate_sell.
+- create-ix: `logsSubscribe` + getTransaction (`SIGNAL_SOURCE=helius_logs|both`).
 
-## Env (public WS testing)
+## Env (public WS / paper)
 
 ```bash
-export SIGNAL_SOURCE=helius_ws
+export SIGNAL_SOURCE=helius_ws          # или helius_logs | both
 export SOLBOT_PUBLIC_RPC=true
-export HELIUS_API_KEY=...          # или GEYSER_X_TOKEN
-# HTTP RPC предпочтительно тот же Helius (не api.mainnet-beta):
+export HELIUS_API_KEY=...
 # export SOLBOT_RPC_URL="https://mainnet.helius-rpc.com/?api-key=$HELIUS_API_KEY"
 
-export SOLBOT_MAX_CONCURRENT_SIGNALS=3
+export SOLBOT_MAX_CONCURRENT_SIGNALS=5
 export SOLBOT_MAX_SIGNAL_AGE_MS=2000
 export SOLBOT_PRE_BUY_TIMEOUT_MS=4000
 export SOLBOT_SIMULATE_SELL_TIMEOUT_MS=2000
 export SOLBOT_PRE_BUY_RPC_TIMEOUT_MS=2000
-# optional: skip heaviest RTT while debugging filters only
-# export SOLBOT_SKIP_SIMULATE_SELL=true
+export SOLBOT_SIGNAL_WARMUP_SECS=15
+export SOLBOT_MAX_QUEUE_DEPTH=64
+# export SOLBOT_CREATE_IX=1             # дополнительно к helius_ws
+# export SOLBOT_SKIP_SIMULATE_SELL=true # только debug paper
 ```
 
 Paper:
 ```bash
-SIGNAL_SOURCE=helius_ws cargo run -p solbot-strategy --release -- --paper
+cargo run -p solbot-strategy --release -- --paper
 ```
 
-## Paper 90s post-filter diagnosis (2026-08-09)
+E2E builders (без broadcast):
+```bash
+cargo run -p solbot-strategy --release --bin paper_pipeline_e2e
+```
 
-**Profile of that run:** `SOLBOT_PUBLIC_RPC=true` (paper default), Helius HTTP via
-`SOLBOT_RPC_URL`, budgets simulate=2000ms / pre_buy=4000ms, `max_signal_age_ms=2000`.
+## Paper-прогоны (факты)
+
+### ~90s post-filter (2026-08-09)
+Profile: `SOLBOT_PUBLIC_RPC=true`, Helius HTTP, budgets 4s/2s, age 2000ms.
 
 | Bucket | Count | Cause |
 |---|---|---|
-| rpc_timeout | ~104 | Public/free RPS + 2–4s budgets under concurrent checks — **not** a new logic bug |
-| mint_unavailable | 70 | **Layout bug** DLMM mint@72/104 (real @88/120); DAMM v2 408B junk + wrong offsets — **fixed** |
-| DROP_STALE + reject stale | 207+66 | Threshold **2000ms**; ages p50≈2562 p90≈3398 — wait in semaphore + check latency |
-| simulate_sell | 27 | Real Custom() honeypot-ish rejects |
-| freeze_mint_auth | 11 | Real authority checks (e.g. USDC) |
+| rpc_timeout | ~104 | Public/free RPS + 2–4s budgets |
+| mint_unavailable | 70 | Layout bug DLMM/DAMM — **fixed** |
+| DROP_STALE + reject stale | 207+66 | age > 2000ms |
+| simulate_sell | 27 | Real Custom() |
+| freeze_mint_auth | 11 | Real authority |
 
-Global stats: `signal/pipeline_stats.rs` → log line `PIPELINE STATS (global cumulative)`.
+### ~8 min (после TLV + offsets)
+- ACCEPT **254**, REJECT 1129, DROP_QUEUE **0**
+- mint_unavailable **~0–3**
+- token2022 parse fail → после TLV fix **0** (остались real blocked extensions)
+- queue_depth p50≈0–2, max≪99
+
+### ~2 min polish
+- ACCEPT **70**, token2022 fail parse **0**, mint_unavailable **0**
+- top reject: rpc_timeout (public) — ожидаемо
 
 ## Live hard-guards (abort on start)
 
 Live boot **refuses** if any of:
 
-1. `SOLBOT_SKIP_SIMULATE_SELL=true` — no honeypot sim
-2. `SOLBOT_PUBLIC_RPC=true` — multi-second risk budgets
-3. `max_signal_age_ms=0` / missing `SOLBOT_MAX_SIGNAL_AGE_MS` with public defaults unset for live
+1. `SOLBOT_SKIP_SIMULATE_SELL=true` — no honeypot sim  
+2. `SOLBOT_PUBLIC_RPC=true` — multi-second risk budgets  
+3. `max_signal_age_ms=0` — freshness disabled  
 
-Jito tip: invalid `SOLBOT_JITO_TIP_ACCOUNT` → **panic** (never random pubkey / silent SOL burn).
+Jito tip: invalid `SOLBOT_JITO_TIP_ACCOUNT` → **panic**.  
+Pre-submit freshness: buy entry **and** before router submit.
 
-Pre-submit freshness: `assert_signal_still_fresh` runs at buy pipeline entry **and**
-immediately before router submit (`max_signal_age_ms` from risk config).
+Paper default: `SOLBOT_PUBLIC_RPC=true` если env не задан.  
+Live default: `SOLBOT_PUBLIC_RPC=false` если env не задан.
 
-## Чеклист при private RPC / paid Geyser
+## Program IDs (mainnet)
 
-- [ ] `SOLBOT_PUBLIC_RPC=false` (**required** for live)
+| DEX | ID |
+|---|---|
+| Pump.fun | `6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P` |
+| Raydium AMM v4 | `675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8` |
+| Raydium CPMM | `CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C` |
+| Raydium CLMM | `CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK` |
+| Meteora DLMM v2 | `LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo` |
+| Meteora DAMM v2 | `cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG` |
+| Jito tip default | `96gYZGLnJYVFmbjzopPSU6QiEV5fGqZNyN9nmNhvrZU5` |
+
+## Чеклист после покупки private RPC
+
+Этого **нельзя** закрыть на free/public RPC (latency/RPS), только конфиг + калибровка + live e2e:
+
+- [ ] `SOLBOT_PUBLIC_RPC=false` (**required** for live — иначе abort)
+- [ ] `SOLBOT_RPC_URL=<private_http>`
 - [ ] `SOLBOT_PRE_BUY_TIMEOUT_MS=600` (цель 150 после co-lo)
 - [ ] `SOLBOT_SIMULATE_SELL_TIMEOUT_MS=150`
 - [ ] `SOLBOT_PRE_BUY_RPC_TIMEOUT_MS=300`
-- [ ] `SOLBOT_MAX_CONCURRENT_SIGNALS=30`
+- [ ] `SOLBOT_MAX_CONCURRENT_SIGNALS=20–30`
 - [ ] `SOLBOT_MAX_SIGNAL_AGE_MS=500` (**required** for live)
-- [ ] `SIGNAL_SOURCE=geyser_grpc` + paid endpoint
-- [ ] Valid `SOLBOT_JITO_TIP_ACCOUNT` or omit (uses official default)
+- [ ] Unset `SOLBOT_SKIP_SIMULATE_SELL`
+- [ ] Paper 15–30 мин на private — `rpc_timeout` должен сильно упасть
+- [ ] `solbot-signer` up + encrypted key
+- [ ] Valid tip или default official
+- [ ] Tiny live 1 buy + 1 sell
+- [ ] Optional: `SIGNAL_SOURCE=geyser_grpc` + paid endpoint
+- [ ] Optional: region-matched Jito
+- [ ] Код, который RPC **не** заменяет: дожим DAMM account metas по live fails, DLMM multi-bin amount_out, create-ix V0 parsing, этапы **6–11**
+
+## SIGNAL_SOURCE
+
+| Значение | Поведение |
+|---|---|
+| `helius_ws` (default) | programSubscribe account updates + strict filter |
+| `helius_logs` / `create_ix` | logsSubscribe create/init only + getTransaction |
+| `both` / `helius_both` | оба источника |
+| `geyser_grpc` | Yellowstone accounts (нужен paid endpoint) |
+| `SOLBOT_CREATE_IX=1` | добавить create-ix поверх текущего source |

@@ -175,12 +175,11 @@ async fn simulate_sell_transaction(
             meteora_dlmm::build_swap(&params, &state)
         }
         METEORA_DAMM_V2 => {
-            // DAMM v2 swap builder not wired yet — do not false-honeypot; treat as non-blocking.
-            return Ok(CheckResult {
-                passed: true,
-                reason: Some("simulate_sell skipped: DAMM v2 builder not implemented".into()),
-                duration_ms: start.elapsed().as_millis() as u64,
-            });
+            let state = crate::tx_builder::meteora_damm_v2::DammV2PoolState::from_account_data(
+                &pool_data,
+                &pool_pubkey,
+            )?;
+            crate::tx_builder::meteora_damm_v2::build_swap(&params, &state)
         }
         PUMP_FUN_PROGRAM => {
             let curve =
