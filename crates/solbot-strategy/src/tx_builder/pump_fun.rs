@@ -1,6 +1,9 @@
 //! Pump.fun bonding curve swap builder.
 //!
-//! Program ID: 6EF8rrecthR5Dkzon8Nwu78hRvfX4LctQnUBjWdK8nN2
+//! Program ID: 6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P
+//!
+//! Verified against pump.fun public docs / on-chain mainnet program owner.
+//! Do NOT change this ID to "make tests pass" — re-verify against docs/explorer first.
 //!
 //! Pump.fun uses a bonding curve where price increases with supply.
 //! Tokens start on the bonding curve and "graduate" (migrate) to
@@ -18,8 +21,10 @@ use solana_pubkey::Pubkey;
 use solana_sdk::sysvar;
 use solana_sdk_ids::system_program;
 
+/// Mainnet pump.fun bonding-curve program.
+/// Verified against pump.fun public docs — do not change without re-verification.
 pub const PUMP_FUN_PROGRAM: Pubkey =
-    solana_pubkey::pubkey!("6EF8rrecthR5Dkzon8Nwu78hRvfX4LctQnUBjWdK8nN2");
+    solana_pubkey::pubkey!("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P");
 
 /// Global state account (PDA).
 const GLOBAL_SEED: &[u8] = b"global";

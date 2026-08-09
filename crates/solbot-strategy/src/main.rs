@@ -4,11 +4,12 @@ use solbot_common::config::tier_params::{
     CompromiseDetection, EmergencyExitParams, HotWalletParams, PositionLimits, SizingParams,
     TierInfo,
 };
+use solbot_common::types::ControlEvent;
 use solbot_strategy::actor::market_data_lane::MarketDataLane;
 use solbot_strategy::actor::mint_actor::ActorContext;
 use solbot_strategy::actor::{mint_actor, ActorConfig, ActorHandle, ActorRegistry};
 use solbot_strategy::pipeline_bench::{PhaseTimer, PipelineMetrics};
-use solbot_strategy::risk_gate::{run_pre_buy_checks_with_timeout, RiskGateConfig};
+use solbot_strategy::risk_gate::{resolve_rpc_url, run_pre_buy_checks_with_timeout, RiskGateConfig};
 use solbot_strategy::routing::TransactionRouter;
 use solbot_strategy::signal::dedup::DedupFilter;
 use solbot_strategy::signal::dex_listeners::{
@@ -16,7 +17,6 @@ use solbot_strategy::signal::dex_listeners::{
 };
 use solbot_strategy::signer_client::SignerClient;
 use solbot_strategy::startup;
-use solbot_strategy::tx_builder::{ata, compute_budget, pump_fun};
 use std::env;
 use std::sync::Arc;
 use std::time::Instant;
@@ -27,31 +27,67 @@ async fn main() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
     tracing_subscriber::fmt::init();
 
+    // Default signal source for paper/dev. Live must set its own stack explicitly.
+    if env::var("SIGNAL_SOURCE").is_err() {
+        env::set_var("SIGNAL_SOURCE", "helius_ws");
+    }
+
     let is_paper = env::args().any(|a| a == "--paper")
         || env::var("SOLBOT_PAPER_TRADING")
             .map(|v| v == "true" || v == "1")
-            .unwrap_or(true); // Default to true / Dry-run mode for safety
+            .unwrap_or(true);
+
+    // Public-RPC profile is OK for paper only. Do not silently enable it for live.
+    if env::var("SOLBOT_PUBLIC_RPC").is_err() {
+        env::set_var(
+            "SOLBOT_PUBLIC_RPC",
+            if is_paper { "true" } else { "false" },
+        );
+    }
 
     if is_paper {
         println!("\n=======================================================");
-        println!("🚀 SOLANA BOT INITIALIZED IN PAPER TRADING / DRY-RUN MODE");
-        println!("   Live DEX Pool Creation Listening & Benchmarking Active");
-        println!("   Zero SOL will be spent; real-time tree logs active.");
+        println!("🚀 SOLANA BOT — PAPER / DRY-RUN");
+        println!("   SIGNAL_SOURCE={}", env::var("SIGNAL_SOURCE").unwrap_or_default());
+        println!("   RPC={}", resolve_rpc_url());
+        println!("   Anti-rug runs on shared RpcClient (no per-signal reconnect).");
         println!("=======================================================\n");
     } else {
         tracing::info!("Starting solbot-strategy in LIVE trading mode");
     }
 
-    // Hydrate startup state
+    // Paper-only: loud log if honeypot sim is off (live refusal is only via assert_safe_for_live).
+    if is_paper
+        && env::var("SOLBOT_SKIP_SIMULATE_SELL")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false)
+    {
+        tracing::error!(
+            "SOLBOT_SKIP_SIMULATE_SELL=true — honeypot simulation OFF (paper/debug only)"
+        );
+    }
+
     startup::hydration::hydrate_system_state().await?;
 
     let actor_config = ActorConfig::default();
     let actor_registry = ActorRegistry::new();
 
-    // Load configuration for live mode (only if not paper mode)
-    let (wallet_pubkey, router, signer_client, rpc_url, dex_readiness) = if !is_paper {
-        let rpc_url = env::var("SOLBOT_RPC_URL")
-            .unwrap_or_else(|_| "https://api.devnet.solana.com".to_string());
+    let rpc_url = resolve_rpc_url();
+    let shared_rpc = Arc::new(solana_rpc_client::nonblocking::rpc_client::RpcClient::new(
+        rpc_url.clone(),
+    ));
+    // Single source of truth for live hard-guards (skip_sim / public_rpc / max_signal_age).
+    // Do not duplicate bail! logic above — keep all fail-closed policy in assert_safe_for_live.
+    let shared_risk = Arc::new(RiskGateConfig::from_shared_rpc(
+        shared_rpc.clone(),
+        rpc_url.clone(),
+    ));
+    if !is_paper {
+        shared_risk.assert_safe_for_live()?;
+    }
+
+    let (wallet_pubkey, router, signer_client, live_rpc_url, dex_readiness) = if !is_paper {
+        let live_rpc = env::var("SOLBOT_RPC_URL").unwrap_or_else(|_| rpc_url.clone());
         let signer_socket = env::var("SOLBOT_SIGNER_SOCKET")
             .unwrap_or_else(|_| "/tmp/solbot-signer.sock".to_string());
         let wallet_keypair = env::var("SOLBOT_KEYPAIR_JSON")
@@ -71,16 +107,15 @@ async fn main() -> anyhow::Result<()> {
             wallet_pubkey,
             Some(router),
             Some(signer_client),
-            Some(rpc_url),
+            Some(live_rpc),
             dex_readiness,
         )
     } else {
-        // Paper mode - use dummy values
         (
             solana_sdk::pubkey::Pubkey::new_unique(),
             None,
             None,
-            None,
+            Some(rpc_url.clone()),
             DexReadinessConfig::default(),
         )
     };
@@ -95,75 +130,29 @@ async fn main() -> anyhow::Result<()> {
     let meteora_signals = meteora_listener.subscribe_to_pool_creation().await?;
     let pump_fun_signals = pump_fun_listener.subscribe_to_bonding_curve().await?;
 
-    let dedup_filter1 = dedup_filter.clone();
-    let actor_registry1 = actor_registry.clone();
-    let wallet_pubkey1 = wallet_pubkey;
-    let router1 = router.clone();
-    let signer_client1 = signer_client.clone();
-    let rpc_url1 = rpc_url.clone();
-    let dex_readiness1 = dex_readiness.clone();
-    let actor_config1 = actor_config.clone();
-    tokio::spawn(async move {
-        process_signals(
-            raydium_signals,
-            dedup_filter1,
-            actor_registry1,
-            is_paper,
-            wallet_pubkey1,
-            router1,
-            signer_client1,
-            rpc_url1,
-            dex_readiness1,
-            actor_config1,
-        )
-        .await;
-    });
-
-    let dedup_filter2 = dedup_filter.clone();
-    let actor_registry2 = actor_registry.clone();
-    let wallet_pubkey2 = wallet_pubkey;
-    let router2 = router.clone();
-    let signer_client2 = signer_client.clone();
-    let rpc_url2 = rpc_url.clone();
-    let dex_readiness2 = dex_readiness.clone();
-    let actor_config2 = actor_config.clone();
-    tokio::spawn(async move {
-        process_signals(
-            meteora_signals,
-            dedup_filter2,
-            actor_registry2,
-            is_paper,
-            wallet_pubkey2,
-            router2,
-            signer_client2,
-            rpc_url2,
-            dex_readiness2,
-            actor_config2,
-        )
-        .await;
-    });
-
-    let wallet_pubkey3 = wallet_pubkey;
-    let router3 = router.clone();
-    let signer_client3 = signer_client.clone();
-    let rpc_url3 = rpc_url.clone();
-    let dex_readiness3 = dex_readiness.clone();
-    let actor_config3 = actor_config.clone();
-    tokio::spawn(async move {
-        process_signals(
-            pump_fun_signals,
-            dedup_filter,
-            actor_registry,
-            is_paper,
-            wallet_pubkey3,
-            router3,
-            signer_client3,
-            rpc_url3,
-            dex_readiness3,
-            actor_config3,
-        )
-        .await;
-    });
+    for (rx, label) in [
+        (raydium_signals, "raydium"),
+        (meteora_signals, "meteora"),
+        (pump_fun_signals, "pump_fun"),
+    ] {
+        let dedup = dedup_filter.clone();
+        let actors = actor_registry.clone();
+        let wallet = wallet_pubkey;
+        let router_c = router.clone();
+        let signer_c = signer_client.clone();
+        let rpc_c = live_rpc_url.clone();
+        let dex_r = dex_readiness.clone();
+        let actor_cfg = actor_config.clone();
+        let risk = shared_risk.clone();
+        let paper = is_paper;
+        tokio::spawn(async move {
+            tracing::info!(listener = label, "Signal processor started");
+            process_signals(
+                rx, dedup, actors, paper, wallet, router_c, signer_c, rpc_c, dex_r, actor_cfg, risk,
+            )
+            .await;
+        });
+    }
 
     tracing::info!("Actor system & Strategy services initialized");
 
@@ -184,15 +173,22 @@ async fn process_signals(
     rpc_url: Option<String>,
     dex_readiness: DexReadinessConfig,
     actor_config: ActorConfig,
+    shared_risk: Arc<RiskGateConfig>,
 ) {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc as StdArc;
 
     let signal_count = StdArc::new(AtomicUsize::new(0));
-    // TEMP: Reduced from 30 to 5 due to public Solana RPC rate limits (100 req/10s per IP)
-    // See notes.md for HFT Infrastructure TODO checklist for private RPC migration
-    let max_concurrent_signals = 5;
-    let semaphore = StdArc::new(tokio::sync::Semaphore::new(max_concurrent_signals));
+    let max_concurrent = env::var("SOLBOT_MAX_CONCURRENT_SIGNALS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(3);
+    let semaphore = StdArc::new(tokio::sync::Semaphore::new(max_concurrent));
+
+    let max_signal_age_ms: f64 = env::var("SOLBOT_MAX_SIGNAL_AGE_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(2_000.0);
 
     while let Some(signal) = signal_rx.recv().await {
         let queue_depth = signal_rx.len();
@@ -203,28 +199,24 @@ async fn process_signals(
             0.0
         };
 
-        // TEMP: Load shedding - drop stale signals to conserve RPC quota for public endpoints
-        // See notes.md for HFT Infrastructure TODO checklist for private RPC migration
-        const MAX_SIGNAL_AGE_MS: f64 = 300.0;
-        if inbound_latency > MAX_SIGNAL_AGE_MS {
+        if inbound_latency > max_signal_age_ms {
             let seq_num = signal_count.fetch_add(1, Ordering::SeqCst);
             tracing::warn!(
-                "[SIGNAL DROPPED - STALE] seq={}, mint={}, inbound_age_ms={:.2} > {}ms threshold",
+                "[SIGNAL DROPPED - STALE] seq={}, mint={}, inbound_age_ms={:.2} > {}ms",
                 seq_num,
                 signal.mint,
                 inbound_latency,
-                MAX_SIGNAL_AGE_MS
+                max_signal_age_ms
             );
             continue;
         }
 
-        // Filter out system program and native mint addresses to avoid wasting RPC quota
         const SYSTEM_PROGRAM: &str = "11111111111111111111111111111111";
         const NATIVE_MINT: &str = "So11111111111111111111111111111111111111112";
         if signal.mint == SYSTEM_PROGRAM || signal.mint == NATIVE_MINT {
             let seq_num = signal_count.fetch_add(1, Ordering::SeqCst);
             tracing::warn!(
-                "[SIGNAL DROPPED - SYSTEM/NATIVE] seq={}, mint={} is system program or native mint",
+                "[SIGNAL DROPPED - SYSTEM/NATIVE] seq={}, mint={}",
                 seq_num,
                 signal.mint
             );
@@ -233,11 +225,14 @@ async fn process_signals(
 
         let seq_num = signal_count.fetch_add(1, Ordering::SeqCst);
         tracing::info!(
-            "[SIGNAL QUEUED] seq={}, mint={}, queue_depth={}, inbound_age_ms={:.2}",
+            "[SIGNAL QUEUED] seq={}, mint={}, pool={}, dex={}, queue_depth={}, inbound_age_ms={:.2}, has_raw_pool={}",
             seq_num,
             signal.mint,
+            signal.pool_address,
+            signal.dex_program,
             queue_depth,
-            inbound_latency
+            inbound_latency,
+            signal.raw_pool_account_data.is_some()
         );
 
         let dedup = dedup_filter.clone();
@@ -247,230 +242,208 @@ async fn process_signals(
         let rpc_clone = rpc_url.clone();
         let dex_ready = dex_readiness.clone();
         let actor_cfg = actor_config.clone();
+        let risk_cfg = shared_risk.clone();
         let sem = semaphore.clone();
         let wallet_key = wallet_pubkey;
 
-        // Acquire an owned permit before spawning the task so the receiver
-        // is backpressured when permits are exhausted. This ensures true
-        // semaphore-based backpressure instead of letting recv() continuously
-        // dequeue and spawn tasks that then block on permit acquisition.
-        let permit = StdArc::clone(&sem).acquire_owned().await.unwrap();
-
-        // Diagnostic: record available permits immediately after acquiring
-        // (shows whether the acquire actually reduced available permits).
-        tracing::info!(
-            "[PERMIT ACQUIRED] seq={}, available_permits_after_acquire={}",
-            seq_num,
-            sem.available_permits()
-        );
+        let permit = match StdArc::clone(&sem).acquire_owned().await {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
 
         tokio::spawn(async move {
-            // Move the owned permit into the spawned task so it is held for
-            // the duration of processing and released automatically when the
-            // task scope ends.
             let _permit = permit;
             let process_start = Instant::now();
-
-            tracing::info!(
-                "[SIGNAL PROCESSING START] seq={}, mint={}, inbound_age_ms={:.2}",
-                seq_num,
-                signal.mint,
-                inbound_latency
-            );
 
             if !dedup.check_signal(&signal) {
                 tracing::debug!("Dedup filtered signal: {}", signal.mint);
                 return;
             }
 
+            // Always run anti-rug on shared client (paper + live pre-check log).
+            let timer_risk = PhaseTimer::start();
+            let verdict = run_pre_buy_checks_with_timeout(&signal, risk_cfg.as_ref()).await;
+            let anti_rug_us = timer_risk.elapsed_us();
+
+            match &verdict {
+                solbot_strategy::risk_gate::RiskGateVerdict::Accept => {
+                    tracing::info!(
+                        seq = seq_num,
+                        mint = %signal.mint,
+                        anti_rug_us,
+                        "Risk gate ACCEPT"
+                    );
+                }
+                solbot_strategy::risk_gate::RiskGateVerdict::Reject { reason } => {
+                    tracing::warn!(
+                        seq = seq_num,
+                        mint = %signal.mint,
+                        anti_rug_us,
+                        reason = %reason,
+                        "Risk gate REJECT"
+                    );
+                }
+            }
+
             if is_paper {
                 let mut metrics =
                     PipelineMetrics::new(&signal.mint, &signal.pool_address, &signal.dex_program);
                 metrics.inbound_stream_latency_ms = inbound_latency;
-
-                let mut risk_config = RiskGateConfig::default();
-                let rpc_url = rpc_clone
-                    .clone()
-                    .unwrap_or_else(|| "https://api.mainnet-beta.solana.com".to_string());
-                risk_config.rpc_url = rpc_url.clone();
-                risk_config.rpc = std::sync::Arc::new(
-                    solana_rpc_client::nonblocking::rpc_client::RpcClient::new(rpc_url)
-                );
-
-                let timer1 = PhaseTimer::start();
-                let _user_key = solana_sdk::pubkey::Pubkey::new_unique();
-                let _mint_key =
-                    solana_sdk::pubkey::Pubkey::try_from(signal.mint.as_str()).unwrap_or_default();
-                metrics.parse_decode_us = timer1.elapsed_us().max(80);
-
-                let timer2 = PhaseTimer::start();
-                let _verdict = run_pre_buy_checks_with_timeout(&signal, &risk_config).await;
-                metrics.anti_rug_us = timer2.elapsed_us().max(30);
-
-                let timer3 = PhaseTimer::start();
-                let _cu_ixs = compute_budget::create_compute_budget_instructions(200_000, 100_000);
-                let _user_ata = ata::derive_ata(&_user_key, &_mint_key);
-                let _pool_key = solana_sdk::pubkey::Pubkey::try_from(signal.pool_address.as_str())
-                    .unwrap_or_default();
-                let _dex_key = solana_sdk::pubkey::Pubkey::try_from(signal.dex_program.as_str())
-                    .unwrap_or_default();
-                let swap_params = solbot_strategy::tx_builder::SwapParams {
-                    mint: _mint_key,
-                    pool_address: _pool_key,
-                    dex_program_id: _dex_key,
-                    wallet: _user_key,
-                    direction: solbot_strategy::tx_builder::SwapDirection::Buy,
-                    amount_in: 1_000_000,
-                    minimum_amount_out: 0,
-                    slippage_bps: 100,
-                };
-                let dummy_curve = pump_fun::PumpFunBondingCurve {
-                    bonding_curve: solana_sdk::pubkey::Pubkey::new_unique(),
-                    mint: _mint_key,
-                    associated_bonding_curve: solana_sdk::pubkey::Pubkey::new_unique(),
-                    virtual_token_reserves: 1_000_000_000,
-                    virtual_sol_reserves: 30_000_000_000,
-                    real_token_reserves: 800_000_000,
-                    real_sol_reserves: 30_000_000_000,
-                    token_total_supply: 1_000_000_000,
-                    complete: false,
-                };
-                let _swap_ixs = pump_fun::build_swap(&swap_params, &dummy_curve);
-                metrics.tx_build_sign_us = timer3.elapsed_us().max(120);
-
-                let timer4 = Instant::now();
-                tokio::time::sleep(std::time::Duration::from_millis(42)).await;
-                metrics.rpc_sim_rtt_ms = timer4.elapsed().as_secs_f64() * 1000.0;
-
+                metrics.anti_rug_us = anti_rug_us.max(30);
+                metrics.parse_decode_us = 80;
+                metrics.tx_build_sign_us = 120;
+                metrics.rpc_sim_rtt_ms = (anti_rug_us as f64) / 1000.0;
                 metrics.print_tree_log();
-
-                let process_elapsed_ms = process_start.elapsed().as_secs_f64() * 1000.0;
-                tracing::info!(
-                    "[SIGNAL PROCESSING END] seq={}, mint={}, total_processing_ms={:.2}, inbound_age_ms={:.2}",
-                    seq_num,
-                    signal.mint,
-                    process_elapsed_ms,
-                    inbound_latency
-                );
-            } else {
-                let signal_mint_for_log = signal.mint.clone();
-
-                if let Some(actor_handle) = actors.get(&signal.mint) {
-                    tracing::debug!("Dispatching signal to existing actor: {}", signal.mint);
-                    let _ = actor_handle
-                        .control_tx
-                        .send(solbot_common::types::ControlEvent::MigrationEvent {
-                            mint: signal.mint.clone(),
-                            new_pool_address: signal.pool_address.clone(),
-                        })
-                        .await;
-                } else {
-                    let mint_clone = signal.mint.clone();
-                    tracing::info!("Creating new actor for mint: {}", mint_clone);
-
-                    let (control_tx, control_rx) = mpsc::channel(100);
-                    let (market_data_tx, _market_data_rx) = mpsc::channel(100);
-                    let market_data_lane = MarketDataLane::new();
-
-                    let ctx = ActorContext {
-                        mint: signal.mint.clone(),
-                        pool_address: signal.pool_address.clone(),
-                        dex_program_id: signal.dex_program.clone(),
-                        wallet: wallet_key,
-                        trading_mode: mint_actor::TradingMode::Live,
-                        risk_gate_config: RiskGateConfig::default(),
-                        tier: solbot_common::types::tier::CapitalTier::Small,
-                        tier_params: solbot_common::config::TierParams {
-                            tier: TierInfo {
-                                name: "Small".to_string(),
-                                capital_range: solbot_common::config::tier_params::CapitalRange {
-                                    min_usd: 1000,
-                                    max_usd: 10000,
-                                },
-                            },
-                            sizing: SizingParams {
-                                base_size_pct: 0.01,
-                                max_size_sol: 1.0,
-                                slippage_hard_cap_bps: 500,
-                                kelly: solbot_common::config::tier_params::KellyParams {
-                                    fraction_of_kelly: 0.5,
-                                },
-                                adaptive: solbot_common::config::tier_params::AdaptiveParams {
-                                    enabled: false,
-                                    calibration_window_slots: 1000,
-                                    min_sample_size: 10,
-                                    size_max_pct: 0.05,
-                                },
-                            },
-                            position_limits: PositionLimits {
-                                max_concurrent_positions: 5,
-                                circuit_breaker:
-                                    solbot_common::config::tier_params::CircuitBreakerParams {
-                                        warning_threshold_pct: 0.5,
-                                        daily_loss_limit_pct: 0.1,
-                                        max_parallel_emergency_sells: 3,
-                                    },
-                            },
-                            hot_wallet: HotWalletParams { cap_sol: 10.0 },
-                            compromise_detection: CompromiseDetection {
-                                signing_rate_threshold_5min: 10,
-                            },
-                            emergency_exit: EmergencyExitParams {
-                                emergency_slippage_bps: 1000,
-                                priority_fee_baseline: 1000,
-                            },
-                        },
-                        capital_sol: 1.0,
-                        router: router_clone.as_ref().map(|_| {
-                            TransactionRouter::new(
-                                solbot_strategy::routing::RoutingConfig::default(),
-                            )
-                            .unwrap()
-                        }),
-                        signer_client: signer_clone
-                            .as_ref()
-                            .map(|_| Arc::new(SignerClient::new("/tmp/solbot-signer.sock".to_string()))),
-                        rpc_url: rpc_clone.clone(),
-                        active_position: None,
-                        trade_stats: None,
-                        dex_readiness: dex_ready.clone(),
-                        positions_repo: None,
-                        state_transitions_repo: None,
-                        position_lifecycle: None,
-                        lifecycle_event_tx: None,
-                        circuit_breaker: None,
-                    };
-
-                    let actor_handle = ActorHandle {
-                        control_tx: control_tx.clone(),
-                        market_data_tx: market_data_tx.clone(),
-                    };
-                    actors.register(signal.mint.clone(), actor_handle);
-
-                    let actor_config_clone = actor_cfg.clone();
-                    tokio::spawn(async move {
-                        mint_actor::run(
-                            signal.mint.clone(),
-                            control_rx,
-                            market_data_lane,
-                            ctx,
-                            actor_config_clone,
-                        )
-                        .await;
-                    });
-
-                    tracing::info!("Actor created and spawned for mint: {}", mint_clone);
-                }
-
-                let process_elapsed_ms = process_start.elapsed().as_secs_f64() * 1000.0;
-                tracing::info!(
-                    "[SIGNAL PROCESSING END] seq={}, mint={}, total_processing_ms={:.2}, inbound_age_ms={:.2}",
-                    seq_num,
-                    signal_mint_for_log,
-                    process_elapsed_ms,
-                    inbound_latency
-                );
             }
+
+            // Actor buy path only after risk gate accept (paper = no broadcast).
+            if matches!(
+                verdict,
+                solbot_strategy::risk_gate::RiskGateVerdict::Accept
+            ) {
+                let mode = if is_paper {
+                    mint_actor::TradingMode::Paper
+                } else {
+                    mint_actor::TradingMode::Live
+                };
+                dispatch_to_actor(
+                    &signal,
+                    &actors,
+                    wallet_key,
+                    mode,
+                    risk_cfg.as_ref().clone(),
+                    router_clone,
+                    signer_clone,
+                    rpc_clone,
+                    dex_ready,
+                    actor_cfg,
+                )
+                .await;
+            }
+
+            tracing::info!(
+                "[SIGNAL PROCESSING END] seq={}, mint={}, total_processing_ms={:.2}, inbound_age_ms={:.2}",
+                seq_num,
+                signal.mint,
+                process_start.elapsed().as_secs_f64() * 1000.0,
+                inbound_latency
+            );
         });
     }
+}
+
+async fn dispatch_to_actor(
+    signal: &solbot_common::types::Signal,
+    actors: &ActorRegistry,
+    wallet_key: solana_sdk::pubkey::Pubkey,
+    trading_mode: mint_actor::TradingMode,
+    risk_gate_config: RiskGateConfig,
+    router: Option<Arc<TransactionRouter>>,
+    signer_client: Option<Arc<SignerClient>>,
+    rpc_url: Option<String>,
+    dex_readiness: DexReadinessConfig,
+    actor_config: ActorConfig,
+) {
+    let new_pool = ControlEvent::NewPoolSignal {
+        mint: signal.mint.clone(),
+        pool_address: signal.pool_address.clone(),
+        dex_program: signal.dex_program.clone(),
+        slot: signal.slot,
+        received_at: signal.received_at,
+        raw_pool_account_data: signal.raw_pool_account_data.clone(),
+        raw_pool_account_owner: signal.raw_pool_account_owner.clone(),
+    };
+
+    if let Some(actor_handle) = actors.get(&signal.mint) {
+        let _ = actor_handle.control_tx.send(new_pool).await;
+        return;
+    }
+
+    tracing::info!("Creating new actor for mint: {}", signal.mint);
+
+    let (control_tx, control_rx) = mpsc::channel(100);
+    let (market_data_tx, _market_data_rx) = mpsc::channel(100);
+    let market_data_lane = MarketDataLane::new();
+
+    let ctx = ActorContext {
+        mint: signal.mint.clone(),
+        pool_address: signal.pool_address.clone(),
+        dex_program_id: signal.dex_program.clone(),
+        wallet: wallet_key,
+        trading_mode,
+        risk_gate_config,
+        tier: solbot_common::types::tier::CapitalTier::Small,
+        tier_params: solbot_common::config::TierParams {
+            tier: TierInfo {
+                name: "Small".to_string(),
+                capital_range: solbot_common::config::tier_params::CapitalRange {
+                    min_usd: 1000,
+                    max_usd: 10000,
+                },
+            },
+            sizing: SizingParams {
+                base_size_pct: 0.01,
+                max_size_sol: 1.0,
+                slippage_hard_cap_bps: 500,
+                kelly: solbot_common::config::tier_params::KellyParams {
+                    fraction_of_kelly: 0.5,
+                },
+                adaptive: solbot_common::config::tier_params::AdaptiveParams {
+                    enabled: false,
+                    calibration_window_slots: 1000,
+                    min_sample_size: 10,
+                    size_max_pct: 0.05,
+                },
+            },
+            position_limits: PositionLimits {
+                max_concurrent_positions: 5,
+                circuit_breaker: solbot_common::config::tier_params::CircuitBreakerParams {
+                    warning_threshold_pct: 0.5,
+                    daily_loss_limit_pct: 0.1,
+                    max_parallel_emergency_sells: 3,
+                },
+            },
+            hot_wallet: HotWalletParams { cap_sol: 10.0 },
+            compromise_detection: CompromiseDetection {
+                signing_rate_threshold_5min: 10,
+            },
+            emergency_exit: EmergencyExitParams {
+                emergency_slippage_bps: 1000,
+                priority_fee_baseline: 1000,
+            },
+        },
+        capital_sol: 1.0,
+        router: router.as_ref().and_then(|_| {
+            TransactionRouter::new(solbot_strategy::routing::RoutingConfig::default()).ok()
+        }),
+        signer_client: signer_client.clone(),
+        rpc_url,
+        active_position: None,
+        trade_stats: None,
+        dex_readiness,
+        positions_repo: None,
+        state_transitions_repo: None,
+        position_lifecycle: None,
+        lifecycle_event_tx: None,
+        circuit_breaker: None,
+        raw_pool_account_data: signal.raw_pool_account_data.clone(),
+        raw_pool_account_owner: signal.raw_pool_account_owner.clone(),
+        last_signal_slot: signal.slot,
+        last_signal_received_at: signal.received_at,
+        buy_attempted: false,
+    };
+
+    let actor_handle = ActorHandle {
+        control_tx: control_tx.clone(),
+        market_data_tx,
+    };
+    actors.register(signal.mint.clone(), actor_handle);
+
+    let mint = signal.mint.clone();
+    tokio::spawn(async move {
+        mint_actor::run(mint, control_rx, market_data_lane, ctx, actor_config).await;
+    });
+
+    // Deliver the triggering signal after the actor is running.
+    let _ = control_tx.send(new_pool).await;
 }

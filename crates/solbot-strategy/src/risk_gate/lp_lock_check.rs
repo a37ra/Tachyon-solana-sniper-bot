@@ -261,7 +261,7 @@ fn extract_lp_mint(
         "LBUZKhRxPF3XUpBCjp4kVn14nz88kZjgL6Xm1xS8bKp"
         | "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo" => Ok(LpMintResult::NotApplicableDlmm),
         // Pump.fun: bonding curve holds reserves; no LP mint until Raydium migration
-        "6EF8rrecthR5DkZ8w3bq6z3Y3Y3Y3Y3Y3Y3Y3Y3Y3Y" => Ok(LpMintResult::NotApplicableBondingCurve),
+        "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P" => Ok(LpMintResult::NotApplicableBondingCurve),
         _ => {
             anyhow::bail!("Unsupported DEX program for LP lock check: {}", dex_program);
         }
@@ -346,7 +346,7 @@ pub async fn check_with_context(
         };
     }
 
-    if pool_owner == "6EF8rrecthR5DkZ8w3bq6z3Y3Y3Y3Y3Y3Y3Y3Y3Y3Y" {
+    if pool_owner == "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P" {
         return CheckResult {
             passed: true,
             reason: Some("lp_lock:not_applicable:bonding_curve".to_string()),
@@ -427,6 +427,12 @@ pub async fn check_with_context(
 
 #[cfg(test)]
 mod tests {
+
+    fn test_rpc() -> std::sync::Arc<solana_rpc_client::nonblocking::rpc_client::RpcClient> {
+        std::sync::Arc::new(solana_rpc_client::nonblocking::rpc_client::RpcClient::new(
+            "https://api.mainnet-beta.solana.com".to_string(),
+        ))
+    }
     use super::*;
 
     // ... (rest of the code remains the same)
@@ -497,8 +503,8 @@ mod tests {
         let data = vec![0u8; 100];
         let result = extract_lp_mint(
             &data,
-            "6EF8rrecthR5DkZ8w3bq6z3Y3Y3Y3Y3Y3Y3Y3Y3Y3Y",
-            "6EF8rrecthR5DkZ8w3bq6z3Y3Y3Y3Y3Y3Y3Y3Y3Y3Y",
+            "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P",
+            "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P",
         )
         .unwrap();
         assert_eq!(result, LpMintResult::NotApplicableBondingCurve);
@@ -548,7 +554,7 @@ mod tests {
         let result = rt.block_on(check(
             "not_a_valid_pubkey",
             "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8",
-            "https://api.mainnet-beta.solana.com",
+            test_rpc(),
         ));
         assert!(!result.passed);
         assert!(result.reason.unwrap().contains("Invalid pool pubkey"));
@@ -561,7 +567,7 @@ mod tests {
         let fallback = rt.block_on(check(
             pool_address,
             "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8",
-            "https://api.mainnet-beta.solana.com",
+            test_rpc(),
         ));
 
         let context = crate::risk_gate::PreBuyCheckContext {
@@ -643,7 +649,7 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let pool = "58oQChx4yWmvKdwLLZzBi4ChoCc2fqCUWBkwMihLYQo2";
         let program = "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8";
-        let result = rt.block_on(check(pool, program, "https://api.mainnet-beta.solana.com"));
+        let result = rt.block_on(check(pool, program, test_rpc()));
         assert!(result.duration_ms > 0);
         // reason must NOT be the "not_applicable" skip markers
         if let Some(ref r) = result.reason {
@@ -665,7 +671,7 @@ mod tests {
         // Raydium CLMM SOL-USDC pool
         let pool = "HJPjoWUrhoZzkNfRpHuieeFk9WcZWjwy6PBjZ81ngndJ";
         let program = "CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK";
-        let result = rt.block_on(check(pool, program, "https://api.mainnet-beta.solana.com"));
+        let result = rt.block_on(check(pool, program, test_rpc()));
         assert!(
             result.passed,
             "CLMM pool should pass (skipped): {:?}",
@@ -690,7 +696,7 @@ mod tests {
         let pool = "FoSDw2L5DmTuQTFe55gWPDXf88euaxAEKFre74CnvQbX";
         // v2 DLMM program ID — this is the actual owner of the pool account
         let program = "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo";
-        let result = rt.block_on(check(pool, program, "https://api.mainnet-beta.solana.com"));
+        let result = rt.block_on(check(pool, program, test_rpc()));
         assert!(
             result.passed,
             "DLMM pool should pass (skipped): {:?}",

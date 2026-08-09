@@ -2,6 +2,16 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ControlEvent {
+    /// New pool / bonding-curve signal — triggers buy pipeline once.
+    NewPoolSignal {
+        mint: String,
+        pool_address: String,
+        dex_program: String,
+        slot: u64,
+        received_at: u64,
+        raw_pool_account_data: Option<Vec<u8>>,
+        raw_pool_account_owner: Option<String>,
+    },
     MigrationEvent {
         mint: String,
         new_pool_address: String,

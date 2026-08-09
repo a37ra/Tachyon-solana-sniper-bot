@@ -33,7 +33,7 @@ impl Default for PumpFunListener {
 impl PumpFunListener {
     pub fn new() -> Self {
         let signal_source =
-            std::env::var("SIGNAL_SOURCE").unwrap_or_else(|_| "geyser_grpc".to_string());
+            std::env::var("SIGNAL_SOURCE").unwrap_or_else(|_| "helius_ws".to_string());
 
         Self {
             geyser_config: GeyserConfig::default(),
@@ -45,7 +45,7 @@ impl PumpFunListener {
 
     pub fn with_geyser_config(config: GeyserConfig) -> Self {
         let signal_source =
-            std::env::var("SIGNAL_SOURCE").unwrap_or_else(|_| "geyser_grpc".to_string());
+            std::env::var("SIGNAL_SOURCE").unwrap_or_else(|_| "helius_ws".to_string());
 
         Self {
             geyser_config: config,
@@ -57,7 +57,7 @@ impl PumpFunListener {
 
     pub fn with_validator(config: GeyserConfig, validator: Arc<SignalValidator>) -> Self {
         let signal_source =
-            std::env::var("SIGNAL_SOURCE").unwrap_or_else(|_| "geyser_grpc".to_string());
+            std::env::var("SIGNAL_SOURCE").unwrap_or_else(|_| "helius_ws".to_string());
 
         Self {
             geyser_config: config,
@@ -145,7 +145,7 @@ impl PumpFunListener {
     /// Parse Pump.fun account update to extract bonding curve signal.
     fn parse_pump_fun_account(update: AccountUpdate) -> Option<Signal> {
         let signal_source =
-            std::env::var("SIGNAL_SOURCE").unwrap_or_else(|_| "geyser_grpc".to_string());
+            std::env::var("SIGNAL_SOURCE").unwrap_or_else(|_| "helius_ws".to_string());
         let account_data = update.data;
 
         // Pump.fun bonding curve data structure:

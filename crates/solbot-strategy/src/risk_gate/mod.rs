@@ -12,25 +12,59 @@ use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 use tokio::sync::Notify;
 
-/// Request coalescing cache for pool_address fetches under 10 RPS limits.
-static FETCH_COALESCER: LazyLock<DashMap<String, Arc<FetchState>>> = LazyLock::new(|| DashMap::new());
+/// Request coalescing for concurrent pre-buy fetches of the same pool.
+static FETCH_COALESCER: LazyLock<DashMap<String, Arc<FetchState>>> =
+    LazyLock::new(DashMap::new);
 
 struct FetchState {
     notify: Arc<Notify>,
-    result: Arc<std::sync::Mutex<Option<Result<PreBuyCheckContext, String>>>>,
+    /// None = in progress, Some = finished (Ok or Err string).
+    result: std::sync::Mutex<Option<Result<PreBuyCheckContext, String>>>,
+    /// Only the first waiter performs the fetch.
+    claimed: std::sync::atomic::AtomicBool,
 }
 
-// TEMP: Increased for current non-co-located network conditions (200 → 300ms).
-// Current measured RPC RTT is around 120-130ms, but single RPC calls are timing out at 200ms.
-// This suggests actual RTT is worse than measured or network is unstable.
-// Reduce back to 200ms (or 80ms after co-location) once network stabilizes.
-const PRE_BUY_CHECK_RPC_TIMEOUT_MS: u64 = 300;
+fn rpc_timeout_ms() -> u64 {
+    std::env::var("SOLBOT_PRE_BUY_RPC_TIMEOUT_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or_else(|| {
+            // Public RPC / Helius free: single call often 200-800ms under load.
+            if is_public_rpc_profile() {
+                2_000
+            } else {
+                300
+            }
+        })
+}
+
+fn is_public_rpc_profile() -> bool {
+    std::env::var("SOLBOT_PUBLIC_RPC")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(true)
+}
+
+/// Resolve primary RPC URL (Helius HTTP preferred over public mainnet).
+pub fn resolve_rpc_url() -> String {
+    if let Ok(url) = std::env::var("SOLBOT_RPC_URL") {
+        if !url.is_empty() {
+            return url;
+        }
+    }
+    if let Ok(key) = std::env::var("HELIUS_API_KEY").or_else(|_| std::env::var("GEYSER_X_TOKEN")) {
+        if !key.is_empty() && key != "YOUR_API_KEY" {
+            return format!("https://mainnet.helius-rpc.com/?api-key={}", key);
+        }
+    }
+    if let Ok(url) = std::env::var("RPC_URL_PRIMARY") {
+        if !url.is_empty() {
+            return url;
+        }
+    }
+    "https://api.mainnet-beta.solana.com".to_string()
+}
 
 /// Context holding pre-fetched account data to avoid redundant RPC calls.
-/// This optimization reduces latency by:
-/// 1. Using account data from Geyser/Helius WS payload when available (no RPC needed)
-/// 2. Fetching missing accounts via batch RPC requests (get_multiple_accounts)
-/// 3. Using nonblocking RpcClient with connection pooling
 #[derive(Debug, Clone)]
 pub struct PreBuyCheckContext {
     pub mint_data: Option<Vec<u8>>,
@@ -39,15 +73,10 @@ pub struct PreBuyCheckContext {
     pub pool_owner: Option<Pubkey>,
     pub lp_mint_data: Option<Vec<u8>>,
     pub lp_mint_owner: Option<Pubkey>,
-    /// Whether pool data came from WS (no RPC needed) or was fetched via RPC
     pub pool_data_from_ws: bool,
 }
 
 impl PreBuyCheckContext {
-    /// Загружает все необходимые аккаунты.
-    /// Если lp_mint известна заранее (или передана из dex_listeners), сокращает сеть до 1 RTT.
-    /// Uses request coalescing: if multiple signals arrive for the same pool, they wait
-    /// for the first fetch instead of launching duplicate RPC calls.
     pub async fn fetch(
         rpc: &Arc<RpcClient>,
         mint: &str,
@@ -57,65 +86,80 @@ impl PreBuyCheckContext {
         let mint_pubkey = Pubkey::try_from(mint)?;
         let pool_pubkey = Pubkey::try_from(pool_address)?;
 
-        // Request coalescing: check if there's already a fetch in progress for this pool
         let cache_key = format!("{}:{}", mint, pool_address);
-        let state = FETCH_COALESCER.entry(cache_key.clone()).or_insert_with(|| {
-            Arc::new(FetchState {
-                notify: Arc::new(Notify::new()),
-                result: Arc::new(std::sync::Mutex::new(None)),
+        let state = FETCH_COALESCER
+            .entry(cache_key.clone())
+            .or_insert_with(|| {
+                Arc::new(FetchState {
+                    notify: Arc::new(Notify::new()),
+                    result: std::sync::Mutex::new(None),
+                    claimed: std::sync::atomic::AtomicBool::new(false),
+                })
             })
-        });
+            .clone();
 
-        // Check if result is already available
         {
-            let result_guard = state.result.lock().unwrap();
-            if let Some(ref result) = *result_guard {
+            let guard = state.result.lock().unwrap();
+            if let Some(ref result) = *guard {
                 return result.clone().map_err(|e| anyhow::anyhow!("{}", e));
             }
         }
 
-        // If not, we need to perform the fetch
-        // First, check if we're the first one (result is still None)
-        let should_fetch = {
-            let mut result_guard = state.result.lock().unwrap();
-            if result_guard.is_some() {
-                // Someone else just finished, return their result
-                return result_guard.as_ref().unwrap().clone().map_err(|e| anyhow::anyhow!("{}", e));
-            }
-            // We're the first, set a marker to indicate we're fetching
-            result_guard.is_none()
-        };
+        let i_am_fetcher = state
+            .claimed
+            .compare_exchange(
+                false,
+                true,
+                std::sync::atomic::Ordering::SeqCst,
+                std::sync::atomic::Ordering::SeqCst,
+            )
+            .is_ok();
 
-        if should_fetch {
-            // Perform the actual fetch
-            let result = Self::fetch_internal(rpc, &mint_pubkey, &pool_pubkey, mint, pool_address, known_lp_mint).await;
-            let result_str = result.as_ref().map(|ctx| ctx.clone()).map_err(|e| e.to_string());
-
-            // Store the result and notify waiters
+        if i_am_fetcher {
+            let result = Self::fetch_internal(
+                rpc,
+                &mint_pubkey,
+                &pool_pubkey,
+                mint,
+                pool_address,
+                known_lp_mint,
+            )
+            .await;
+            let stored = result
+                .as_ref()
+                .map(|ctx| ctx.clone())
+                .map_err(|e| e.to_string());
             {
-                let mut result_guard = state.result.lock().unwrap();
-                *result_guard = Some(result_str);
+                let mut guard = state.result.lock().unwrap();
+                *guard = Some(stored);
             }
             state.notify.notify_waiters();
 
-            // Clean up the cache entry after a short delay
-            let cache_key_clone = cache_key.clone();
+            let key = cache_key.clone();
             tokio::spawn(async move {
                 tokio::time::sleep(Duration::from_secs(5)).await;
-                FETCH_COALESCER.remove(&cache_key_clone);
+                FETCH_COALESCER.remove(&key);
             });
 
             result
         } else {
-            // Wait for the first fetcher to complete
             loop {
                 {
-                    let result_guard = state.result.lock().unwrap();
-                    if let Some(ref result) = *result_guard {
+                    let guard = state.result.lock().unwrap();
+                    if let Some(ref result) = *guard {
                         return result.clone().map_err(|e| anyhow::anyhow!("{}", e));
                     }
                 }
-                state.notify.notified().await;
+                let notified = state.notify.notified();
+                tokio::pin!(notified);
+                match tokio::time::timeout(Duration::from_secs(5), &mut notified).await {
+                    Ok(()) => continue,
+                    Err(_) => {
+                        return Err(anyhow::anyhow!(
+                            "Timed out waiting for coalesced pre-buy fetch"
+                        ));
+                    }
+                }
             }
         }
     }
@@ -128,11 +172,11 @@ impl PreBuyCheckContext {
         pool_address: &str,
         known_lp_mint: Option<Pubkey>,
     ) -> anyhow::Result<Self> {
+        let to = Duration::from_millis(rpc_timeout_ms());
 
-        // Вариант А: Если LP Mint известна заранее, запрашиваем 3 аккаунта за 1 RTT
         if let Some(lp_pubkey) = known_lp_mint {
             let accounts = match tokio::time::timeout(
-                Duration::from_millis(PRE_BUY_CHECK_RPC_TIMEOUT_MS),
+                to,
                 rpc.get_multiple_accounts(&[*mint_pubkey, *pool_pubkey, lp_pubkey]),
             )
             .await
@@ -142,13 +186,12 @@ impl PreBuyCheckContext {
                     tracing::warn!(
                         mint = %mint,
                         pool = %pool_address,
-                        lp_mint = %lp_pubkey,
-                        "Pre-buy check get_multiple_accounts timed out after {}ms",
-                        PRE_BUY_CHECK_RPC_TIMEOUT_MS
+                        "get_multiple_accounts timed out after {}ms",
+                        rpc_timeout_ms()
                     );
                     return Err(anyhow::anyhow!(
                         "Pre-buy check RPC timed out after {}ms",
-                        PRE_BUY_CHECK_RPC_TIMEOUT_MS
+                        rpc_timeout_ms()
                     ));
                 }
             };
@@ -168,9 +211,8 @@ impl PreBuyCheckContext {
             });
         }
 
-        // Вариант Б: LP Mint не известна. Шаг 1 — батч mint + pool (1 RTT)
         let accounts = match tokio::time::timeout(
-            Duration::from_millis(PRE_BUY_CHECK_RPC_TIMEOUT_MS),
+            to,
             rpc.get_multiple_accounts(&[*mint_pubkey, *pool_pubkey]),
         )
         .await
@@ -180,12 +222,12 @@ impl PreBuyCheckContext {
                 tracing::warn!(
                     mint = %mint,
                     pool = %pool_address,
-                    "Pre-buy check get_multiple_accounts timed out after {}ms",
-                    PRE_BUY_CHECK_RPC_TIMEOUT_MS
+                    "get_multiple_accounts timed out after {}ms",
+                    rpc_timeout_ms()
                 );
                 return Err(anyhow::anyhow!(
                     "Pre-buy check RPC timed out after {}ms",
-                    PRE_BUY_CHECK_RPC_TIMEOUT_MS
+                    rpc_timeout_ms()
                 ));
             }
         };
@@ -193,31 +235,23 @@ impl PreBuyCheckContext {
         let (mint_data, mint_owner) = unpack_acc(accounts.get(0));
         let (pool_data, pool_owner) = unpack_acc(accounts.get(1));
 
-        // Шаг 2 — Догрузка LP Mint только если удалось извлечь адрес из pool_data
         let (lp_mint_data, lp_mint_owner) = match (&pool_data, &pool_owner) {
             (Some(p_data), Some(p_owner)) => {
                 if let Some(lp_pk) = extract_lp_mint_from_pool(p_data, p_owner) {
-                    let lp_mint_account = match tokio::time::timeout(
-                        Duration::from_millis(PRE_BUY_CHECK_RPC_TIMEOUT_MS),
-                        rpc.get_account(&lp_pk),
-                    )
-                    .await
-                    {
-                        Ok(result) => result?,
+                    match tokio::time::timeout(to, rpc.get_account(&lp_pk)).await {
+                        Ok(Ok(acc)) => (Some(acc.data), Some(acc.owner)),
+                        Ok(Err(e)) => {
+                            tracing::warn!(lp_mint = %lp_pk, error = %e, "lp_mint fetch failed");
+                            (None, None)
+                        }
                         Err(_) => {
                             tracing::warn!(
                                 lp_mint = %lp_pk,
-                                "Pre-buy check get_account(lp_mint) timed out after {}ms",
-                                PRE_BUY_CHECK_RPC_TIMEOUT_MS
+                                "get_account(lp_mint) timed out — continuing without LP data"
                             );
-                            return Err(anyhow::anyhow!(
-                                "Pre-buy check RPC timed out after {}ms",
-                                PRE_BUY_CHECK_RPC_TIMEOUT_MS
-                            ));
+                            (None, None)
                         }
-                    };
-
-                    (Some(lp_mint_account.data), Some(lp_mint_account.owner))
+                    }
                 } else {
                     (None, None)
                 }
@@ -236,7 +270,7 @@ impl PreBuyCheckContext {
         })
     }
 
-    /// Создает контекст на основе данных из WS (0 RTT для pool, 1 RTT для mint + lp_mint)
+    /// WS pool bytes present → 0 RTT for pool, 1 RTT for mint (+ lp if extractable).
     pub async fn from_ws_update(
         rpc: &Arc<RpcClient>,
         mint: &str,
@@ -244,55 +278,36 @@ impl PreBuyCheckContext {
         pool_owner: Pubkey,
     ) -> anyhow::Result<Self> {
         let mint_pubkey = Pubkey::try_from(mint)?;
-
-        // Извлекаем LP Mint ДО сетевого запроса!
         let maybe_lp_mint = extract_lp_mint_from_pool(&pool_data, &pool_owner);
+        let to = Duration::from_millis(rpc_timeout_ms());
 
         let (mint_data, mint_owner, lp_mint_data, lp_mint_owner) = match maybe_lp_mint {
             Some(lp_pk) => {
-                // Запрашиваем mint и lp_mint одновременно за 1 RTT
                 let accounts = match tokio::time::timeout(
-                    Duration::from_millis(PRE_BUY_CHECK_RPC_TIMEOUT_MS),
+                    to,
                     rpc.get_multiple_accounts(&[mint_pubkey, lp_pk]),
                 )
                 .await
                 {
                     Ok(result) => result?,
                     Err(_) => {
-                        tracing::warn!(
-                            lp_mint = %lp_pk,
-                            "Pre-buy check from_ws_update get_multiple_accounts timed out after {}ms",
-                            PRE_BUY_CHECK_RPC_TIMEOUT_MS
-                        );
                         return Err(anyhow::anyhow!(
                             "Pre-buy check RPC timed out after {}ms",
-                            PRE_BUY_CHECK_RPC_TIMEOUT_MS
+                            rpc_timeout_ms()
                         ));
                     }
                 };
-
                 let (m_data, m_owner) = unpack_acc(accounts.get(0));
                 let (lp_data, lp_owner) = unpack_acc(accounts.get(1));
                 (m_data, m_owner, lp_data, lp_owner)
             }
             None => {
-                // Извлечь LP Mint не удалось/не требуется (например, Pump.fun) — запрашиваем только mint
-                let acc = match tokio::time::timeout(
-                    Duration::from_millis(PRE_BUY_CHECK_RPC_TIMEOUT_MS),
-                    rpc.get_account(&mint_pubkey),
-                )
-                .await
-                {
+                let acc = match tokio::time::timeout(to, rpc.get_account(&mint_pubkey)).await {
                     Ok(result) => result?,
                     Err(_) => {
-                        tracing::warn!(
-                            mint = %mint,
-                            "Pre-buy check from_ws_update get_account(mint) timed out after {}ms",
-                            PRE_BUY_CHECK_RPC_TIMEOUT_MS
-                        );
                         return Err(anyhow::anyhow!(
                             "Pre-buy check RPC timed out after {}ms",
-                            PRE_BUY_CHECK_RPC_TIMEOUT_MS
+                            rpc_timeout_ms()
                         ));
                     }
                 };
@@ -322,16 +337,13 @@ fn unpack_acc(
     }
 }
 
-/// Extract LP mint address from pool account data based on DEX type.
-/// Returns None if LP mint cannot be extracted (e.g., CLMM, DLMM, Pump.fun).
-/// Optimized with byte comparison instead of string formatting.
 pub fn extract_lp_mint_from_pool(pool_data: &[u8], pool_owner: &Pubkey) -> Option<Pubkey> {
     const RAYDIUM_V4: Pubkey =
         solana_pubkey::pubkey!("675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8");
     const RAYDIUM_CPMM: Pubkey =
         solana_pubkey::pubkey!("CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C");
     const METEORA_DYNAMIC: Pubkey =
-        solana_pubkey::pubkey!("Eo7WjKq67rjJQSZxS6z3YKapzY3eMj6Xy8X5EQVn5UaB");
+        solana_pubkey::pubkey!("Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB");
 
     if *pool_owner == RAYDIUM_V4 || *pool_owner == RAYDIUM_CPMM || *pool_owner == METEORA_DYNAMIC {
         if pool_data.len() >= 64 {
@@ -381,11 +393,7 @@ impl RiskGateCache {
 
     pub fn get(&self, key: &str) -> Option<RiskGateVerdict> {
         let is_fresh = self.0.inner.get(key).map_or(false, |entry| {
-            let is_fresh = entry.inserted_at.elapsed() < self.0.ttl;
-            if !is_fresh {
-                drop(entry);
-            }
-            is_fresh
+            entry.inserted_at.elapsed() < self.0.ttl
         });
 
         if is_fresh {
@@ -414,11 +422,12 @@ fn is_cacheable(verdict: &RiskGateVerdict) -> bool {
             let lower = reason.to_lowercase();
             !(lower.contains("timeout")
                 || lower.contains("rpc error")
-                || lower.contains("failed to fetch pre-buy check context")
+                || lower.contains("failed to fetch")
                 || lower.contains("task join error")
                 || lower.contains("simulation error")
                 || lower.contains("lp_lock:context_unavailable")
-                || lower.contains("lp_lock:parse_failed"))
+                || lower.contains("lp_lock:parse_failed")
+                || lower.contains("coalesced"))
         }
     }
 }
@@ -427,6 +436,25 @@ fn is_cacheable(verdict: &RiskGateVerdict) -> bool {
 mod tests {
     use super::*;
     use std::thread;
+
+    fn bare_config(skip_sim: bool, max_age: u64) -> RiskGateConfig {
+        let rpc_url = "http://127.0.0.1:8899".to_string();
+        RiskGateConfig {
+            rpc: Arc::new(RpcClient::new(rpc_url.clone())),
+            rpc_url,
+            mint_freeze_timeout_ms: 10,
+            lp_lock_timeout_ms: 15,
+            token2022_timeout_ms: 10,
+            simulate_sell_timeout_ms: 150,
+            pre_buy_checks_timeout_ms: 600,
+            simulate_size_lamports: 100_000_000,
+            token2022_blocklist: vec![],
+            token2022_allowlist: vec![],
+            max_signal_age_ms: max_age,
+            skip_simulate_sell: skip_sim,
+            cache: RiskGateCache::new(10),
+        }
+    }
 
     #[test]
     fn risk_gate_cache_expires_after_ttl() {
@@ -441,9 +469,52 @@ mod tests {
 
         assert!(cache.get(&key).is_none());
     }
+
+    #[test]
+    fn resolve_rpc_url_non_empty() {
+        assert!(!resolve_rpc_url().is_empty());
+    }
+
+    /// Live hard-guard: public RPC profile must abort (not WARN-only).
+    #[test]
+    fn assert_safe_for_live_rejects_public_rpc() {
+        let cfg = bare_config(false, 500);
+        let err = cfg
+            .assert_safe_for_live_with(true)
+            .expect_err("public_rpc=true must refuse live");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("SOLBOT_PUBLIC_RPC=true"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[test]
+    fn assert_safe_for_live_rejects_skip_simulate() {
+        let cfg = bare_config(true, 500);
+        let err = cfg
+            .assert_safe_for_live_with(false)
+            .expect_err("skip_simulate must refuse live");
+        assert!(err.to_string().contains("skip_simulate_sell") || err.to_string().contains("honeypot"));
+    }
+
+    #[test]
+    fn assert_safe_for_live_rejects_zero_max_age() {
+        let cfg = bare_config(false, 0);
+        let err = cfg
+            .assert_safe_for_live_with(false)
+            .expect_err("max_signal_age_ms=0 must refuse live");
+        assert!(err.to_string().contains("max_signal_age_ms=0"));
+    }
+
+    #[test]
+    fn assert_safe_for_live_ok_when_strict() {
+        let cfg = bare_config(false, 500);
+        cfg.assert_safe_for_live_with(false)
+            .expect("private RPC + sim on + age>0 must pass");
+    }
 }
 
-/// Helper function to compute verdict from check results (eliminates 4x code duplication)
 fn compute_verdict(
     freeze_result: &CheckResult,
     lp_result: &CheckResult,
@@ -484,7 +555,25 @@ fn compute_verdict(
 }
 
 pub async fn run_pre_buy_checks(signal: &Signal, config: &RiskGateConfig) -> RiskGateVerdict {
-    let start = std::time::Instant::now();
+    let start = Instant::now();
+
+    if config.max_signal_age_ms > 0 && signal.received_at > 0 {
+        let now_ms = chrono::Utc::now().timestamp_millis() as u64;
+        if now_ms >= signal.received_at {
+            let age = now_ms - signal.received_at;
+            if age > config.max_signal_age_ms {
+                tracing::warn!(
+                    mint = %signal.mint,
+                    age_ms = age,
+                    max_ms = config.max_signal_age_ms,
+                    "Rejecting stale signal before RPC"
+                );
+                return RiskGateVerdict::Reject {
+                    reason: format!("Stale signal: {}ms > {}ms", age, config.max_signal_age_ms),
+                };
+            }
+        }
+    }
 
     tracing::info!("Running pre-buy checks for mint: {}", signal.mint);
 
@@ -494,170 +583,98 @@ pub async fn run_pre_buy_checks(signal: &Signal, config: &RiskGateConfig) -> Ris
         return cached_verdict;
     }
 
-    // Use shared RPC client from config (connection pooling enabled)
     let rpc = config.rpc.clone();
 
-    // Try 1-RTT path when WS-provided pool bytes are available.
-    let context = {
-        if let (Some(pool_data), Some(pool_owner_str)) = (
-            &signal.raw_pool_account_data,
-            &signal.raw_pool_account_owner,
-        ) {
-            if let Ok(pool_owner_pk) = Pubkey::try_from(pool_owner_str.as_str()) {
-                match PreBuyCheckContext::from_ws_update(&rpc, &signal.mint, pool_data.clone(), pool_owner_pk).await {
-                    Ok(ctx) => ctx,
-                    Err(e) => {
-                        tracing::warn!(
-                            dex_program = %signal.dex_program,
-                            pool_owner = %pool_owner_str,
-                            "Failed to build pre-buy context from WS update: {}, falling back to RPC fetch", e
-                        );
-                        match PreBuyCheckContext::fetch(&rpc, &signal.mint, &signal.pool_address, None).await {
-                            Ok(ctx2) => ctx2,
-                            Err(e2) => {
-                                tracing::warn!(
-                                    "Failed to fetch pre-buy check context: {}, falling back to individual RPC calls",
-                                    e2
-                                );
-                                // Fallback to individual checks if both optimized paths failed
-                                let (freeze_result, lp_result, token2022_result, simulate_result) = tokio::join!(
-                                    mint_freeze_authority::check(&signal.mint, config.rpc.clone()),
-                                    lp_lock_check::check(&signal.pool_address, &signal.dex_program, config.rpc.clone()),
-                                    token2022_extensions::check(&signal.mint, config.rpc.clone(), config),
-                                    simulate_sell::check(
-                                        &signal.mint,
-                                        &signal.pool_address,
-                                        config.simulate_size_lamports,
-                                        config.rpc.clone(),
-                                        config.simulate_sell_timeout_ms
-                                    )
-                                );
-
-                                let elapsed = start.elapsed();
-                                tracing::info!(
-                                    "Pre-buy checks completed in {}ms (fallback mode)",
-                                    elapsed.as_millis()
-                                );
-
-                                let verdict = compute_verdict(&freeze_result, &lp_result, &token2022_result, &simulate_result);
-
-                                if is_cacheable(&verdict) {
-                                    config.cache.insert(cache_key.clone(), verdict.clone());
-                                }
-
-                                return verdict;
-                            }
-                        }
-                    }
-                }
-            } else {
-                // Owner string parse failed - fallback to fetch
-                match PreBuyCheckContext::fetch(&rpc, &signal.mint, &signal.pool_address, None).await {
-                    Ok(ctx) => ctx,
-                    Err(e) => {
-                        tracing::warn!(
-                            "Failed to fetch pre-buy check context: {}, falling back to individual RPC calls",
-                            e
-                        );
-                        let (freeze_result, lp_result, token2022_result, simulate_result) = tokio::join!(
-                            mint_freeze_authority::check(&signal.mint, config.rpc.clone()),
-                            lp_lock_check::check(&signal.pool_address, &signal.dex_program, config.rpc.clone()),
-                            token2022_extensions::check(&signal.mint, config.rpc.clone(), config),
-                            simulate_sell::check(
-                                &signal.mint,
-                                &signal.pool_address,
-                                config.simulate_size_lamports,
-                                config.rpc.clone(),
-                                config.simulate_sell_timeout_ms
-                            )
-                        );
-
-                        let elapsed = start.elapsed();
-                        tracing::info!(
-                            "Pre-buy checks completed in {}ms (fallback mode)",
-                            elapsed.as_millis()
-                        );
-
-                        let verdict = compute_verdict(&freeze_result, &lp_result, &token2022_result, &simulate_result);
-
-                        if is_cacheable(&verdict) {
-                            config.cache.insert(cache_key.clone(), verdict.clone());
-                        }
-
-                        return verdict;
-                    }
-                }
-            }
-        } else {
-            // No WS-provided pool bytes; perform standard fetch
-            match PreBuyCheckContext::fetch(&rpc, &signal.mint, &signal.pool_address, None).await {
-                Ok(ctx) => ctx,
-                Err(e) => {
-                    tracing::warn!(
-                        "Failed to fetch pre-buy check context: {}, falling back to individual RPC calls",
-                        e
-                    );
-
-                    let (freeze_result, lp_result, token2022_result, simulate_result) = tokio::join!(
-                        mint_freeze_authority::check(&signal.mint, config.rpc.clone()),
-                        lp_lock_check::check(&signal.pool_address, &signal.dex_program, config.rpc.clone()),
-                        token2022_extensions::check(&signal.mint, config.rpc.clone(), config),
-                        simulate_sell::check(
-                            &signal.mint,
-                            &signal.pool_address,
-                            config.simulate_size_lamports,
-                            config.rpc.clone(),
-                            config.simulate_sell_timeout_ms
-                        )
-                    );
-
-                    let elapsed = start.elapsed();
-                    tracing::info!(
-                        "Pre-buy checks completed in {}ms (fallback mode)",
-                        elapsed.as_millis()
-                    );
-
-                    let verdict = compute_verdict(&freeze_result, &lp_result, &token2022_result, &simulate_result);
-
-                    if is_cacheable(&verdict) {
-                        config.cache.insert(cache_key.clone(), verdict.clone());
-                    }
-
-                    return verdict;
-                }
-            }
+    let context = match build_context(signal, &rpc).await {
+        Ok(ctx) => ctx,
+        Err(e) => {
+            // Fail-closed WITHOUT spawning 4 parallel RPC storms (was the main
+            // rate-limit / timeout amplifier on public RPC).
+            tracing::warn!(
+                mint = %signal.mint,
+                error = %e,
+                "Pre-buy context fetch failed — rejecting (no multi-RPC fallback)"
+            );
+            return RiskGateVerdict::Reject {
+                reason: format!("Failed to fetch pre-buy check context: {}", e),
+            };
         }
     };
 
-    // Log whether we used WS-provided pool bytes (1-RTT) or RPC fetch (2-RTT)
     tracing::info!(
         mint = %signal.mint,
         pool = %signal.pool_address,
         pool_data_from_ws = %context.pool_data_from_ws,
-        "Pre-buy context source"
+        "Pre-buy context ready"
     );
 
-    // Use optimized checks with pre-fetched account data
-    let (freeze_result, lp_result, token2022_result, simulate_result) = tokio::join!(
-        mint_freeze_authority::check_with_context(&signal.mint, &context),
-        lp_lock_check::check_with_context(&signal.pool_address, &signal.dex_program, &context),
-        token2022_extensions::check_with_context(&signal.mint, config, &context),
-        simulate_sell::check(
-            &signal.mint,
-            &signal.pool_address,
-            config.simulate_size_lamports,
-            config.rpc.clone(),
-            config.simulate_sell_timeout_ms
+    // Live trading must never skip honeypot simulation (defense-in-depth if config was cloned).
+    let skip_sim = if config.skip_simulate_sell {
+        if std::env::var("SOLBOT_PAPER_TRADING")
+            .map(|v| v == "false" || v == "0")
+            .unwrap_or(false)
+            || std::env::args().any(|a| a == "--live")
+        {
+            tracing::error!(
+                "skip_simulate_sell requested but live trading is active — forcing simulate_sell ON"
+            );
+            false
+        } else {
+            true
+        }
+    } else {
+        false
+    };
+
+    let (freeze_result, lp_result, token2022_result, simulate_result) = if skip_sim {
+        let (f, l, t) = tokio::join!(
+            mint_freeze_authority::check_with_context(&signal.mint, &context),
+            lp_lock_check::check_with_context(&signal.pool_address, &signal.dex_program, &context),
+            token2022_extensions::check_with_context(&signal.mint, config, &context),
+        );
+        let sim = CheckResult {
+            passed: true,
+            reason: Some("simulate_sell skipped by config".into()),
+            duration_ms: 0,
+        };
+        (f, l, t, sim)
+    } else {
+        tokio::join!(
+            mint_freeze_authority::check_with_context(&signal.mint, &context),
+            lp_lock_check::check_with_context(&signal.pool_address, &signal.dex_program, &context),
+            token2022_extensions::check_with_context(&signal.mint, config, &context),
+            simulate_sell::check_with_context(
+                &signal.mint,
+                &signal.pool_address,
+                config.simulate_size_lamports,
+                config.rpc.clone(),
+                config.simulate_sell_timeout_ms,
+                Some(&context),
+            )
         )
-    );
+    };
 
     let elapsed = start.elapsed();
     tracing::info!(
-        "Pre-buy checks completed in {}ms (optimized mode)",
-        elapsed.as_millis()
+        mint = %signal.mint,
+        freeze_ms = freeze_result.duration_ms,
+        lp_ms = lp_result.duration_ms,
+        token2022_ms = token2022_result.duration_ms,
+        simulate_ms = simulate_result.duration_ms,
+        total_ms = elapsed.as_millis() as u64,
+        freeze_ok = freeze_result.passed,
+        lp_ok = lp_result.passed,
+        token2022_ok = token2022_result.passed,
+        simulate_ok = simulate_result.passed,
+        "Pre-buy checks completed"
     );
 
-    let verdict = compute_verdict(&freeze_result, &lp_result, &token2022_result, &simulate_result);
+    let verdict = compute_verdict(
+        &freeze_result,
+        &lp_result,
+        &token2022_result,
+        &simulate_result,
+    );
 
     if is_cacheable(&verdict) {
         config.cache.insert(cache_key, verdict.clone());
@@ -666,12 +683,34 @@ pub async fn run_pre_buy_checks(signal: &Signal, config: &RiskGateConfig) -> Ris
     verdict
 }
 
-/// Run pre-buy checks with a hard timeout wrapper (Risk Gate 3.5).
-///
-/// Wraps `run_pre_buy_checks` with a 300ms hard timeout (temporary for paper-trading).
-/// TODO: Reduce back to 150ms after batch RPC optimization is implemented.
-/// If the checks exceed this time, the signal is rejected to prevent
-/// slow RPC responses from blocking the trading pipeline.
+async fn build_context(signal: &Signal, rpc: &Arc<RpcClient>) -> anyhow::Result<PreBuyCheckContext> {
+    if let (Some(pool_data), Some(pool_owner_str)) = (
+        &signal.raw_pool_account_data,
+        &signal.raw_pool_account_owner,
+    ) {
+        if let Ok(pool_owner_pk) = Pubkey::try_from(pool_owner_str.as_str()) {
+            match PreBuyCheckContext::from_ws_update(
+                rpc,
+                &signal.mint,
+                pool_data.clone(),
+                pool_owner_pk,
+            )
+            .await
+            {
+                Ok(ctx) => return Ok(ctx),
+                Err(e) => {
+                    tracing::warn!(
+                        "from_ws_update failed ({}), falling back to batch fetch",
+                        e
+                    );
+                }
+            }
+        }
+    }
+
+    PreBuyCheckContext::fetch(rpc, &signal.mint, &signal.pool_address, None).await
+}
+
 pub async fn run_pre_buy_checks_with_timeout(
     signal: &Signal,
     config: &RiskGateConfig,
@@ -688,7 +727,6 @@ pub async fn run_pre_buy_checks_with_timeout(
     {
         Ok(verdict) => verdict,
         Err(_) => {
-            let elapsed = Duration::from_millis(config.pre_buy_checks_timeout_ms);
             tracing::warn!(
                 mint = %signal.mint,
                 pool = %signal.pool_address,
@@ -696,7 +734,10 @@ pub async fn run_pre_buy_checks_with_timeout(
                 config.pre_buy_checks_timeout_ms
             );
             RiskGateVerdict::Reject {
-                reason: format!("Pre-buy checks timeout after {}ms", elapsed.as_millis()),
+                reason: format!(
+                    "Pre-buy checks timeout after {}ms",
+                    config.pre_buy_checks_timeout_ms
+                ),
             }
         }
     }
@@ -704,7 +745,7 @@ pub async fn run_pre_buy_checks_with_timeout(
 
 #[derive(Clone)]
 pub struct RiskGateConfig {
-    pub rpc: std::sync::Arc<solana_rpc_client::nonblocking::rpc_client::RpcClient>,
+    pub rpc: Arc<RpcClient>,
     pub rpc_url: String,
     pub mint_freeze_timeout_ms: u64,
     pub lp_lock_timeout_ms: u64,
@@ -715,30 +756,108 @@ pub struct RiskGateConfig {
     pub token2022_blocklist: Vec<String>,
     pub token2022_allowlist: Vec<String>,
     pub max_signal_age_ms: u64,
+    pub skip_simulate_sell: bool,
     pub cache: RiskGateCache,
 }
 
-impl Default for RiskGateConfig {
-    fn default() -> Self {
+impl RiskGateConfig {
+    /// Build config from env with a shared nonblocking RpcClient (keep-alive).
+    ///
+    /// Timeout defaults:
+    /// - `SOLBOT_PUBLIC_RPC=true` (default): pre_buy=4000ms, simulate=2000ms — paper/debug only
+    /// - `SOLBOT_PUBLIC_RPC=false`: pre_buy=600ms, simulate=150ms — private/co-located RPC
+    pub fn from_shared_rpc(rpc: Arc<RpcClient>, rpc_url: String) -> Self {
+        let public = is_public_rpc_profile();
+        let skip_simulate_sell = std::env::var("SOLBOT_SKIP_SIMULATE_SELL")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+
+        if skip_simulate_sell {
+            tracing::error!(
+                "SOLBOT_SKIP_SIMULATE_SELL is enabled — honeypot simulation DISABLED. \
+                 Paper/debug only. Live start will refuse to boot."
+            );
+        }
+        if public {
+            tracing::warn!(
+                "SOLBOT_PUBLIC_RPC profile active: pre_buy timeout default 4000ms, \
+                 simulate 2000ms. Not suitable for competitive live sniping. \
+                 Set SOLBOT_PUBLIC_RPC=false after switching to private RPC."
+            );
+        }
+
         Self {
-            rpc: std::sync::Arc::new(solana_rpc_client::nonblocking::rpc_client::RpcClient::new(
-                "https://api.mainnet-beta.solana.com".to_string(),
-            )),
-            rpc_url: "https://api.mainnet-beta.solana.com".to_string(),
-            mint_freeze_timeout_ms: 10,     // Further optimized: 15 → 10
-            lp_lock_timeout_ms: 15,         // Further optimized: 20 → 15
-            token2022_timeout_ms: 10,       // Further optimized: 15 → 10
-            simulate_sell_timeout_ms: 150,  // Increased from 30ms to 150ms - baseline RTT is ~43ms, need buffer for jitter
-            pre_buy_checks_timeout_ms: 600, // Reduced from 3000ms - with connection pooling and request coalescing, 600ms is sufficient
-            simulate_size_lamports: 100_000_000, // Reduced: 1B → 100M (faster simulation)
+            rpc,
+            rpc_url,
+            mint_freeze_timeout_ms: 10,
+            lp_lock_timeout_ms: 15,
+            token2022_timeout_ms: 10,
+            simulate_sell_timeout_ms: env_u64(
+                "SOLBOT_SIMULATE_SELL_TIMEOUT_MS",
+                if public { 2_000 } else { 150 },
+            ),
+            pre_buy_checks_timeout_ms: env_u64(
+                "SOLBOT_PRE_BUY_TIMEOUT_MS",
+                if public { 4_000 } else { 600 },
+            ),
+            simulate_size_lamports: 100_000_000,
             token2022_blocklist: vec![
                 "transferFee".to_string(),
                 "permanentDelegate".to_string(),
                 "transferHook".to_string(),
             ],
             token2022_allowlist: vec![],
-            max_signal_age_ms: 0,
-            cache: RiskGateCache::new(10),
+            max_signal_age_ms: env_u64("SOLBOT_MAX_SIGNAL_AGE_MS", if public { 2_000 } else { 500 }),
+            skip_simulate_sell,
+            cache: RiskGateCache::new(30),
         }
+    }
+
+    pub fn from_env() -> Self {
+        let url = resolve_rpc_url();
+        let rpc = Arc::new(RpcClient::new(url.clone()));
+        Self::from_shared_rpc(rpc, url)
+    }
+
+    /// Refuse live trading when honeypot simulation is disabled or public-RPC profile is on.
+    /// Single entry-point for all live hard-guards (called from main before trading starts).
+    pub fn assert_safe_for_live(&self) -> anyhow::Result<()> {
+        self.assert_safe_for_live_with(is_public_rpc_profile())
+    }
+
+    /// Testable core of live hard-guards (public_rpc injected — no env race in unit tests).
+    pub fn assert_safe_for_live_with(&self, public_rpc: bool) -> anyhow::Result<()> {
+        if self.skip_simulate_sell {
+            anyhow::bail!(
+                "Refusing LIVE start: SOLBOT_SKIP_SIMULATE_SELL / skip_simulate_sell=true \
+                 disables honeypot (simulate_sell) protection. Unset the flag for live trading."
+            );
+        }
+        if public_rpc {
+            anyhow::bail!(
+                "Refusing LIVE start: SOLBOT_PUBLIC_RPC=true. Use a private/fast RPC and set \
+                 SOLBOT_PUBLIC_RPC=false (live sniping with 4s budgets is unsafe)."
+            );
+        }
+        if self.max_signal_age_ms == 0 {
+            anyhow::bail!(
+                "Refusing LIVE start: max_signal_age_ms=0 disables pre-submit freshness checks. \
+                 Set SOLBOT_MAX_SIGNAL_AGE_MS (e.g. 500) for live."
+            );
+        }
+        Ok(())
+    }
+}
+
+fn env_u64(key: &str, default: u64) -> u64 {
+    std::env::var(key)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default)
+}
+
+impl Default for RiskGateConfig {
+    fn default() -> Self {
+        Self::from_env()
     }
 }

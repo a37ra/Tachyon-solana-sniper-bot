@@ -19,7 +19,7 @@ mod tests {
         "CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK",
         "LBUZKhRxPF3XUpBCjp4kVn14nz88kZjgL6Xm1xS8bKp",
         "Eo7WjKq67rjJQSZxS6z3YKapzY3eMj6Xy8X5EQVn5UaB",
-        "6EF8rrecthR5Dkzon8Nwu78hRvfX4LctQnUBjWdK8nN2",
+        "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P",
     ];
     const WHITELIST: &[&str] = &["safe_wallet_1", "safe_wallet_2"];
     const MAX_SIZE: u64 = 10_000_000_000; // 10 SOL

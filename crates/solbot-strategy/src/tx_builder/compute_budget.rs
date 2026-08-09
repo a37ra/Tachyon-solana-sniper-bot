@@ -50,7 +50,7 @@ pub fn estimate_compute_units(dex_program_id: &str) -> u32 {
         // Meteora Dynamic AMM
         "Eo7WjKq67rjJQSZxS6z3YKapzY3eMj6Xy8X5EQVn5UaB" => 250_000,
         // Pump.fun bonding curve
-        "6EF8rrecthR5Dkzon8Nwu78hRvfX4LctQnUBjWdK8nN2" => 200_000,
+        "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P" => 200_000,
         // Unknown — generous default
         _ => DEFAULT_COMPUTE_UNITS,
     }

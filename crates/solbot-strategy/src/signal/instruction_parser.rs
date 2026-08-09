@@ -114,7 +114,7 @@ fn parse_instruction_by_program(
     }
 
     // Pump.fun
-    if program_str == "6EF8rrecthR5Dkzon8Nwu78hRvfX4LctQnUBjWdK8nN2" {
+    if program_str == "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P" {
         return parse_pump_fun(data, account_keys, account_indices, program_str);
     }
 
@@ -401,10 +401,10 @@ mod tests {
 
     #[test]
     fn test_parse_pump_fun_program_id() {
-        let program_id = Pubkey::from_str("6EF8rrecthR5Dkzon8Nwu78hRvfX4LctQnUBjWdK8nN2").unwrap();
+        let program_id = Pubkey::from_str("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P").unwrap();
         assert_eq!(
             program_id.to_string(),
-            "6EF8rrecthR5Dkzon8Nwu78hRvfX4LctQnUBjWdK8nN2"
+            "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"
         );
     }
 }
