@@ -72,18 +72,9 @@ pub async fn check(mint: &str, rpc: Arc<RpcClient>) -> CheckResult {
 
     let is_token_2022 = owner == TOKEN_2022_PROGRAM_ID;
 
-    // SPL Token Mint layout (82 bytes):
-    //   [0..4]   COption<Pubkey> mint_authority tag
-    //   [4..36]  mint_authority pubkey (if tag == 1)
-    //   [36..44] supply (u64)
-    //   [44]     decimals (u8)
-    //   [45]     is_initialized (bool)
-    //   [46..50] COption<Pubkey> freeze_authority tag
-    //   [50..82] freeze_authority pubkey (if tag == 1)
-    //
-    // Token-2022 uses the same base layout but may have TLV extensions
-    // after byte 82. We only need the first 82 bytes for this check.
-    let mint_data = spl_token::state::Mint::unpack(&account_info.data);
+    // Token-2022: base Mint is first 82 bytes; TLV extensions follow.
+    // Mint::unpack requires exact LEN and fails on extended accounts.
+    let mint_data = parse_mint_base(&account_info.data);
 
     match mint_data {
         Ok(mint_state) => {
@@ -204,9 +195,11 @@ pub async fn check_with_context(
         };
     }
 
-    let is_token_2022 = owner == TOKEN_2022_PROGRAM_ID;
+    let _is_token_2022 = owner == TOKEN_2022_PROGRAM_ID;
 
-    let mint_data = spl_token::state::Mint::unpack(&account_data);
+    // Token-2022 mints are longer than Mint::LEN due to TLV extensions.
+    // Base Mint layout is always the first 82 bytes for both programs.
+    let mint_data = parse_mint_base(&account_data);
 
     match mint_data {
         Ok(mint_state) => {
@@ -254,6 +247,20 @@ pub async fn check_with_context(
     }
 }
 
+/// Parse base SPL / Token-2022 Mint (first 82 bytes only).
+fn parse_mint_base(data: &[u8]) -> Result<spl_token::state::Mint, String> {
+    use solana_sdk::program_pack::Pack;
+    if data.len() < spl_token::state::Mint::LEN {
+        return Err(format!(
+            "mint data too short: {} < {}",
+            data.len(),
+            spl_token::state::Mint::LEN
+        ));
+    }
+    spl_token::state::Mint::unpack_from_slice(&data[..spl_token::state::Mint::LEN])
+        .map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod tests {
 
@@ -281,6 +288,16 @@ mod tests {
         ));
         assert!(!result.passed);
         assert!(result.reason.unwrap().contains("Invalid mint pubkey"));
+    }
+
+    #[test]
+    fn parse_mint_base_accepts_token2022_sized_buffer() {
+        // Minimal initialized mint base (82 bytes) + fake TLV padding (Token-2022 style).
+        let mut data = vec![0u8; 82 + 64];
+        data[45] = 1; // is_initialized
+        let m = parse_mint_base(&data).expect("base mint should parse from extended buffer");
+        assert!(m.mint_authority.is_none());
+        assert!(m.freeze_authority.is_none());
     }
 
     /// Integration test — requires network. Run with:

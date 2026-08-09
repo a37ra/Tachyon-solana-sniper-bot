@@ -154,10 +154,18 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
-    tracing::info!("Actor system & Strategy services initialized");
+    solbot_strategy::signal::pipeline_stats::spawn_stats_logger();
+    tracing::info!(
+        public_rpc = %std::env::var("SOLBOT_PUBLIC_RPC").unwrap_or_default(),
+        max_signal_age_ms = %std::env::var("SOLBOT_MAX_SIGNAL_AGE_MS").unwrap_or_else(|_| "2000".into()),
+        rpc_url_host = %rpc_url.split('?').next().unwrap_or(&rpc_url),
+        "Actor system ready (pipeline stats are GLOBAL, not per-listener)"
+    );
 
     tokio::signal::ctrl_c().await?;
     tracing::info!("Received shutdown signal");
+    let final_stats = solbot_strategy::signal::pipeline_stats::snapshot();
+    tracing::info!(?final_stats, "PIPELINE STATS final");
 
     Ok(())
 }
@@ -178,13 +186,23 @@ async fn process_signals(
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc as StdArc;
 
+    use solbot_strategy::signal::pipeline_stats;
     let signal_count = StdArc::new(AtomicUsize::new(0));
+    // Throughput: permits / mean_check_latency. After noise filter, default 5 is enough
+    // for paper; live private RPC can raise via SOLBOT_MAX_CONCURRENT_SIGNALS.
     let max_concurrent = env::var("SOLBOT_MAX_CONCURRENT_SIGNALS")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or(3);
+        .unwrap_or(5);
     let semaphore = StdArc::new(tokio::sync::Semaphore::new(max_concurrent));
+    // Bound memory: mpsc from listeners is 256; if queue is full, senders await (backpressure).
+    // Additional hard drop when receiver-side backlog exceeds this while waiting for permit.
+    let max_queue_depth: usize = env::var("SOLBOT_MAX_QUEUE_DEPTH")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(64);
 
+    // Paper public profile default 2000ms; override via SOLBOT_MAX_SIGNAL_AGE_MS.
     let max_signal_age_ms: f64 = env::var("SOLBOT_MAX_SIGNAL_AGE_MS")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -199,10 +217,26 @@ async fn process_signals(
             0.0
         };
 
+        if queue_depth > max_queue_depth {
+            let seq_num = signal_count.fetch_add(1, Ordering::SeqCst);
+            pipeline_stats::inc_drop("queue_overflow");
+            tracing::warn!(
+                "[SIGNAL DROPPED - QUEUE] seq={}, mint={}, queue_depth={} > max={}",
+                seq_num,
+                signal.mint,
+                queue_depth,
+                max_queue_depth
+            );
+            continue;
+        }
+
         if inbound_latency > max_signal_age_ms {
             let seq_num = signal_count.fetch_add(1, Ordering::SeqCst);
+            let age_u = inbound_latency as u64;
+            pipeline_stats::inc_drop("stale");
+            pipeline_stats::record_stale_age_ms(age_u);
             tracing::warn!(
-                "[SIGNAL DROPPED - STALE] seq={}, mint={}, inbound_age_ms={:.2} > {}ms",
+                "[SIGNAL DROPPED - STALE] seq={}, mint={}, inbound_age_ms={:.2} > {}ms threshold",
                 seq_num,
                 signal.mint,
                 inbound_latency,
@@ -211,12 +245,13 @@ async fn process_signals(
             continue;
         }
 
-        const SYSTEM_PROGRAM: &str = "11111111111111111111111111111111";
-        const NATIVE_MINT: &str = "So11111111111111111111111111111111111111112";
-        if signal.mint == SYSTEM_PROGRAM || signal.mint == NATIVE_MINT {
+        if !solbot_strategy::signal::pool_signal::is_plausible_spl_mint(
+            &solana_sdk::pubkey::Pubkey::try_from(signal.mint.as_str()).unwrap_or_default(),
+        ) {
             let seq_num = signal_count.fetch_add(1, Ordering::SeqCst);
+            pipeline_stats::inc_drop("bad_mint");
             tracing::warn!(
-                "[SIGNAL DROPPED - SYSTEM/NATIVE] seq={}, mint={}",
+                "[SIGNAL DROPPED - BAD_MINT] seq={}, mint={}",
                 seq_num,
                 signal.mint
             );
@@ -224,6 +259,7 @@ async fn process_signals(
         }
 
         let seq_num = signal_count.fetch_add(1, Ordering::SeqCst);
+        pipeline_stats::inc_queued();
         tracing::info!(
             "[SIGNAL QUEUED] seq={}, mint={}, pool={}, dex={}, queue_depth={}, inbound_age_ms={:.2}, has_raw_pool={}",
             seq_num,
@@ -267,6 +303,7 @@ async fn process_signals(
 
             match &verdict {
                 solbot_strategy::risk_gate::RiskGateVerdict::Accept => {
+                    pipeline_stats::inc_accept();
                     tracing::info!(
                         seq = seq_num,
                         mint = %signal.mint,
@@ -275,11 +312,14 @@ async fn process_signals(
                     );
                 }
                 solbot_strategy::risk_gate::RiskGateVerdict::Reject { reason } => {
+                    let bucket = reject_reason_bucket(reason);
+                    pipeline_stats::inc_reject(&bucket);
                     tracing::warn!(
                         seq = seq_num,
                         mint = %signal.mint,
                         anti_rug_us,
                         reason = %reason,
+                        bucket = %bucket,
                         "Risk gate REJECT"
                     );
                 }
@@ -329,6 +369,36 @@ async fn process_signals(
                 inbound_latency
             );
         });
+    }
+}
+
+fn reject_reason_bucket(reason: &str) -> String {
+    let r = reason.to_lowercase();
+    if r.contains("stale signal") {
+        "stale".into()
+    } else if r.contains("timeout") || r.contains("timed out") {
+        "rpc_timeout".into()
+    } else if r.contains("mint account not available") || r.contains("not available in context") {
+        "mint_unavailable".into()
+    } else if r.contains("failed to parse mint") || r.contains("invalidstate") {
+        "mint_parse".into()
+    } else if r.contains("not spl token") {
+        "bad_mint_owner".into()
+    } else if r.contains("freeze") || r.contains("mint_authority") || r.contains("mint authority") {
+        "freeze_or_mint_auth".into()
+    } else if r.contains("lp_lock") || r.contains("lp lock") || r.contains("unsupported dex program for lp") {
+        "lp_lock".into()
+    } else if r.contains("token2022") || r.contains("extension") {
+        "token2022".into()
+    } else if r.contains("unsupported dex program for simulation") {
+        "simulate_unsupported_dex".into()
+    } else if r.contains("honeypot") || r.contains("simulate") || r.contains("tax") {
+        "simulate_sell".into()
+    } else if r.contains("failed to fetch pre-buy") {
+        "context_fetch".into()
+    } else {
+        // Keep raw prefix so "other" never swallows unknown reasons silently in greps.
+        format!("other:{}", reason.chars().take(48).collect::<String>())
     }
 }
 

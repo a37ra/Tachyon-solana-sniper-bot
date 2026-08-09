@@ -260,6 +260,8 @@ fn extract_lp_mint(
         // v2: LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo
         "LBUZKhRxPF3XUpBCjp4kVn14nz88kZjgL6Xm1xS8bKp"
         | "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo" => Ok(LpMintResult::NotApplicableDlmm),
+        // Meteora DAMM v2 — no classic fungible LP mint for our check
+        "cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG" => Ok(LpMintResult::NotApplicableDlmm),
         // Pump.fun: bonding curve holds reserves; no LP mint until Raydium migration
         "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P" => Ok(LpMintResult::NotApplicableBondingCurve),
         _ => {

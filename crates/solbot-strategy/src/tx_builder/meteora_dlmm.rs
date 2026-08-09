@@ -11,8 +11,9 @@ use solana_instruction::{AccountMeta, Instruction};
 use solana_pubkey::Pubkey;
 use solana_sdk_ids::system_program;
 
+/// Mainnet DLMM program (v2). Legacy kVn14… id still appears in older docs.
 pub const METEORA_DLMM_PROGRAM: Pubkey =
-    solana_pubkey::pubkey!("LBUZKhRxPF3XUpBCjp4kVn14nz88kZjgL6Xm1xS8bKp");
+    solana_pubkey::pubkey!("LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo");
 
 /// Anchor discriminator for `swap` instruction.
 const SWAP_DISCRIMINATOR: [u8; 8] = [0xf8, 0xc6, 0x9e, 0x91, 0xe1, 0x75, 0x87, 0xc8];
@@ -43,11 +44,12 @@ impl DlmmPoolState {
         Ok(Self {
             lb_pair: *lb_pair_address,
             bin_array_bitmap_extension: None,
-            token_x_mint: read_pubkey(data, offset + 32 * 2)?,
-            token_y_mint: read_pubkey(data, offset + 32 * 3)?,
-            reserve_x: read_pubkey(data, offset + 32 * 4)?,
-            reserve_y: read_pubkey(data, offset + 32 * 5)?,
-            oracle: read_pubkey(data, offset + 32 * 6)?,
+            // Mainnet LbPair (904 bytes): token_x @ 88, token_y @ 120 (verified dump 2026-08-09).
+            token_x_mint: read_pubkey(data, 88)?,
+            token_y_mint: read_pubkey(data, 120)?,
+            reserve_x: read_pubkey(data, 128)?,
+            reserve_y: read_pubkey(data, 160)?,
+            oracle: read_pubkey(data, offset + 32 * 6).unwrap_or_default(),
             active_id: i32::from_le_bytes(
                 data.get(offset + 32 * 7..offset + 32 * 7 + 4)
                     .and_then(|s| s.try_into().ok())

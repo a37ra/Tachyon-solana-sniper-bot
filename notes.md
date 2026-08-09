@@ -49,6 +49,21 @@ Paper:
 SIGNAL_SOURCE=helius_ws cargo run -p solbot-strategy --release -- --paper
 ```
 
+## Paper 90s post-filter diagnosis (2026-08-09)
+
+**Profile of that run:** `SOLBOT_PUBLIC_RPC=true` (paper default), Helius HTTP via
+`SOLBOT_RPC_URL`, budgets simulate=2000ms / pre_buy=4000ms, `max_signal_age_ms=2000`.
+
+| Bucket | Count | Cause |
+|---|---|---|
+| rpc_timeout | ~104 | Public/free RPS + 2–4s budgets under concurrent checks — **not** a new logic bug |
+| mint_unavailable | 70 | **Layout bug** DLMM mint@72/104 (real @88/120); DAMM v2 408B junk + wrong offsets — **fixed** |
+| DROP_STALE + reject stale | 207+66 | Threshold **2000ms**; ages p50≈2562 p90≈3398 — wait in semaphore + check latency |
+| simulate_sell | 27 | Real Custom() honeypot-ish rejects |
+| freeze_mint_auth | 11 | Real authority checks (e.g. USDC) |
+
+Global stats: `signal/pipeline_stats.rs` → log line `PIPELINE STATS (global cumulative)`.
+
 ## Live hard-guards (abort on start)
 
 Live boot **refuses** if any of:
