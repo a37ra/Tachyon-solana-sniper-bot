@@ -1,13 +1,16 @@
 //! Raydium pool creation listener (AMM v4, CP-MM, CLMM).
 //!
-//! Subscribes to Raydium program account updates via Geyser gRPC
-//! with automatic reconnection and exponential backoff.
+//! Subscribes via programSubscribe / Geyser, then applies **strict** pool-state
+//! filters (size + mint + first-seen) so swap/tick-array updates never become signals.
 
 use crate::signal::geyser_client::{AccountUpdate, GeyserClient, GeyserConfig};
 use crate::signal::helius_ws_client::{HeliusWsClient, HeliusWsConfig};
+use crate::signal::pool_signal::{
+    self, SeenPools, RAYDIUM_AMM_V4_SIZE, RAYDIUM_CLMM_POOL_SIZE, RAYDIUM_CPMM_SIZE_MAX,
+    RAYDIUM_CPMM_SIZE_MIN,
+};
 use crate::signal::signal_validator::SignalValidator;
 use anyhow::{Context, Result};
-use chrono::Utc;
 use solana_pubkey::Pubkey;
 use solbot_common::types::Signal;
 use std::str::FromStr;
@@ -24,6 +27,7 @@ pub struct RaydiumListener {
     helius_ws_config: HeliusWsConfig,
     signal_source: String,
     signal_validator: Arc<SignalValidator>,
+    seen_pools: SeenPools,
 }
 
 impl Default for RaydiumListener {
@@ -36,36 +40,27 @@ impl RaydiumListener {
     pub fn new() -> Self {
         let signal_source =
             std::env::var("SIGNAL_SOURCE").unwrap_or_else(|_| "helius_ws".to_string());
-
         Self {
             geyser_config: GeyserConfig::default(),
             helius_ws_config: HeliusWsConfig::default(),
             signal_source,
             signal_validator: Arc::new(SignalValidator::with_default()),
+            seen_pools: SeenPools::with_warmup_secs(0),
         }
     }
 
     pub fn with_geyser_config(config: GeyserConfig) -> Self {
-        let signal_source =
-            std::env::var("SIGNAL_SOURCE").unwrap_or_else(|_| "helius_ws".to_string());
-
         Self {
             geyser_config: config,
-            helius_ws_config: HeliusWsConfig::default(),
-            signal_source,
-            signal_validator: Arc::new(SignalValidator::with_default()),
+            ..Self::new()
         }
     }
 
     pub fn with_validator(config: GeyserConfig, validator: Arc<SignalValidator>) -> Self {
-        let signal_source =
-            std::env::var("SIGNAL_SOURCE").unwrap_or_else(|_| "helius_ws".to_string());
-
         Self {
             geyser_config: config,
-            helius_ws_config: HeliusWsConfig::default(),
-            signal_source,
             signal_validator: validator,
+            ..Self::new()
         }
     }
 
@@ -80,17 +75,17 @@ impl RaydiumListener {
             helius_ws_config,
             signal_source,
             signal_validator: validator,
+            seen_pools: SeenPools::with_warmup_secs(0),
         }
     }
 
-    /// Subscribe to Raydium pool creation events across all 3 variants.
     pub async fn subscribe_to_pool_creation(&self) -> Result<mpsc::Receiver<Signal>> {
-        let (tx, rx) = mpsc::channel(100);
+        let (tx, rx) = mpsc::channel(256);
         let geyser_config = self.geyser_config.clone();
         let helius_ws_config = self.helius_ws_config.clone();
         let signal_source = self.signal_source.clone();
+        let seen = self.seen_pools.clone();
 
-        // Collect all Raydium program IDs
         let program_ids = vec![
             Pubkey::from_str(RAYDIUM_AMM_V4_PROGRAM)?,
             Pubkey::from_str(RAYDIUM_CPMM_PROGRAM)?,
@@ -101,7 +96,7 @@ impl RaydiumListener {
 
         tokio::spawn(async move {
             let mut account_updates = if signal_source == "helius_ws" {
-                info!("Starting Raydium pool creation listener via Helius WebSocket");
+                info!("Starting Raydium pool listener (strict filter) via Helius WS");
                 let helius_client = HeliusWsClient::new(helius_ws_config);
                 helius_client
                     .subscribe_to_programs(program_ids)
@@ -109,7 +104,7 @@ impl RaydiumListener {
                     .context("Failed to subscribe to Helius WebSocket")
                     .unwrap()
             } else {
-                info!("Starting Raydium pool creation listener via Geyser gRPC");
+                info!("Starting Raydium pool listener (strict filter) via Geyser gRPC");
                 let geyser_client = GeyserClient::new(geyser_config);
                 geyser_client
                     .subscribe_to_programs(program_ids, None, false)
@@ -119,28 +114,20 @@ impl RaydiumListener {
             };
 
             while let Some(update) = account_updates.recv().await {
-                // Update current slot from account update
                 validator.update_current_slot(update.slot);
 
-                if let Some(signal) = Self::parse_raydium_account(update) {
-                    // Validate signal age
+                if let Some(signal) = parse_raydium_account(update, &signal_source, &seen) {
                     match validator.validate_signal(&signal) {
                         Ok(true) => {
                             if tx.send(signal).await.is_err() {
-                                info!("Receiver dropped, closing Raydium listener loop");
+                                info!("Receiver dropped, closing Raydium listener");
                                 break;
                             }
                         }
                         Ok(false) => {
-                            warn!(
-                                mint = %signal.mint,
-                                slot = signal.slot,
-                                "Signal filtered by validator (too old)"
-                            );
+                            warn!(mint = %signal.mint, "Raydium signal filtered (slot age)");
                         }
-                        Err(e) => {
-                            warn!(error = %e, mint = %signal.mint, "Error validating signal");
-                        }
+                        Err(e) => warn!(error = %e, "Raydium signal validation error"),
                     }
                 }
             }
@@ -148,72 +135,85 @@ impl RaydiumListener {
 
         Ok(rx)
     }
-
-    /// Parse Raydium account update to extract pool creation signal.
-    fn parse_raydium_account(update: AccountUpdate) -> Option<Signal> {
-        let signal_source =
-            std::env::var("SIGNAL_SOURCE").unwrap_or_else(|_| "helius_ws".to_string());
-        let account_data = update.data;
-        let owner_str = update.owner.to_string();
-
-        // Raydium AMM v4 pool account size is 752 bytes
-        if account_data.len() >= 752 && owner_str == RAYDIUM_AMM_V4_PROGRAM {
-            if let Ok(coin_mint) = read_pubkey_bytes(&account_data, 400) {
-                return Some(Signal {
-                    mint: coin_mint.to_string(),
-                    pool_address: update.account.to_string(),
-                    dex_program: update.owner.to_string(),
-                    signal_source: signal_source.clone(),
-                    slot: update.slot,
-                    received_at: update.timestamp_ms,
-                    raw_pool_account_data: Some(account_data.clone()),
-                    raw_pool_account_owner: Some(update.owner.to_string()),
-                });
-            }
-        }
-
-        // Raydium CP-MM pool account (~312 bytes)
-        // Layout: discriminator(8) + pool_id(8) + authority(32) + token_0_mint(32) + token_1_mint(32)
-        if account_data.len() >= 312 && owner_str == RAYDIUM_CPMM_PROGRAM {
-            if let Ok(coin_mint) = read_pubkey_bytes(&account_data, 72) {
-                return Some(Signal {
-                    mint: coin_mint.to_string(),
-                    pool_address: update.account.to_string(),
-                    dex_program: update.owner.to_string(),
-                    signal_source: signal_source.clone(),
-                    slot: update.slot,
-                    received_at: update.timestamp_ms,
-                    raw_pool_account_data: Some(account_data.clone()),
-                    raw_pool_account_owner: Some(update.owner.to_string()),
-                });
-            }
-        }
-
-        // Raydium CLMM pool account
-        // Layout: discriminator(8) + pool_creator(32) + amm_config(32) + token_mint_0(32)
-        if account_data.len() >= 104 && owner_str == RAYDIUM_CLMM_PROGRAM {
-            if let Ok(coin_mint) = read_pubkey_bytes(&account_data, 72) {
-                return Some(Signal {
-                    mint: coin_mint.to_string(),
-                    pool_address: update.account.to_string(),
-                    dex_program: update.owner.to_string(),
-                    signal_source: signal_source.clone(),
-                    slot: update.slot,
-                    received_at: update.timestamp_ms,
-                    raw_pool_account_data: Some(account_data.clone()),
-                    raw_pool_account_owner: Some(update.owner.to_string()),
-                });
-            }
-        }
-
-        None
-    }
 }
 
-fn read_pubkey_bytes(data: &[u8], offset: usize) -> Result<Pubkey> {
-    if offset + 32 > data.len() {
-        anyhow::bail!("Pubkey offset out of bounds");
+/// Public for unit tests — full "is this a new Raydium pool?" decision.
+pub fn parse_raydium_account(
+    update: AccountUpdate,
+    signal_source: &str,
+    seen: &SeenPools,
+) -> Option<Signal> {
+    let owner = update.owner;
+    let owner_str = owner.to_string();
+    let data = &update.data;
+
+    if owner_str == RAYDIUM_AMM_V4_PROGRAM {
+        return pool_signal::try_parse_raydium_amm_v4(
+            update.account,
+            owner,
+            data,
+            update.slot,
+            update.timestamp_ms,
+            signal_source,
+            seen,
+        );
     }
-    let bytes: [u8; 32] = data[offset..offset + 32].try_into()?;
-    Ok(Pubkey::new_from_array(bytes))
+    if owner_str == RAYDIUM_CPMM_PROGRAM {
+        return pool_signal::try_parse_raydium_cpmm(
+            update.account,
+            owner,
+            data,
+            update.slot,
+            update.timestamp_ms,
+            signal_source,
+            seen,
+        );
+    }
+    if owner_str == RAYDIUM_CLMM_PROGRAM {
+        return pool_signal::try_parse_raydium_clmm(
+            update.account,
+            owner,
+            data,
+            update.slot,
+            update.timestamp_ms,
+            signal_source,
+            seen,
+        );
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::signal::geyser_client::AccountUpdate;
+
+    fn upd(owner: &str, data: Vec<u8>) -> AccountUpdate {
+        AccountUpdate {
+            account: Pubkey::new_unique(),
+            slot: 1,
+            lamports: 0,
+            data,
+            owner: Pubkey::from_str(owner).unwrap(),
+            executable: false,
+            rent_epoch: 0,
+            timestamp_ms: 1,
+        }
+    }
+
+    #[test]
+    fn garbage_clmm_tick_array_does_not_emit_signal() {
+        let seen = SeenPools::with_warmup_secs(0);
+        let u = upd(RAYDIUM_CLMM_PROGRAM, vec![0u8; 10240]);
+        assert!(parse_raydium_account(u, "test", &seen).is_none());
+    }
+
+    #[test]
+    fn wrong_size_amm_v4_no_signal() {
+        let seen = SeenPools::with_warmup_secs(0);
+        let u = upd(RAYDIUM_AMM_V4_PROGRAM, vec![0u8; 100]);
+        assert!(parse_raydium_account(u, "test", &seen).is_none());
+        assert_eq!(RAYDIUM_AMM_V4_SIZE, 752);
+        let _ = (RAYDIUM_CLMM_POOL_SIZE, RAYDIUM_CPMM_SIZE_MIN, RAYDIUM_CPMM_SIZE_MAX);
+    }
 }

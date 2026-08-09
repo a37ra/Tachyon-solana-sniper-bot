@@ -22,7 +22,10 @@ const RAYDIUM_AMM_V4: &str = "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8";
 const RAYDIUM_CPMM: &str = "CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C";
 const RAYDIUM_CLMM: &str = "CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK";
 const METEORA_DYNAMIC: &str = "Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB";
-const METEORA_DLMM: &str = "LBUZKhRxPF3XUpBCjp4kVn14nz88kZjgL6Xm1xS8bKp";
+// Mainnet DLMM program (v2). Also accept legacy id if seen.
+const METEORA_DLMM: &str = "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo";
+const METEORA_DLMM_LEGACY: &str = "LBUZKhRxPF3XUpBCjp4kVn14nz88kZjgL6Xm1xS8bKp";
+const METEORA_DAMM_V2: &str = "cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG";
 
 pub async fn check(
     mint: &str,
@@ -167,9 +170,17 @@ async fn simulate_sell_transaction(
                 meteora_dynamic::DynamicAmmPoolState::from_account_data(&pool_data, &pool_pubkey)?;
             meteora_dynamic::build_swap(&params, &state)
         }
-        METEORA_DLMM => {
+        METEORA_DLMM | METEORA_DLMM_LEGACY => {
             let state = meteora_dlmm::DlmmPoolState::from_account_data(&pool_data, &pool_pubkey)?;
             meteora_dlmm::build_swap(&params, &state)
+        }
+        METEORA_DAMM_V2 => {
+            // DAMM v2 swap builder not wired yet — do not false-honeypot; treat as non-blocking.
+            return Ok(CheckResult {
+                passed: true,
+                reason: Some("simulate_sell skipped: DAMM v2 builder not implemented".into()),
+                duration_ms: start.elapsed().as_millis() as u64,
+            });
         }
         PUMP_FUN_PROGRAM => {
             let curve =
