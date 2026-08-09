@@ -103,13 +103,18 @@ fn parse_instruction_by_program(
         return parse_raydium_clmm(data, account_keys, account_indices, program_str);
     }
 
-    // Meteora DLMM
-    if program_str == "LBUZKhRxPF3XUpBCjp4kVn14nz88kZjgL6Xm1xS8bKp" {
+    // Meteora DLMM (mainnet v2 + legacy)
+    if program_str == "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo"
+        || program_str == "LBUZKhRxPF3XUpBCjp4kVn14nz88kZjgL6Xm1xS8bKp"
+    {
         return parse_meteora_dlmm(data, account_keys, account_indices, program_str);
     }
 
-    // Meteora Dynamic AMM
-    if program_str == "Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB" {
+    // Meteora DAMM v2 + legacy Dynamic AMM
+    if program_str == "cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG"
+        || program_str == "Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB"
+        || program_str == "Eo7WjKq67rjJQSZxS6z3YKapzY3eMj6Xy8X5EQVn5UaB"
+    {
         return parse_meteora_dynamic(data, account_keys, account_indices, program_str);
     }
 

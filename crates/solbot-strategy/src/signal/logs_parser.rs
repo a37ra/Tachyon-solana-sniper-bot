@@ -171,10 +171,17 @@ fn parse_instruction_log(
         | "Buy"
         | "Sell"
         | "BuyExactQuoteInV2" => InstructionType::Swap,
-        // Pool creation instructions
-        "InitializePool" | "CreatePool" => InstructionType::InitializePool,
-        "InitBondingCurve" => InstructionType::InitBondingCurve,
-        "Migrate" => InstructionType::Migrate,
+        // Pool creation / bonding curve create (names vary by DEX)
+        "InitializePool"
+        | "CreatePool"
+        | "Initialize"
+        | "InitializeCustomizablePermissionlessLbPair"
+        | "InitializeLbPair"
+        | "Create"
+        | "CreateV2"
+        | "initialize2" => InstructionType::InitializePool,
+        "InitBondingCurve" | "create" => InstructionType::InitBondingCurve,
+        "Migrate" | "MigratePool" | "migrate" => InstructionType::Migrate,
         "AddLiquidity" => InstructionType::AddLiquidity,
         "RemoveLiquidity" => InstructionType::RemoveLiquidity,
         _ => {

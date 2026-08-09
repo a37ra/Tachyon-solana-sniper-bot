@@ -36,7 +36,8 @@ impl Default for DexReadinessConfig {
         Self {
             raydium_amm_v4: DexLiveReadiness::Ready,
             raydium_cpmm: DexLiveReadiness::Ready,
-            meteora_dlmm: DexLiveReadiness::Approximate, // Single-bin approximation
+            // Single-bin pricing approximation until full bin traversal is wired.
+            meteora_dlmm: DexLiveReadiness::Approximate,
         }
     }
 }

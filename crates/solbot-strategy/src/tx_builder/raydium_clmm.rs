@@ -378,24 +378,12 @@ pub fn build_swap(
     let start_idx = tick_array_start_index(pool_state.tick_current, pool_state.tick_spacing);
     let mut tick_arrays = Vec::new();
 
-    println!("📊 Using bitmap navigation:");
-    println!("  tick_current: {}", pool_state.tick_current);
-    println!("  start_idx: {}", start_idx);
-    println!("  tick_spacing: {}", pool_state.tick_spacing);
-    println!("  a_to_b: {}", a_to_b);
-
-    // Add current tick array
+    // Current + up to 4 adjacent initialized tick arrays from bitmap.
     let current_tick_array_addr = derive_tick_array_address(pool_id, start_idx)?;
     tick_arrays.push(current_tick_array_addr);
-    println!(
-        "  Current tick array: idx={}, addr={}",
-        start_idx, current_tick_array_addr
-    );
 
-    // Find next initialized tick arrays using bitmap
     let mut last_idx = start_idx;
     let zero_for_one = a_to_b;
-
     for _ in 0..4 {
         if let Some(next_idx) = next_initialized_tick_array_start_index(
             &pool_state.tick_array_bitmap,
@@ -403,15 +391,9 @@ pub fn build_swap(
             pool_state.tick_spacing,
             zero_for_one,
         ) {
-            let next_addr = derive_tick_array_address(pool_id, next_idx)?;
-            tick_arrays.push(next_addr);
-            println!(
-                "  Found next tick array: idx={}, addr={}",
-                next_idx, next_addr
-            );
+            tick_arrays.push(derive_tick_array_address(pool_id, next_idx)?);
             last_idx = next_idx;
         } else {
-            println!("  No more initialized tick arrays found in bitmap");
             break;
         }
     }
@@ -420,10 +402,12 @@ pub fn build_swap(
         bail!("No initialized tick arrays found via bitmap navigation");
     }
 
-    println!("📊 Tick arrays found:");
-    for (i, addr) in tick_arrays.iter().enumerate() {
-        println!("  [{}]: {}", i, addr);
-    }
+    tracing::debug!(
+        tick_current = pool_state.tick_current,
+        tick_spacing = pool_state.tick_spacing,
+        arrays = tick_arrays.len(),
+        "CLMM tick array selection"
+    );
 
     // sqrt_price_limit: 0 means no limit
     let sqrt_price_limit: u128 = 0;

@@ -1,7 +1,9 @@
+pub mod create_ix_source;
 pub mod dedup;
 pub mod dex_listeners;
 pub mod geyser_client;
 pub mod helius_ws_client;
+pub mod instruction_parser;
 pub mod logs_parser;
 pub mod pipeline_stats;
 pub mod pool_signal;

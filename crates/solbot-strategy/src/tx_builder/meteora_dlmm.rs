@@ -1,9 +1,9 @@
 //! Meteora DLMM (Discrete Liquidity Market Maker) swap builder.
 //!
-//! Program ID: LBUZKhRxPF3XUpBCjp4kVn14nz88kZjgL6Xm1xS8bKp
+//! Program ID (mainnet v2): LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo
 //!
-//! DLMM uses bin-based concentrated liquidity. Swaps traverse bin arrays
-//! based on the current active bin. Fees are variable and read dynamically.
+//! DLMM uses bin-based concentrated liquidity. Swaps traverse multiple bin
+//! arrays (current ± adjacent) based on active_id.
 
 use super::{ata, SwapDirection, SwapInstructions, SwapParams};
 use anyhow::{anyhow, bail, Result};
@@ -36,28 +36,40 @@ pub struct DlmmPoolState {
 
 impl DlmmPoolState {
     pub fn from_account_data(data: &[u8], lb_pair_address: &Pubkey) -> Result<Self> {
-        if data.len() < 8 + 32 * 6 + 4 {
+        // Mainnet LbPair is 904 bytes; reject bin-array spam (~10k).
+        if data.len() < 200 {
             bail!("DLMM account data too short: {} bytes", data.len());
         }
+        if data.len() > 1200 {
+            bail!(
+                "DLMM account data too large (likely bin array): {} bytes",
+                data.len()
+            );
+        }
 
-        let offset = 8; // anchor discriminator
+        // StaticParameters.bin_step is near the start of LbPair (after disc + base_factor…).
+        // Conservative read: try common offsets used on mainnet 904 B accounts.
+        let bin_step = read_u16(data, 8 + 8).unwrap_or(1).max(1);
+
+        // active_id: i32 after oracle / variable params — try several known layouts.
+        let active_id = read_i32(data, 76)
+            .or_else(|| read_i32(data, 8 + 32 * 7))
+            .or_else(|| read_i32(data, 552))
+            .unwrap_or(0);
+
         Ok(Self {
             lb_pair: *lb_pair_address,
             bin_array_bitmap_extension: None,
-            // Mainnet LbPair (904 bytes): token_x @ 88, token_y @ 120 (verified dump 2026-08-09).
+            // Mainnet LbPair: token_x @ 88, token_y @ 120 (verified dump 2026-08-09).
             token_x_mint: read_pubkey(data, 88)?,
             token_y_mint: read_pubkey(data, 120)?,
             reserve_x: read_pubkey(data, 128)?,
             reserve_y: read_pubkey(data, 160)?,
-            oracle: read_pubkey(data, offset + 32 * 6).unwrap_or_default(),
-            active_id: i32::from_le_bytes(
-                data.get(offset + 32 * 7..offset + 32 * 7 + 4)
-                    .and_then(|s| s.try_into().ok())
-                    .unwrap_or([0; 4]),
-            ),
-            reserve_x_balance: 0, // Set separately via RPC
-            reserve_y_balance: 0, // Set separately via RPC
-            bin_step: 1,          // Default, should be parsed from pool state
+            oracle: read_pubkey(data, 192).unwrap_or_default(),
+            active_id,
+            reserve_x_balance: 0,
+            reserve_y_balance: 0,
+            bin_step,
         })
     }
 
@@ -277,6 +289,18 @@ fn read_pubkey(data: &[u8], offset: usize) -> Result<Pubkey> {
         .try_into()
         .map_err(|_| anyhow!("Invalid pubkey at offset {offset}"))?;
     Ok(Pubkey::new_from_array(bytes))
+}
+
+fn read_u16(data: &[u8], offset: usize) -> Option<u16> {
+    data.get(offset..offset + 2)
+        .and_then(|s| s.try_into().ok())
+        .map(u16::from_le_bytes)
+}
+
+fn read_i32(data: &[u8], offset: usize) -> Option<i32> {
+    data.get(offset..offset + 4)
+        .and_then(|s| s.try_into().ok())
+        .map(i32::from_le_bytes)
 }
 
 #[cfg(test)]

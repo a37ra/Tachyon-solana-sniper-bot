@@ -121,20 +121,68 @@ async fn main() -> anyhow::Result<()> {
     };
 
     let dedup_filter = DedupFilter::new(30);
+    let signal_source = env::var("SIGNAL_SOURCE").unwrap_or_else(|_| "helius_ws".into());
 
-    let raydium_listener = RaydiumListener::new();
-    let meteora_listener = MeteoraListener::new();
-    let pump_fun_listener = PumpFunListener::new();
+    // programSubscribe account path (default) and/or logsSubscribe create-ix path.
+    let use_account_ws = matches!(
+        signal_source.as_str(),
+        "helius_ws" | "geyser_grpc" | "both" | "helius_both"
+    );
+    let use_create_ix = matches!(
+        signal_source.as_str(),
+        "helius_logs" | "create_ix" | "both" | "helius_both"
+    ) || env::var("SOLBOT_CREATE_IX")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
 
-    let raydium_signals = raydium_listener.subscribe_to_pool_creation().await?;
-    let meteora_signals = meteora_listener.subscribe_to_pool_creation().await?;
-    let pump_fun_signals = pump_fun_listener.subscribe_to_bonding_curve().await?;
+    let mut signal_rxs: Vec<(mpsc::Receiver<solbot_common::types::Signal>, &'static str)> =
+        Vec::new();
 
-    for (rx, label) in [
-        (raydium_signals, "raydium"),
-        (meteora_signals, "meteora"),
-        (pump_fun_signals, "pump_fun"),
-    ] {
+    if use_account_ws {
+        let raydium_listener = RaydiumListener::new();
+        let meteora_listener = MeteoraListener::new();
+        let pump_fun_listener = PumpFunListener::new();
+        signal_rxs.push((
+            raydium_listener.subscribe_to_pool_creation().await?,
+            "raydium_ws",
+        ));
+        signal_rxs.push((
+            meteora_listener.subscribe_to_pool_creation().await?,
+            "meteora_ws",
+        ));
+        signal_rxs.push((
+            pump_fun_listener.subscribe_to_bonding_curve().await?,
+            "pump_fun_ws",
+        ));
+    }
+
+    if use_create_ix {
+        use solana_pubkey::Pubkey;
+        use std::str::FromStr;
+        let programs = vec![
+            Pubkey::from_str("675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8")?,
+            Pubkey::from_str("CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C")?,
+            Pubkey::from_str("CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK")?,
+            Pubkey::from_str("LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo")?,
+            Pubkey::from_str("cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG")?,
+            Pubkey::from_str("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P")?,
+        ];
+        let create_rx = solbot_strategy::signal::create_ix_source::subscribe_create_ix_signals(
+            programs,
+            shared_rpc.clone(),
+        )
+        .await?;
+        signal_rxs.push((create_rx, "create_ix_logs"));
+        tracing::info!("create-ix logsSubscribe source enabled");
+    }
+
+    if signal_rxs.is_empty() {
+        anyhow::bail!(
+            "No signal sources: set SIGNAL_SOURCE=helius_ws|helius_logs|both (got '{signal_source}')"
+        );
+    }
+
+    for (rx, label) in signal_rxs {
         let dedup = dedup_filter.clone();
         let actors = actor_registry.clone();
         let wallet = wallet_pubkey;

@@ -15,10 +15,16 @@ use crate::sizing::{self, TradeStats};
 use crate::state::position_lifecycle::PositionLifecycle;
 use crate::state::positions_repo::{status_to_string, PositionsRepo};
 use crate::state::state_transitions_repo::StateTransitionsRepo;
+use crate::tx_builder::meteora_damm_v2 as meteora_damm_v2_builder;
 use crate::tx_builder::meteora_dlmm as meteora_dlmm_builder;
 use crate::tx_builder::pump_fun as pump_fun_builder;
 use crate::tx_builder::raydium_amm_v4 as raydium_amm_v4_builder;
+use crate::tx_builder::raydium_clmm as raydium_clmm_builder;
 use crate::tx_builder::raydium_cpmm as raydium_cpmm_builder;
+
+const DLMM_MAINNET: &str = "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo";
+const DLMM_LEGACY: &str = "LBUZKhRxPF3XUpBCjp4kVn14nz88kZjgL6Xm1xS8bKp";
+const DAMM_V2: &str = "cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG";
 use crate::tx_builder::{
     self, apply_slippage, build_unsigned_transaction, SwapDirection, SwapParams,
 };
@@ -480,6 +486,7 @@ async fn fetch_and_build_dex_swap(
     amount_in_lamports: u64,
     direction: SwapDirection,
     slippage_bps: u32,
+    preloaded_pool_data: Option<Vec<u8>>,
 ) -> Result<tx_builder::SwapInstructions> {
     let dir_label = match direction {
         SwapDirection::Buy => "buy",
@@ -498,18 +505,22 @@ async fn fetch_and_build_dex_swap(
         }
     };
 
-    // Local helper: fetch account via spawn_blocking
-    macro_rules! fetch_account {
+    // Prefer WS/Geyser raw pool bytes (0 RTT); else RPC get_account.
+    macro_rules! fetch_account_data {
         ($pk:expr) => {{
-            let rpc_url = rpc_url.clone();
-            let pk = $pk;
-            tokio::task::spawn_blocking(move || {
-                let rpc = RpcClient::new(rpc_url);
-                rpc.get_account(&pk)
-            })
-            .await
-            .ok()
-            .and_then(|r| r.ok())
+            if let Some(ref d) = preloaded_pool_data {
+                Some(d.clone())
+            } else {
+                let rpc_url = rpc_url.clone();
+                let pk = $pk;
+                tokio::task::spawn_blocking(move || {
+                    let rpc = RpcClient::new(rpc_url);
+                    rpc.get_account(&pk).map(|a| a.data)
+                })
+                .await
+                .ok()
+                .and_then(|r| r.ok())
+            }
         }};
     }
 
@@ -526,11 +537,11 @@ async fn fetch_and_build_dex_swap(
     }
 
     if dex_program_id == pump_fun_builder::PUMP_FUN_PROGRAM.to_string() {
-        let Some(account) = fetch_account!(pool_pubkey) else {
+        let Some(data) = fetch_account_data!(pool_pubkey) else {
             fail_or_placeholder!("Failed to fetch pool account in Live mode");
         };
         let Ok(curve) =
-            pump_fun_builder::PumpFunBondingCurve::from_account_data(&account.data, &pool_pubkey)
+            pump_fun_builder::PumpFunBondingCurve::from_account_data(&data, &pool_pubkey)
         else {
             fail_or_placeholder!("Failed to parse Pump.fun bonding curve in Live mode");
         };
@@ -555,11 +566,11 @@ async fn fetch_and_build_dex_swap(
     }
 
     if dex_program_id == raydium_amm_v4_builder::RAYDIUM_AMM_V4_PROGRAM.to_string() {
-        let Some(account) = fetch_account!(pool_pubkey) else {
+        let Some(data) = fetch_account_data!(pool_pubkey) else {
             fail_or_placeholder!("Failed to fetch pool account in Live mode");
         };
         let Ok(mut pool_state) =
-            raydium_amm_v4_builder::RaydiumAmmV4PoolState::from_account_data(&account.data)
+            raydium_amm_v4_builder::RaydiumAmmV4PoolState::from_account_data(&data)
         else {
             fail_or_placeholder!("Failed to parse Raydium AMM v4 pool state in Live mode");
         };
@@ -593,11 +604,10 @@ async fn fetch_and_build_dex_swap(
     }
 
     if dex_program_id == raydium_cpmm_builder::RAYDIUM_CPMM_PROGRAM.to_string() {
-        let Some(account) = fetch_account!(pool_pubkey) else {
+        let Some(data) = fetch_account_data!(pool_pubkey) else {
             fail_or_placeholder!("Failed to fetch pool account in Live mode");
         };
-        let Ok(mut pool_state) =
-            raydium_cpmm_builder::CpmmPoolState::from_account_data(&account.data)
+        let Ok(mut pool_state) = raydium_cpmm_builder::CpmmPoolState::from_account_data(&data)
         else {
             fail_or_placeholder!("Failed to parse Raydium CPMM pool state in Live mode");
         };
@@ -630,12 +640,15 @@ async fn fetch_and_build_dex_swap(
             .map_err(|e| anyhow!("Tx builder error: {}", e));
     }
 
-    if dex_program_id == meteora_dlmm_builder::METEORA_DLMM_PROGRAM.to_string() {
-        let Some(account) = fetch_account!(pool_pubkey) else {
+    if dex_program_id == DLMM_MAINNET
+        || dex_program_id == DLMM_LEGACY
+        || dex_program_id == meteora_dlmm_builder::METEORA_DLMM_PROGRAM.to_string()
+    {
+        let Some(data) = fetch_account_data!(pool_pubkey) else {
             fail_or_placeholder!("Failed to fetch pool account in Live mode");
         };
         let Ok(mut pool_state) =
-            meteora_dlmm_builder::DlmmPoolState::from_account_data(&account.data, &pool_pubkey)
+            meteora_dlmm_builder::DlmmPoolState::from_account_data(&data, &pool_pubkey)
         else {
             fail_or_placeholder!("Failed to parse Meteora DLMM pool state in Live mode");
         };
@@ -665,6 +678,66 @@ async fn fetch_and_build_dex_swap(
             slippage_bps,
         };
         return meteora_dlmm_builder::build_swap(&swap_params, &pool_state)
+            .map_err(|e| anyhow!("Tx builder error: {}", e));
+    }
+
+    if dex_program_id == raydium_clmm_builder::RAYDIUM_CLMM_PROGRAM.to_string() {
+        let Some(data) = fetch_account_data!(pool_pubkey) else {
+            fail_or_placeholder!("Failed to fetch pool account in Live mode");
+        };
+        let Ok(pool_state) = raydium_clmm_builder::ClmmPoolState::from_account_data(&data) else {
+            fail_or_placeholder!("Failed to parse Raydium CLMM pool state in Live mode");
+        };
+        let swap_params = SwapParams {
+            mint: mint_pubkey,
+            pool_address: pool_pubkey,
+            dex_program_id: dex_program_pubkey,
+            wallet,
+            direction,
+            amount_in: amount_in_lamports,
+            minimum_amount_out: 1,
+            slippage_bps,
+        };
+        return raydium_clmm_builder::build_swap(&swap_params, &pool_state, &pool_pubkey, None)
+            .map_err(|e| anyhow!("Tx builder error: {}", e));
+    }
+
+    if dex_program_id == DAMM_V2
+        || dex_program_id == meteora_damm_v2_builder::METEORA_DAMM_V2_PROGRAM.to_string()
+    {
+        let Some(data) = fetch_account_data!(pool_pubkey) else {
+            fail_or_placeholder!("Failed to fetch pool account in Live mode");
+        };
+        let Ok(mut pool_state) =
+            meteora_damm_v2_builder::DammV2PoolState::from_account_data(&data, &pool_pubkey)
+        else {
+            fail_or_placeholder!("Failed to parse DAMM v2 pool state in Live mode");
+        };
+        let vault_balances = fetch_vault_balances(
+            rpc_url.clone(),
+            pool_state.token_a_vault,
+            pool_state.token_b_vault,
+            "Meteora DAMM v2",
+        )
+        .await?;
+        pool_state = pool_state.with_vault_balances(vault_balances.0, vault_balances.1);
+        let expected_out = match direction {
+            SwapDirection::Buy => pool_state.calculate_buy_output(amount_in_lamports),
+            SwapDirection::Sell => pool_state.calculate_sell_output(amount_in_lamports),
+        };
+        ensure_nonzero_output(expected_out, "Meteora DAMM v2", dir_label)?;
+        let minimum_amount_out = apply_slippage(expected_out, slippage_bps);
+        let swap_params = SwapParams {
+            mint: mint_pubkey,
+            pool_address: pool_pubkey,
+            dex_program_id: dex_program_pubkey,
+            wallet,
+            direction,
+            amount_in: amount_in_lamports,
+            minimum_amount_out,
+            slippage_bps,
+        };
+        return meteora_damm_v2_builder::build_swap(&swap_params, &pool_state)
             .map_err(|e| anyhow!("Tx builder error: {}", e));
     }
 
@@ -827,6 +900,7 @@ pub async fn execute_buy_pipeline(
         amount_in_lamports,
         SwapDirection::Buy,
         ctx.tier_params.sizing.slippage_hard_cap_bps,
+        ctx.raw_pool_account_data.clone(),
     )
     .await?;
 
@@ -1165,6 +1239,7 @@ pub async fn execute_exit_pipeline(
                     amount_in_lamports_clone,
                     SwapDirection::Sell,
                     slippage_bps,
+                    None,
                 )
                 .await?;
 
@@ -1334,6 +1409,7 @@ pub async fn execute_exit_pipeline(
             amount_in_lamports,
             SwapDirection::Sell,
             ctx.tier_params.emergency_exit.emergency_slippage_bps,
+            ctx.raw_pool_account_data.clone(),
         )
         .await?;
 
