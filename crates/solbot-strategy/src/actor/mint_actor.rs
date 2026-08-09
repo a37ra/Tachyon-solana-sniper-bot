@@ -137,6 +137,13 @@ pub struct ActorContext {
     pub position_lifecycle: Option<Arc<PositionLifecycle>>,
     pub lifecycle_event_tx: Option<tokio::sync::mpsc::Sender<PositionLifecycleEvent>>,
     pub circuit_breaker: Option<Arc<CircuitBreaker>>,
+    /// Raw pool account bytes from WS/Geyser (enables 1-RTT risk gate).
+    pub raw_pool_account_data: Option<Vec<u8>>,
+    pub raw_pool_account_owner: Option<String>,
+    pub last_signal_slot: u64,
+    pub last_signal_received_at: u64,
+    /// Prevent duplicate buy attempts for the same pool.
+    pub buy_attempted: bool,
 }
 
 pub async fn run(
@@ -237,6 +244,51 @@ pub async fn run(
 
 async fn process_control_event(mint: &str, event: ControlEvent, ctx: &mut ActorContext) {
     match event {
+        ControlEvent::NewPoolSignal {
+            mint: _,
+            pool_address,
+            dex_program,
+            slot,
+            received_at,
+            raw_pool_account_data,
+            raw_pool_account_owner,
+        } => {
+            tracing::info!(
+                mint = %mint,
+                pool = %pool_address,
+                dex = %dex_program,
+                slot,
+                "NewPoolSignal — starting buy pipeline"
+            );
+            ctx.pool_address = pool_address;
+            ctx.dex_program_id = dex_program;
+            ctx.last_signal_slot = slot;
+            ctx.last_signal_received_at = received_at;
+            ctx.raw_pool_account_data = raw_pool_account_data;
+            ctx.raw_pool_account_owner = raw_pool_account_owner;
+
+            if ctx.active_position.is_some() {
+                tracing::debug!(mint = %mint, "Position already open — ignoring NewPoolSignal");
+                return;
+            }
+            if ctx.buy_attempted {
+                tracing::debug!(mint = %mint, "Buy already attempted — ignoring NewPoolSignal");
+                return;
+            }
+            ctx.buy_attempted = true;
+
+            // Placeholder entry price; real mark comes from vault balances later.
+            let entry_price = 0.0;
+            if let Err(e) = execute_buy_pipeline(ctx, entry_price).await {
+                tracing::warn!("Buy pipeline failed for {}: {}", mint, e);
+                // Allow one retry on next price tick for transient RPC failures.
+                if e.to_string().to_lowercase().contains("timeout")
+                    || e.to_string().to_lowercase().contains("rpc")
+                {
+                    ctx.buy_attempted = false;
+                }
+            }
+        }
         ControlEvent::MigrationEvent {
             mint: _,
             new_pool_address,
@@ -247,6 +299,9 @@ async fn process_control_event(mint: &str, event: ControlEvent, ctx: &mut ActorC
                 new_pool_address
             );
             ctx.pool_address = new_pool_address;
+            ctx.buy_attempted = false;
+            ctx.raw_pool_account_data = None;
+            ctx.raw_pool_account_owner = None;
         }
         ControlEvent::KillSwitch { activated, reason } => {
             tracing::warn!(
@@ -649,6 +704,50 @@ async fn fetch_recent_blockhash(
     }
 }
 
+/// Reject buy if the originating signal is older than max_signal_age_ms.
+///
+/// Age is recomputed from wall-clock at **each** call (`chrono::Utc::now`), so the
+/// pre-submit check is not a replay of the entry check — it catches time spent in
+/// risk-gate / sizing / sign. Intentional: with public 4s budgets + max_age 500ms
+/// the bot will structurally reject buys (prefer no trade over stale execution).
+pub fn assert_signal_still_fresh(ctx: &ActorContext, phase: &str) -> Result<()> {
+    let max_age_ms = ctx.risk_gate_config.max_signal_age_ms;
+    if max_age_ms == 0 || ctx.last_signal_received_at == 0 {
+        return Ok(());
+    }
+    let now_ms = chrono::Utc::now().timestamp_millis() as u64;
+    if now_ms < ctx.last_signal_received_at {
+        return Ok(());
+    }
+    let age_ms = now_ms - ctx.last_signal_received_at;
+    if age_ms > max_age_ms {
+        bail!(
+            "Stale signal at {} for mint {}: age_ms={} > max_signal_age_ms={} — aborting buy",
+            phase,
+            ctx.mint,
+            age_ms,
+            max_age_ms
+        );
+    }
+    tracing::debug!(
+        mint = %ctx.mint,
+        phase,
+        age_ms,
+        max_age_ms,
+        "Signal freshness OK"
+    );
+    Ok(())
+}
+
+/// Run `submit` only if pre-submit freshness passes. Used by buy pipeline and tests.
+pub fn submit_if_fresh<F, T>(ctx: &ActorContext, submit: F) -> Result<T>
+where
+    F: FnOnce() -> Result<T>,
+{
+    assert_signal_still_fresh(ctx, "pre_submit_buy")?;
+    submit()
+}
+
 /// Execute the buy pipeline: Risk Gate → Sizing → Tx Builder → Signer → Router.
 pub async fn execute_buy_pipeline(
     ctx: &mut ActorContext,
@@ -669,16 +768,23 @@ pub async fn execute_buy_pipeline(
         }
     }
 
+    // Freshness at pipeline entry (queue wait + prior processing).
+    assert_signal_still_fresh(ctx, "buy_pipeline_entry")?;
+
     // Step 1: Risk gate checks with timeout controlled by RiskGateConfig
     let signal = Signal {
         mint: ctx.mint.clone(),
         pool_address: ctx.pool_address.clone(),
         dex_program: ctx.dex_program_id.clone(),
         signal_source: "actor".to_string(),
-        slot: 0,
-        received_at: chrono::Utc::now().timestamp() as u64,
-        raw_pool_account_data: None,
-        raw_pool_account_owner: None,
+        slot: ctx.last_signal_slot,
+        received_at: if ctx.last_signal_received_at > 0 {
+            ctx.last_signal_received_at
+        } else {
+            chrono::Utc::now().timestamp_millis() as u64
+        },
+        raw_pool_account_data: ctx.raw_pool_account_data.clone(),
+        raw_pool_account_owner: ctx.raw_pool_account_owner.clone(),
     };
 
     let risk_result = risk_gate::run_pre_buy_checks_with_timeout(&signal, &ctx.risk_gate_config).await;
@@ -799,7 +905,9 @@ pub async fn execute_buy_pipeline(
         }
     }
 
-    // Step 5: Submit transaction via Router
+    // Step 5: Freshness gate immediately before broadcast, then Router submit.
+    // Age recomputed here (not cached from entry) — catches risk-gate/sign latency.
+    assert_signal_still_fresh(ctx, "pre_submit_buy")?;
     if ctx.trading_mode == TradingMode::Live {
         if let Some(ref mut router) = ctx.router {
             tracing::info!("Submitting live buy transaction to Router pipeline");
@@ -1614,6 +1722,11 @@ mod tests {
     use crate::circuit_breaker::CircuitBreaker;
     use crate::exit::{ExitAction, TpLevel};
     use crate::state::position_lifecycle::Transition;
+    use solbot_common::config::tier_params::{
+        AdaptiveParams, CapitalRange, CircuitBreakerParams, CompromiseDetection,
+        EmergencyExitParams, HotWalletParams, KellyParams, PositionLimits, SizingParams, TierInfo,
+    };
+    use solbot_common::config::TierParams;
     use solbot_common::types::position::{Position, PositionStatus};
     use solbot_common::types::tier::CapitalTier;
     use solbot_common::types::PositionLifecycleEvent;
@@ -1895,5 +2008,122 @@ mod tests {
         let status = cb_large.record_loss(CapitalTier::Large, 0.12);
         assert!(status.warning_triggered);
         assert!(!status.limit_triggered);
+    }
+
+    fn freshness_ctx(age_ms: u64, max_age_ms: u64) -> ActorContext {
+        let now = chrono::Utc::now().timestamp_millis() as u64;
+        let rpc_url = "http://127.0.0.1:8899".to_string();
+        let mut risk = RiskGateConfig::from_shared_rpc(
+            std::sync::Arc::new(
+                solana_rpc_client::nonblocking::rpc_client::RpcClient::new(rpc_url.clone()),
+            ),
+            rpc_url,
+        );
+        risk.max_signal_age_ms = max_age_ms;
+        risk.skip_simulate_sell = true;
+        ActorContext {
+            mint: "Mint111111111111111111111111111111111111111".into(),
+            pool_address: "Pool111111111111111111111111111111111111111".into(),
+            dex_program_id: "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8".into(),
+            wallet: Pubkey::new_unique(),
+            trading_mode: TradingMode::Paper,
+            risk_gate_config: risk,
+            tier: CapitalTier::Micro,
+            tier_params: TierParams {
+                tier: TierInfo {
+                    name: "Micro".into(),
+                    capital_range: CapitalRange {
+                        min_usd: 0,
+                        max_usd: 1000,
+                    },
+                },
+                sizing: SizingParams {
+                    base_size_pct: 0.01,
+                    max_size_sol: 0.1,
+                    slippage_hard_cap_bps: 500,
+                    kelly: KellyParams {
+                        fraction_of_kelly: 0.5,
+                    },
+                    adaptive: AdaptiveParams {
+                        enabled: false,
+                        calibration_window_slots: 100,
+                        min_sample_size: 10,
+                        size_max_pct: 0.05,
+                    },
+                },
+                position_limits: PositionLimits {
+                    max_concurrent_positions: 3,
+                    circuit_breaker: CircuitBreakerParams {
+                        warning_threshold_pct: 0.15,
+                        daily_loss_limit_pct: 0.25,
+                        max_parallel_emergency_sells: 2,
+                    },
+                },
+                hot_wallet: HotWalletParams { cap_sol: 1.0 },
+                compromise_detection: CompromiseDetection {
+                    signing_rate_threshold_5min: 10,
+                },
+                emergency_exit: EmergencyExitParams {
+                    emergency_slippage_bps: 1000,
+                    priority_fee_baseline: 1000,
+                },
+            },
+            capital_sol: 1.0,
+            router: None,
+            signer_client: None,
+            rpc_url: None,
+            active_position: None,
+            trade_stats: None,
+            dex_readiness: DexReadinessConfig::default(),
+            positions_repo: None,
+            state_transitions_repo: None,
+            position_lifecycle: None,
+            lifecycle_event_tx: None,
+            circuit_breaker: None,
+            raw_pool_account_data: None,
+            raw_pool_account_owner: None,
+            last_signal_slot: 1,
+            last_signal_received_at: now.saturating_sub(age_ms),
+            buy_attempted: false,
+        }
+    }
+
+    /// Pre-submit freshness: stale signal must not call submit (mock panics if reached).
+    #[test]
+    fn test_submit_if_fresh_blocks_stale_before_router() {
+        let ctx = freshness_ctx(5_000, 500); // 5s old, max 500ms
+        let mut submitted = false;
+        let result: Result<(), anyhow::Error> = submit_if_fresh(&ctx, || {
+            submitted = true;
+            panic!("router submit must not run on stale signal");
+        });
+        assert!(result.is_err(), "expected stale rejection, got {result:?}");
+        assert!(
+            !submitted,
+            "submit closure must not run when freshness fails"
+        );
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("Stale signal") && msg.contains("pre_submit_buy"),
+            "unexpected: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_submit_if_fresh_allows_fresh_signal() {
+        let ctx = freshness_ctx(50, 500); // 50ms old, max 500ms
+        let result = submit_if_fresh(&ctx, || Ok::<_, anyhow::Error>(42));
+        assert_eq!(result.unwrap(), 42);
+    }
+
+    /// Late check recomputes wall-clock age (not a cached entry decision).
+    #[test]
+    fn test_freshness_recomputes_age_each_call() {
+        let mut ctx = freshness_ctx(100, 300);
+        assert!(assert_signal_still_fresh(&ctx, "entry").is_ok());
+        // Make signal older than max without changing a "cached age" field.
+        ctx.last_signal_received_at = chrono::Utc::now().timestamp_millis() as u64 - 2_000;
+        let err = assert_signal_still_fresh(&ctx, "pre_submit_buy").unwrap_err();
+        assert!(err.to_string().contains("pre_submit_buy"));
     }
 }

@@ -54,14 +54,46 @@ pub struct TipConfig {
     pub tip_account: Pubkey,
 }
 
+/// Official mainnet Jito tip account (verified via getTipAccounts, 2026-08-09).
+pub const DEFAULT_JITO_TIP_ACCOUNT: &str = "96gYZGLnJYVFmbjzopPSU6QiEV5fGqZNyN9nmNhvrZU5";
+
+impl TipConfig {
+    /// Resolve tip account from optional override string (env value).
+    /// Returns Err on invalid pubkey — never invents a random address (would burn SOL).
+    pub fn resolve_tip_account(override_str: Option<&str>) -> Result<Pubkey, String> {
+        match override_str {
+            Some(s) if !s.is_empty() => s.parse::<Pubkey>().map_err(|e| {
+                format!(
+                    "SOLBOT_JITO_TIP_ACCOUNT is not a valid Pubkey ({e}). \
+                     Refusing random tip address (would burn SOL). \
+                     Unset the var to use default {DEFAULT_JITO_TIP_ACCOUNT}"
+                )
+            }),
+            _ => DEFAULT_JITO_TIP_ACCOUNT.parse::<Pubkey>().map_err(|e| {
+                format!("BUG: hardcoded DEFAULT_JITO_TIP_ACCOUNT failed to parse: {e}")
+            }),
+        }
+    }
+
+    /// Build tip config from env. Err if SOLBOT_JITO_TIP_ACCOUNT is set but invalid.
+    pub fn try_from_env() -> Result<Self, String> {
+        let tip_account =
+            Self::resolve_tip_account(std::env::var("SOLBOT_JITO_TIP_ACCOUNT").ok().as_deref())?;
+        Ok(Self {
+            base_lamports: std::env::var("SOLBOT_JITO_TIP_LAMPORTS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(10_000),
+            jitter_percent: 0.1,
+            tip_account,
+        })
+    }
+}
+
 impl Default for TipConfig {
     fn default() -> Self {
-        Self {
-            base_lamports: 10_000, // 0.00001 SOL
-            jitter_percent: 0.1,   // ±10%
-            // Use a placeholder pubkey - in production configure actual Jito tip account
-            tip_account: Pubkey::new_unique(),
-        }
+        // NEVER fall back to a random pubkey: tips would burn SOL to an unspendable address.
+        Self::try_from_env().unwrap_or_else(|e| panic!("{e}"))
     }
 }
 
@@ -477,6 +509,34 @@ mod tests {
         let config = TipConfig::default();
         assert_eq!(config.base_lamports, 10_000);
         assert_eq!(config.jitter_percent, 0.1);
+        assert_eq!(
+            config.tip_account.to_string(),
+            DEFAULT_JITO_TIP_ACCOUNT
+        );
+    }
+
+    /// Invalid tip override must Err (never silent random pubkey / SOL burn).
+    #[test]
+    fn test_tip_account_invalid_env_value_returns_err() {
+        let err = TipConfig::resolve_tip_account(Some("not-a-valid-pubkey"))
+            .expect_err("invalid tip must fail");
+        assert!(
+            err.contains("not a valid Pubkey") || err.contains("SOLBOT_JITO_TIP_ACCOUNT"),
+            "unexpected: {err}"
+        );
+    }
+
+    #[test]
+    fn test_tip_account_default_is_official_jito() {
+        let pk = TipConfig::resolve_tip_account(None).unwrap();
+        assert_eq!(pk.to_string(), DEFAULT_JITO_TIP_ACCOUNT);
+    }
+
+    #[test]
+    fn test_tip_try_from_env_rejects_invalid_override() {
+        // Pure unit path (no process-global env mutation): same code Default uses.
+        let err = TipConfig::resolve_tip_account(Some("ВАШ_КЛЮЧ_OR_TYPO")).unwrap_err();
+        assert!(err.contains("not a valid Pubkey"), "got: {err}");
     }
 
     #[test]

@@ -80,7 +80,7 @@ pub mod dex_programs {
         solana_pubkey::pubkey!("LBUZKhRxPF3XUpBCjp4kVn14nz88kZjgL6Xm1xS8bKp");
     /// Pump.fun bonding curve
     pub const PUMP_FUN: Pubkey =
-        solana_pubkey::pubkey!("6EF8rrecthR5Dkzon8Nwu78hRvfX4LctQnUBjWdK8nN2");
+        solana_pubkey::pubkey!("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P");
 
     /// Raydium CP-MM
     pub fn raydium_cp_mm() -> Pubkey {
@@ -228,7 +228,7 @@ impl ExtendedHistoryProvider {
                     }
 
                     // Check for Pump.fun migration
-                    if dex_program_id == "6EF8rrecthR5Dkzon8Nwu78hRvfX4LctQnUBjWdK8nN2" {
+                    if dex_program_id == "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P" {
                         // Pump.fun bonding curve: check complete field at offset 72
                         if account.data.len() > 72 {
                             let is_complete = account.data[72] != 0;

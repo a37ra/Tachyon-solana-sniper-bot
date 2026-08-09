@@ -142,19 +142,25 @@ async fn test_cpmm_buy_pipeline_fail_closed_pool_account_not_found() {
         signer_client: Some(Arc::new(SignerClient::new("/tmp/mock_signer.sock".to_string()))),
         router: Some(TransactionRouter::new(RoutingConfig::default()).unwrap()),
         tier_params: make_test_tier_params(),
-        risk_gate_config: RiskGateConfig {
-            rpc_url,
-            rpc_client: None,
-            mint_freeze_timeout_ms: 5000,
-            lp_lock_timeout_ms: 10000,
-            token2022_timeout_ms: 5000,
-            simulate_sell_timeout_ms: 5000,
-            pre_buy_checks_timeout_ms: 200,
-            simulate_size_lamports: 1_000_000_000,
-            token2022_allowlist: vec![],
-            token2022_blocklist: vec![],
-            max_signal_age_ms: 0,
-            cache: RiskGateCache::new(10),
+        risk_gate_config: {
+            let rpc = std::sync::Arc::new(solana_rpc_client::nonblocking::rpc_client::RpcClient::new(
+                rpc_url.clone(),
+            ));
+            RiskGateConfig {
+                rpc,
+                rpc_url,
+                mint_freeze_timeout_ms: 5000,
+                lp_lock_timeout_ms: 10000,
+                token2022_timeout_ms: 5000,
+                simulate_sell_timeout_ms: 5000,
+                pre_buy_checks_timeout_ms: 200,
+                simulate_size_lamports: 1_000_000_000,
+                token2022_allowlist: vec![],
+                token2022_blocklist: vec![],
+                max_signal_age_ms: 0,
+                skip_simulate_sell: true,
+                cache: RiskGateCache::new(10),
+            }
         },
         dex_readiness: DexReadinessConfig::default(),
         active_position: None,
@@ -166,14 +172,20 @@ async fn test_cpmm_buy_pipeline_fail_closed_pool_account_not_found() {
         position_lifecycle: None,
         lifecycle_event_tx: None,
         circuit_breaker: None,
+        raw_pool_account_data: None,
+        raw_pool_account_owner: None,
+        last_signal_slot: 0,
+        last_signal_received_at: 0,
+        buy_attempted: false,
     };
 
     let result = execute_buy_pipeline(&mut ctx, 0.001).await;
     assert!(result.is_err());
     let error_msg = result.unwrap_err().to_string();
-    assert_eq!(
-        error_msg, "Failed to fetch pool account in Live mode",
-        "Expected exact error 'Failed to fetch pool account in Live mode', got: {}",
+    // Fail-closed at risk gate before pool swap build: mock RPC cannot supply mint/pool accounts.
+    assert!(
+        error_msg.starts_with("Risk gate rejection: Failed to fetch pre-buy check context"),
+        "Expected risk-gate fail-closed on unavailable pool context, got: {}",
         error_msg
     );
 }
@@ -201,19 +213,25 @@ async fn test_dlmm_buy_pipeline_fail_closed_pool_account_not_found() {
         signer_client: Some(Arc::new(SignerClient::new("/tmp/mock_signer.sock".to_string()))),
         router: Some(TransactionRouter::new(RoutingConfig::default()).unwrap()),
         tier_params: make_test_tier_params(),
-        risk_gate_config: RiskGateConfig {
-            rpc_url,
-            rpc_client: None,
-            mint_freeze_timeout_ms: 5000,
-            lp_lock_timeout_ms: 10000,
-            token2022_timeout_ms: 5000,
-            simulate_sell_timeout_ms: 5000,
-            pre_buy_checks_timeout_ms: 200,
-            simulate_size_lamports: 1_000_000_000,
-            token2022_allowlist: vec![],
-            token2022_blocklist: vec![],
-            max_signal_age_ms: 0,
-            cache: RiskGateCache::new(10),
+        risk_gate_config: {
+            let rpc = std::sync::Arc::new(solana_rpc_client::nonblocking::rpc_client::RpcClient::new(
+                rpc_url.clone(),
+            ));
+            RiskGateConfig {
+                rpc,
+                rpc_url,
+                mint_freeze_timeout_ms: 5000,
+                lp_lock_timeout_ms: 10000,
+                token2022_timeout_ms: 5000,
+                simulate_sell_timeout_ms: 5000,
+                pre_buy_checks_timeout_ms: 200,
+                simulate_size_lamports: 1_000_000_000,
+                token2022_allowlist: vec![],
+                token2022_blocklist: vec![],
+                max_signal_age_ms: 0,
+                skip_simulate_sell: true,
+                cache: RiskGateCache::new(10),
+            }
         },
         dex_readiness: DexReadinessConfig::default(),
         active_position: None,
@@ -225,14 +243,20 @@ async fn test_dlmm_buy_pipeline_fail_closed_pool_account_not_found() {
         position_lifecycle: None,
         lifecycle_event_tx: None,
         circuit_breaker: None,
+        raw_pool_account_data: None,
+        raw_pool_account_owner: None,
+        last_signal_slot: 0,
+        last_signal_received_at: 0,
+        buy_attempted: false,
     };
 
     let result = execute_buy_pipeline(&mut ctx, 0.001).await;
     assert!(result.is_err());
     let error_msg = result.unwrap_err().to_string();
-    assert_eq!(
-        error_msg, "Failed to fetch pool account in Live mode",
-        "Expected exact error 'Failed to fetch pool account in Live mode', got: {}",
+    // Same fail-closed path as CPMM: risk gate rejects when pre-buy context cannot be fetched.
+    assert!(
+        error_msg.starts_with("Risk gate rejection: Failed to fetch pre-buy check context"),
+        "Expected risk-gate fail-closed on unavailable pool context, got: {}",
         error_msg
     );
 }
@@ -327,6 +351,11 @@ async fn test_buy_pipeline_fail_closed_no_signer_client() {
         position_lifecycle: None,
         lifecycle_event_tx: None,
         circuit_breaker: None,
+        raw_pool_account_data: None,
+        raw_pool_account_owner: None,
+        last_signal_slot: 0,
+        last_signal_received_at: 0,
+        buy_attempted: false,
     };
 
     let result = execute_buy_pipeline(&mut ctx, 0.001).await;
@@ -362,6 +391,11 @@ async fn test_buy_pipeline_fail_closed_no_router() {
         position_lifecycle: None,
         lifecycle_event_tx: None,
         circuit_breaker: None,
+        raw_pool_account_data: None,
+        raw_pool_account_owner: None,
+        last_signal_slot: 0,
+        last_signal_received_at: 0,
+        buy_attempted: false,
     };
 
     let result = execute_buy_pipeline(&mut ctx, 0.001).await;
@@ -399,6 +433,11 @@ async fn test_exit_pipeline_fail_closed_no_signer_client() {
         position_lifecycle: None,
         lifecycle_event_tx: None,
         circuit_breaker: None,
+        raw_pool_account_data: None,
+        raw_pool_account_owner: None,
+        last_signal_slot: 0,
+        last_signal_received_at: 0,
+        buy_attempted: false,
     };
 
     let result =
@@ -436,6 +475,11 @@ async fn test_exit_pipeline_fail_closed_no_router() {
         position_lifecycle: None,
         lifecycle_event_tx: None,
         circuit_breaker: None,
+        raw_pool_account_data: None,
+        raw_pool_account_owner: None,
+        last_signal_slot: 0,
+        last_signal_received_at: 0,
+        buy_attempted: false,
     };
 
     let result =
@@ -451,8 +495,13 @@ async fn test_exit_pipeline_fail_closed_no_router() {
 }
 
 fn make_test_risk_gate_config() -> RiskGateConfig {
+    let rpc_url = "https://api.mainnet-beta.solana.com".to_string();
+    let rpc = std::sync::Arc::new(solana_rpc_client::nonblocking::rpc_client::RpcClient::new(
+        rpc_url.clone(),
+    ));
     RiskGateConfig {
-        rpc_url: "https://api.mainnet-beta.solana.com".to_string(),
+        rpc,
+        rpc_url,
         mint_freeze_timeout_ms: 5000,
         lp_lock_timeout_ms: 10000,
         token2022_timeout_ms: 5000,
@@ -462,6 +511,7 @@ fn make_test_risk_gate_config() -> RiskGateConfig {
         token2022_allowlist: vec![],
         token2022_blocklist: vec![],
         max_signal_age_ms: 0,
+        skip_simulate_sell: true,
         cache: RiskGateCache::new(10),
     }
 }
@@ -601,6 +651,11 @@ fn test_actor_context_creation() {
         position_lifecycle: None,
         lifecycle_event_tx: None,
         circuit_breaker: None,
+        raw_pool_account_data: None,
+        raw_pool_account_owner: None,
+        last_signal_slot: 0,
+        last_signal_received_at: 0,
+        buy_attempted: false,
     };
 
     assert_eq!(ctx.trading_mode, TradingMode::Paper);
@@ -631,6 +686,11 @@ fn test_buy_pipeline_risk_gate_rejection() {
         position_lifecycle: None,
         lifecycle_event_tx: None,
         circuit_breaker: None,
+        raw_pool_account_data: None,
+        raw_pool_account_owner: None,
+        last_signal_slot: 0,
+        last_signal_received_at: 0,
+        buy_attempted: false,
     };
 
     // This should fail because risk gate checks will reject (no real RPC)
@@ -683,6 +743,11 @@ fn test_sell_pipeline_take_profit() {
         position_lifecycle: None,
         lifecycle_event_tx: None,
         circuit_breaker: None,
+        raw_pool_account_data: None,
+        raw_pool_account_owner: None,
+        last_signal_slot: 0,
+        last_signal_received_at: 0,
+        buy_attempted: false,
     };
 
     let position = ctx.active_position.clone().unwrap();
@@ -745,6 +810,11 @@ fn test_sell_pipeline_hard_stop_loss() {
         position_lifecycle: None,
         lifecycle_event_tx: None,
         circuit_breaker: None,
+        raw_pool_account_data: None,
+        raw_pool_account_owner: None,
+        last_signal_slot: 0,
+        last_signal_received_at: 0,
+        buy_attempted: false,
     };
 
     let position = ctx.active_position.clone().unwrap();
@@ -873,6 +943,11 @@ fn test_actor_context_with_full_components() {
         position_lifecycle: None,
         lifecycle_event_tx: None,
         circuit_breaker: None,
+        raw_pool_account_data: None,
+        raw_pool_account_owner: None,
+        last_signal_slot: 0,
+        last_signal_received_at: 0,
+        buy_attempted: false,
     };
 
     assert_eq!(
@@ -910,6 +985,11 @@ fn test_trading_mode_paper_vs_live() {
         position_lifecycle: None,
         lifecycle_event_tx: None,
         circuit_breaker: None,
+        raw_pool_account_data: None,
+        raw_pool_account_owner: None,
+        last_signal_slot: 0,
+        last_signal_received_at: 0,
+        buy_attempted: false,
     };
 
     // Live mode - would submit transactions (mocked for test)
@@ -934,6 +1014,11 @@ fn test_trading_mode_paper_vs_live() {
         position_lifecycle: None,
         lifecycle_event_tx: None,
         circuit_breaker: None,
+        raw_pool_account_data: None,
+        raw_pool_account_owner: None,
+        last_signal_slot: 0,
+        last_signal_received_at: 0,
+        buy_attempted: false,
     };
 
     assert_eq!(ctx_paper.trading_mode, TradingMode::Paper);
@@ -981,6 +1066,11 @@ fn test_kill_switch_emergency_exit() {
         position_lifecycle: None,
         lifecycle_event_tx: None,
         circuit_breaker: None,
+        raw_pool_account_data: None,
+        raw_pool_account_owner: None,
+        last_signal_slot: 0,
+        last_signal_received_at: 0,
+        buy_attempted: false,
     };
 
     let position = ctx.active_position.clone().unwrap();
@@ -1091,6 +1181,11 @@ async fn test_position_lifecycle_sqlite_persistence_and_transitions() {
         position_lifecycle: Some(Arc::new(PositionLifecycle::new(pool.clone()))),
         lifecycle_event_tx: None,
         circuit_breaker: None,
+        raw_pool_account_data: None,
+        raw_pool_account_owner: None,
+        last_signal_slot: 0,
+        last_signal_received_at: 0,
+        buy_attempted: false,
     };
 
     // 1. Insert initial position into DB
@@ -1281,6 +1376,11 @@ async fn test_position_lifecycle_stuck_manual_intervention_required() {
         position_lifecycle: Some(Arc::new(PositionLifecycle::new(pool.clone()))),
         lifecycle_event_tx: None,
         circuit_breaker: None,
+        raw_pool_account_data: None,
+        raw_pool_account_owner: None,
+        last_signal_slot: 0,
+        last_signal_received_at: 0,
+        buy_attempted: false,
     };
 
     // Trigger price tick for HardStopLoss
@@ -1353,5 +1453,10 @@ fn make_test_actor_context(
         position_lifecycle: None,
         lifecycle_event_tx: None,
         circuit_breaker: None,
+        raw_pool_account_data: None,
+        raw_pool_account_owner: None,
+        last_signal_slot: 0,
+        last_signal_received_at: 0,
+        buy_attempted: false,
     }
 }

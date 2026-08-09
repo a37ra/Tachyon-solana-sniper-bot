@@ -344,6 +344,12 @@ fn extension_type_to_name(extension_type: u16) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    fn test_rpc() -> std::sync::Arc<solana_rpc_client::nonblocking::rpc_client::RpcClient> {
+        std::sync::Arc::new(solana_rpc_client::nonblocking::rpc_client::RpcClient::new(
+            "https://api.mainnet-beta.solana.com".to_string(),
+        ))
+    }
     use super::*;
 
     #[test]
@@ -432,7 +438,7 @@ mod tests {
         let config = RiskGateConfig::default();
         let result = rt.block_on(check(
             "not_a_valid_pubkey",
-            "https://api.mainnet-beta.solana.com",
+            test_rpc(),
             &config,
         ));
         assert!(!result.passed);
@@ -448,7 +454,7 @@ mod tests {
         let wsol_mint = "So11111111111111111111111111111111111111112";
         let result = rt.block_on(check(
             wsol_mint,
-            "https://api.mainnet-beta.solana.com",
+            test_rpc(),
             &config,
         ));
         assert!(

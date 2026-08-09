@@ -256,6 +256,12 @@ pub async fn check_with_context(
 
 #[cfg(test)]
 mod tests {
+
+    fn test_rpc() -> std::sync::Arc<solana_rpc_client::nonblocking::rpc_client::RpcClient> {
+        std::sync::Arc::new(solana_rpc_client::nonblocking::rpc_client::RpcClient::new(
+            "https://api.mainnet-beta.solana.com".to_string(),
+        ))
+    }
     use super::*;
 
     /// Known USDC mint — has freeze_authority set (Circle controls it).
@@ -271,7 +277,7 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let result = rt.block_on(check(
             "not_a_valid_pubkey",
-            "https://api.mainnet-beta.solana.com",
+            test_rpc(),
         ));
         assert!(!result.passed);
         assert!(result.reason.unwrap().contains("Invalid mint pubkey"));
@@ -283,7 +289,7 @@ mod tests {
     #[ignore = "Requires mainnet RPC connection"]
     fn test_wsol_passes() {
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let result = rt.block_on(check(WSOL_MINT, "https://api.mainnet-beta.solana.com"));
+        let result = rt.block_on(check(WSOL_MINT, test_rpc()));
         assert!(result.passed, "WSOL should pass: {:?}", result.reason);
     }
 
@@ -292,7 +298,7 @@ mod tests {
     #[ignore = "Requires mainnet RPC connection"]
     fn test_usdc_fails_freeze_authority() {
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let result = rt.block_on(check(USDC_MINT, "https://api.mainnet-beta.solana.com"));
+        let result = rt.block_on(check(USDC_MINT, test_rpc()));
         assert!(!result.passed, "USDC should fail due to freeze_authority");
         assert!(result.reason.unwrap().contains("freeze_authority"));
     }

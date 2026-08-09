@@ -107,7 +107,7 @@ async fn main() -> Result<()> {
         // Create mock signal for testing Stage 1
         let mock_mint = Pubkey::new_unique();
         let mock_pool = Pubkey::new_unique();
-        let mock_dex = "6EF8rrecthR5Dkzon8Nwu78hRvfX4LctQnUBjWdK8nN2".to_string();
+        let mock_dex = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P".to_string();
 
         println!("📨 Mock Signal #1:");
         println!("  Mint: {}", mock_mint);
@@ -170,7 +170,7 @@ async fn main() -> Result<()> {
             let geyser_client = GeyserClient::new(geyser_config);
 
             // Subscribe to Pump.fun program
-            let pump_fun_program = Pubkey::from_str("6EF8rrecthR5Dkzon8Nwu78hRvfX4LctQnUBjWdK8nN2")
+            let pump_fun_program = Pubkey::from_str("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P")
                 .context("Invalid Pump.fun program ID")?;
 
             println!(
@@ -307,7 +307,7 @@ async fn main() -> Result<()> {
 
     let build_start = Instant::now();
 
-    let swap_instructions = if signal.dex_program == "6EF8rrecthR5Dkzon8Nwu78hRvfX4LctQnUBjWdK8nN2"
+    let swap_instructions = if signal.dex_program == "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"
     {
         // Pump.fun
         println!("  DEX: Pump.fun Bonding Curve");
@@ -333,7 +333,7 @@ async fn main() -> Result<()> {
         let params = SwapParams {
             mint,
             pool_address,
-            dex_program_id: Pubkey::from_str("6EF8rrecthR5Dkzon8Nwu78hRvfX4LctQnUBjWdK8nN2")?,
+            dex_program_id: Pubkey::from_str("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P")?,
             wallet: wallet_pubkey,
             direction: SwapDirection::Buy,
             amount_in: TEST_AMOUNT_SOL,
