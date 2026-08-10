@@ -27,9 +27,11 @@ async fn main() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
     tracing_subscriber::fmt::init();
 
-    // Default signal source for paper/dev. Live must set its own stack explicitly.
+    // Default: logsSubscribe create-ix only (not programSubscribe account updates).
+    // Account-update path falsely treats first-seen old pools as "new".
+    // Opt-in legacy: SIGNAL_SOURCE=helius_ws|both|helius_both
     if env::var("SIGNAL_SOURCE").is_err() {
-        env::set_var("SIGNAL_SOURCE", "helius_ws");
+        env::set_var("SIGNAL_SOURCE", "helius_logs");
     }
 
     let is_paper = env::args().any(|a| a == "--paper")
@@ -50,6 +52,10 @@ async fn main() -> anyhow::Result<()> {
         println!("🚀 SOLANA BOT — PAPER / DRY-RUN");
         println!("   SIGNAL_SOURCE={}", env::var("SIGNAL_SOURCE").unwrap_or_default());
         println!("   RPC={}", resolve_rpc_url());
+        println!(
+            "   Paper trade journal: {}",
+            solbot_strategy::paper_trade_log::path_hint()
+        );
         println!("   Anti-rug runs on shared RpcClient (no per-signal reconnect).");
         println!("=======================================================\n");
     } else {
@@ -121,9 +127,10 @@ async fn main() -> anyhow::Result<()> {
     };
 
     let dedup_filter = DedupFilter::new(30);
-    let signal_source = env::var("SIGNAL_SOURCE").unwrap_or_else(|_| "helius_ws".into());
+    let signal_source = env::var("SIGNAL_SOURCE").unwrap_or_else(|_| "helius_logs".into());
 
-    // programSubscribe account path (default) and/or logsSubscribe create-ix path.
+    // logsSubscribe create-ix is the primary source. programSubscribe is opt-in only
+    // (helius_ws / both) — it cannot distinguish new pools from first-seen old ones.
     let use_account_ws = matches!(
         signal_source.as_str(),
         "helius_ws" | "geyser_grpc" | "both" | "helius_both"
@@ -133,7 +140,8 @@ async fn main() -> anyhow::Result<()> {
         "helius_logs" | "create_ix" | "both" | "helius_both"
     ) || env::var("SOLBOT_CREATE_IX")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false);
+        .unwrap_or(false)
+        || !use_account_ws;
 
     let mut signal_rxs: Vec<(mpsc::Receiver<solbot_common::types::Signal>, &'static str)> =
         Vec::new();
@@ -352,6 +360,12 @@ async fn process_signals(
             match &verdict {
                 solbot_strategy::risk_gate::RiskGateVerdict::Accept => {
                     pipeline_stats::inc_accept();
+                    solbot_strategy::paper_trade_log::log_accept(
+                        &signal.mint,
+                        &signal.pool_address,
+                        &signal.dex_program,
+                        anti_rug_us as f64 / 1000.0,
+                    );
                     tracing::info!(
                         seq = seq_num,
                         mint = %signal.mint,
@@ -362,6 +376,9 @@ async fn process_signals(
                 solbot_strategy::risk_gate::RiskGateVerdict::Reject { reason } => {
                     let bucket = reject_reason_bucket(reason);
                     pipeline_stats::inc_reject(&bucket);
+                    if is_paper {
+                        solbot_strategy::paper_trade_log::log_reject(&signal.mint, reason);
+                    }
                     tracing::warn!(
                         seq = seq_num,
                         mint = %signal.mint,

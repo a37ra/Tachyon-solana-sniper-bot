@@ -22,7 +22,7 @@
 - Public profile defaults: `pre_buy=4000ms`, `simulate=2000ms`, RPC call=2000ms.
 - Coalescer с atomic claim.
 - `NewPoolSignal` → actor buy path с raw pool bytes.
-- Default `SIGNAL_SOURCE=helius_ws`.
+- Default `SIGNAL_SOURCE=helius_logs` (create-ix via logsSubscribe; not programSubscribe).
 - Jito tip account из env / official tip pubkey (invalid → panic, не `new_unique`).
 - `SOLBOT_SKIP_SIMULATE_SELL` — **только paper**; live abort через `assert_safe_for_live`.
 - Live hard-guards: `PUBLIC_RPC=true` / `max_signal_age_ms=0` / skip_sim → refuse start.
