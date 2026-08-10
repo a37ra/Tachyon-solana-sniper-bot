@@ -1,45 +1,52 @@
 //! Associated Token Account (ATA) management.
 //!
-//! Every token swap requires the wallet to have an ATA for the token mint.
-//! This module handles:
-//! - Looking up existing ATAs
-//! - Building create-ATA instructions when needed
-//! - WSOL wrapping/unwrapping for native SOL swaps
+//! Supports classic SPL Token and Token-2022. Pump.fun mints are Token-2022
+//! (verified 2026-08-10: all paper-reject mints owned by TokenzQdBNb…).
 
 use anyhow::Result;
 use solana_instruction::Instruction;
 use solana_program::system_instruction;
 use solana_pubkey::Pubkey;
-use spl_associated_token_account::get_associated_token_address;
+use spl_associated_token_account::get_associated_token_address_with_program_id;
 use spl_associated_token_account::instruction::create_associated_token_account_idempotent;
 
 /// Native SOL mint (Wrapped SOL / WSOL).
 pub const WSOL_MINT: Pubkey = spl_token::native_mint::id();
 
-/// Derive the ATA address for a wallet + mint.
+/// Token-2022 program id.
+pub const TOKEN_2022_PROGRAM_ID: Pubkey =
+    solana_pubkey::pubkey!("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb");
+
+/// Derive the ATA address for a wallet + mint (classic SPL Token program).
 pub fn derive_ata(wallet: &Pubkey, mint: &Pubkey) -> Pubkey {
-    get_associated_token_address(wallet, mint)
+    derive_ata_with_program(wallet, mint, &spl_token::id())
 }
 
-/// Build an instruction to create an ATA if it doesn't exist.
-///
-/// Uses `create_associated_token_account` which is idempotent-safe:
-/// if the account already exists, the instruction is a no-op.
+/// Derive ATA for a specific token program (SPL Token or Token-2022).
+pub fn derive_ata_with_program(wallet: &Pubkey, mint: &Pubkey, token_program: &Pubkey) -> Pubkey {
+    get_associated_token_address_with_program_id(wallet, mint, token_program)
+}
+
+/// Create ATA idempotent for classic SPL Token.
 pub fn create_ata_instruction_if_needed(
     payer: &Pubkey,
     wallet: &Pubkey,
     mint: &Pubkey,
 ) -> Instruction {
-    create_associated_token_account_idempotent(payer, wallet, mint, &spl_token::id())
+    create_ata_instruction_with_program(payer, wallet, mint, &spl_token::id())
+}
+
+/// Create ATA idempotent for the given token program.
+pub fn create_ata_instruction_with_program(
+    payer: &Pubkey,
+    wallet: &Pubkey,
+    mint: &Pubkey,
+    token_program: &Pubkey,
+) -> Instruction {
+    create_associated_token_account_idempotent(payer, wallet, mint, token_program)
 }
 
 /// Build instructions to wrap SOL into WSOL for a buy swap.
-///
-/// 1. Create ATA for WSOL (idempotent)
-/// 2. Transfer SOL to the WSOL ATA
-/// 3. SyncNative to update the WSOL balance
-///
-/// Returns the WSOL ATA address and the setup instructions.
 pub fn wrap_sol_instructions(
     wallet: &Pubkey,
     amount_lamports: u64,
@@ -47,11 +54,8 @@ pub fn wrap_sol_instructions(
     let wsol_ata = derive_ata(wallet, &WSOL_MINT);
 
     let instructions = vec![
-        // Create WSOL ATA if needed
         create_ata_instruction_if_needed(wallet, wallet, &WSOL_MINT),
-        // Transfer SOL to WSOL ATA
         system_instruction::transfer(wallet, &wsol_ata, amount_lamports),
-        // Sync native balance
         spl_token::instruction::sync_native(&spl_token::id(), &wsol_ata)?,
     ];
 
@@ -59,43 +63,59 @@ pub fn wrap_sol_instructions(
 }
 
 /// Build instruction to close a WSOL account and reclaim rent + remaining balance.
-///
-/// Used after a sell swap completes (output is WSOL → unwrap to native SOL).
 pub fn close_wsol_account_instruction(wallet: &Pubkey) -> Result<Instruction> {
     let wsol_ata = derive_ata(wallet, &WSOL_MINT);
     Ok(spl_token::instruction::close_account(
         &spl_token::id(),
         &wsol_ata,
-        wallet, // destination for remaining lamports
-        wallet, // authority
+        wallet,
+        wallet,
         &[],
     )?)
 }
 
-/// Build instructions for token output account setup (for buy swaps).
-///
-/// Ensures the wallet has an ATA for the token being bought.
+/// Ensure wallet ATA for classic SPL Token mint.
 pub fn ensure_token_ata_instructions(
     wallet: &Pubkey,
     token_mint: &Pubkey,
 ) -> (Pubkey, Vec<Instruction>) {
-    let ata = derive_ata(wallet, token_mint);
-    let instructions = vec![create_ata_instruction_if_needed(wallet, wallet, token_mint)];
+    ensure_token_ata_instructions_with_program(wallet, token_mint, &spl_token::id())
+}
+
+/// Ensure wallet ATA for mint under the given token program.
+pub fn ensure_token_ata_instructions_with_program(
+    wallet: &Pubkey,
+    token_mint: &Pubkey,
+    token_program: &Pubkey,
+) -> (Pubkey, Vec<Instruction>) {
+    let ata = derive_ata_with_program(wallet, token_mint, token_program);
+    let instructions = vec![create_ata_instruction_with_program(
+        wallet,
+        wallet,
+        token_mint,
+        token_program,
+    )];
     (ata, instructions)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use solana_pubkey::Pubkey;
 
     #[test]
     fn test_derive_ata_deterministic() {
         let wallet = Pubkey::new_unique();
         let mint = Pubkey::new_unique();
-        let ata1 = derive_ata(&wallet, &mint);
-        let ata2 = derive_ata(&wallet, &mint);
-        assert_eq!(ata1, ata2);
+        assert_eq!(derive_ata(&wallet, &mint), derive_ata(&wallet, &mint));
+    }
+
+    #[test]
+    fn token_2022_ata_differs_from_classic() {
+        let wallet = Pubkey::new_unique();
+        let mint = Pubkey::new_unique();
+        let classic = derive_ata_with_program(&wallet, &mint, &spl_token::id());
+        let t22 = derive_ata_with_program(&wallet, &mint, &TOKEN_2022_PROGRAM_ID);
+        assert_ne!(classic, t22);
     }
 
     #[test]

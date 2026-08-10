@@ -208,13 +208,19 @@ async fn main() -> Result<()> {
                         }
                     } else if owner_str == "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P" {
                         counters.pump_fun_received += 1;
-                        match PumpFunBondingCurve::from_account_data(&update.data, &update.account) {
+                        // Mint is not in curve account bytes — layout-only parse for debug.
+                        let dummy_mint = solana_pubkey::Pubkey::default();
+                        match PumpFunBondingCurve::from_account_data_unchecked(
+                            &update.data,
+                            &update.account,
+                            &dummy_mint,
+                        ) {
                             Ok(pool) => {
                                 counters.pump_fun += 1;
                                 counters.pump_fun_parsed += 1;
                                 println!(
-                                    "{} | PumpFun       | bonding_curve={} | mint={} | slot={} | age={}",
-                                    ts, update.account, pool.mint, update.slot, age
+                                    "{} | PumpFun       | bonding_curve={} | complete={} | vtr={} | slot={} | age={}",
+                                    ts, update.account, pool.complete, pool.virtual_token_reserves, update.slot, age
                                 );
                             }
                             Err(e) => {

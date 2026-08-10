@@ -83,13 +83,19 @@ fn builder_smoke() -> anyhow::Result<()> {
     let mint = Pubkey::new_unique();
     let pool = Pubkey::new_unique();
 
-    // Pump
+    // Pump — layout: vtr@8 vsr@16 … complete@48 creator@49 (mint is external)
     {
-        let mut data = vec![0u8; 90];
-        data[8..40].copy_from_slice(mint.as_ref());
-        data[40..48].copy_from_slice(&1_000_000u64.to_le_bytes());
-        data[48..56].copy_from_slice(&30_000_000_000u64.to_le_bytes());
-        let curve = PumpFunBondingCurve::from_account_data(&data, &pool)?;
+        let pool = pump_fun::derive_bonding_curve(&mint);
+        let mut data = vec![0u8; 115];
+        data[8..16].copy_from_slice(&1_000_000_000u64.to_le_bytes());
+        data[16..24].copy_from_slice(&30_000_000_000u64.to_le_bytes());
+        data[40..48].copy_from_slice(&1_000_000_000u64.to_le_bytes());
+        data[49..81].copy_from_slice(Pubkey::new_unique().as_ref());
+        // complete@48 = 0; fee_recipient required for build_swap (normally from Global RPC)
+        pump_fun::inject_fee_recipient_for_tests(
+            Pubkey::from_str("62qc2CNXwrYqQScmEdiZFFAnJR262PxWEuNQtxfafNgV").unwrap(),
+        );
+        let curve = PumpFunBondingCurve::from_account_data(&data, &pool, &mint)?;
         let params = base_params(mint, pool, pump_fun::PUMP_FUN_PROGRAM, wallet);
         let _ = pump_fun::build_swap(&params, &curve)?;
     }

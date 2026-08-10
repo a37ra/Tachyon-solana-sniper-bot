@@ -96,6 +96,11 @@ async fn main() -> anyhow::Result<()> {
         shared_risk.assert_safe_for_live()?;
     }
 
+    // Pump fee_recipient from on-chain Global — no hardcoded tip/fee addresses.
+    solbot_strategy::tx_builder::pump_fun::load_fee_recipient_from_global(shared_rpc.as_ref())
+        .await
+        .map_err(|e| anyhow::anyhow!("pump Global fee_recipient load failed (refusing start): {e}"))?;
+
     let (wallet_pubkey, router, signer_client, live_rpc_url, dex_readiness) = if !is_paper {
         let live_rpc = env::var("SOLBOT_RPC_URL").unwrap_or_else(|_| rpc_url.clone());
         let signer_socket = env::var("SOLBOT_SIGNER_SOCKET")
@@ -461,6 +466,8 @@ fn reject_reason_bucket(reason: &str) -> String {
         "token2022".into()
     } else if r.contains("unsupported dex program for simulation") {
         "simulate_unsupported_dex".into()
+    } else if r.contains("builder_error") || r.contains("builder error") {
+        "builder_error".into()
     } else if r.contains("honeypot") || r.contains("simulate") || r.contains("tax") {
         "simulate_sell".into()
     } else if r.contains("failed to fetch pre-buy") {

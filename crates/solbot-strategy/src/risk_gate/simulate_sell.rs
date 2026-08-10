@@ -182,8 +182,11 @@ async fn simulate_sell_transaction(
             crate::tx_builder::meteora_damm_v2::build_swap(&params, &state)
         }
         PUMP_FUN_PROGRAM => {
-            let curve =
-                pump_fun::PumpFunBondingCurve::from_account_data(&pool_data, &pool_pubkey)?;
+            let curve = pump_fun::PumpFunBondingCurve::from_account_data(
+                &pool_data,
+                &pool_pubkey,
+                &mint_pubkey,
+            )?;
             pump_fun::build_swap(&params, &curve)
         }
         _ => anyhow::bail!("Unsupported DEX program for simulation: {}", dex_str),
@@ -236,6 +239,21 @@ async fn simulate_sell_transaction(
                 duration_ms: elapsed.as_millis() as u64,
             })
         }
+        SimClass::BuilderError { detail } => {
+            // Fail-closed: broken ix layout would also fail with a real funded wallet.
+            tracing::error!(
+                mint = %mint_str,
+                pool = %pool_str,
+                detail = %detail,
+                "BUILDER ERROR: sell tx structure invalid (Anchor account constraint) — \
+                 reject + code review required; not a dummy-wallet artifact"
+            );
+            Ok(CheckResult {
+                passed: false,
+                reason: Some(format!("builder_error: {detail}")),
+                duration_ms: elapsed.as_millis() as u64,
+            })
+        }
         SimClass::BenignDummyWallet { detail } => {
             tracing::debug!(
                 mint = %mint_str,
@@ -269,17 +287,23 @@ async fn simulate_sell_transaction(
 pub enum SimClass {
     /// Real rug/honeypot signal — reject buy.
     Honeypot { reason: String },
-    /// Expected failure from dummy unsigned wallet / empty ATA — do not reject.
+    /// Expected failure from dummy unsigned wallet / empty ATA — pass (not honeypot).
     BenignDummyWallet { detail: String },
+    /// Our tx builder produced a structurally invalid instruction (wrong account list, etc.).
+    /// Fail-closed reject + alert — would also fail with a real funded wallet.
+    BuilderError { detail: String },
     /// No error (or only uninteresting noise) — pass.
     Clean,
 }
 
-/// Pure classifier (unit-tested). Decides honeypot vs dummy-wallet artifact vs clean.
+/// Pure classifier (unit-tested).
 ///
-/// Dummy wallet has no SOL/tokens/ATAs and does not sign — so AccountNotFound,
-/// InsufficientFunds, MissingSignature, etc. are **not** honeypot evidence.
-/// Custom program errors + tax/freeze log markers **are**.
+/// Three failure classes:
+/// 1. **BenignDummyWallet** — inherent to dummy unsigned empty wallet
+///    (MissingSignature, InsufficientFunds, AccountNotFound, pump 6022/6023 zero balance).
+/// 2. **BuilderError** — Anchor account-constraint codes (3005/3010/3012/3014…):
+///    the instruction we built is structurally wrong; same error with a real wallet.
+/// 3. **Honeypot** — transfer tax/freeze logs or other Custom program errors.
 pub fn classify_simulation_outcome(err_str: Option<&str>, logs: &[String]) -> SimClass {
     // Log-based honeypot markers (checked even when err is benign — tax may appear in logs).
     for log in logs {
@@ -306,13 +330,18 @@ pub fn classify_simulation_outcome(err_str: Option<&str>, logs: &[String]) -> Si
         return SimClass::Clean;
     };
 
+    if is_builder_structure_error(err) {
+        return SimClass::BuilderError {
+            detail: err.to_string(),
+        };
+    }
+
     if is_benign_dummy_wallet_error(err) {
         return SimClass::BenignDummyWallet {
             detail: err.to_string(),
         };
     }
 
-    // Program/custom instruction failures (after benign markers already checked).
     if err.contains("Custom")
         || err.contains("ProgramFailed")
         || err.contains("InstructionError")
@@ -322,13 +351,34 @@ pub fn classify_simulation_outcome(err_str: Option<&str>, logs: &[String]) -> Si
         };
     }
 
-    // Unknown error strings: fail-closed (safer than silently buying).
     SimClass::Honeypot {
         reason: format!("Sell simulation failed (unclassified error): {}", err),
     }
 }
 
-/// Errors expected when simulating with a random unsigned dummy payer.
+/// Anchor `ErrorCode` account constraints — indicate **our** instruction layout is wrong,
+/// not dummy-wallet poverty. Same failure would occur with a funded signer.
+///
+/// https://github.com/coral-xyz/anchor — AccountNotEnoughKeys=3005, AccountNotMutable=3006,
+/// AccountOwnedByWrongProgram=3007, InvalidProgramId=3008, AccountNotSigner=3010,
+/// AccountNotInitialized=3012, AccountNotAssociatedTokenAccount=3014, …
+fn is_builder_structure_error(err: &str) -> bool {
+    const CODES: &[&str] = &[
+        "Custom(3005)", // AccountNotEnoughKeys
+        "Custom(3006)", // AccountNotMutable
+        "Custom(3007)", // AccountOwnedByWrongProgram
+        "Custom(3008)", // InvalidProgramId
+        "Custom(3010)", // AccountNotSigner
+        "Custom(3011)", // AccountNotSystemOwned
+        "Custom(3012)", // AccountNotInitialized
+        "Custom(3014)", // AccountNotAssociatedTokenAccount
+        "Custom(3015)", // AccountSysvarMismatch
+    ];
+    CODES.iter().any(|m| err.contains(m))
+}
+
+/// Errors expected when simulating with a random unsigned dummy payer,
+/// or known DEX "no balance" codes that are not transfer restrictions.
 fn is_benign_dummy_wallet_error(err: &str) -> bool {
     const MARKERS: &[&str] = &[
         "AccountNotFound",
@@ -336,11 +386,14 @@ fn is_benign_dummy_wallet_error(err: &str) -> bool {
         "MissingSignature",
         "SignatureVerification",
         "BlockhashNotFound",
-        "InsufficientFunds", // dummy has 0 SOL / 0 tokens
-        "AccountBorrowed",   // account lock race in sim
+        "InsufficientFunds",
+        "AccountBorrowed",
         "AlreadyInUse",
-        "InvalidAccountOwner", // ATA doesn't exist yet for dummy
+        "InvalidAccountOwner",
         "IllegalOwner",
+        // pump.fun IDL: dummy wallet has 0 tokens to sell.
+        "Custom(6022)", // SellZeroAmount
+        "Custom(6023)", // NotEnoughTokensToSell
     ];
     MARKERS.iter().any(|m| err.contains(m))
 }
@@ -412,6 +465,45 @@ mod tests {
     fn classify_account_not_found_is_benign() {
         let c = classify_simulation_outcome(Some("AccountNotFound"), &[]);
         assert!(matches!(c, SimClass::BenignDummyWallet { .. }), "{c:?}");
+    }
+
+    #[test]
+    fn classify_anchor_3005_is_builder_error_not_benign() {
+        // AccountNotEnoughKeys = our ix list is wrong — fail-closed, not dummy pass.
+        let c = classify_simulation_outcome(
+            Some("InstructionError(1, Custom(3005))"),
+            &[],
+        );
+        assert!(matches!(c, SimClass::BuilderError { .. }), "{c:?}");
+    }
+
+    #[test]
+    fn classify_anchor_3012_is_builder_error() {
+        let c = classify_simulation_outcome(
+            Some("InstructionError(1, Custom(3012))"),
+            &[],
+        );
+        assert!(matches!(c, SimClass::BuilderError { .. }), "{c:?}");
+    }
+
+    #[test]
+    fn classify_pump_not_enough_tokens_to_sell_is_benign() {
+        // pump IDL 6023 NotEnoughTokensToSell — dummy has 0 balance.
+        let c = classify_simulation_outcome(
+            Some("InstructionError(1, Custom(6023))"),
+            &[],
+        );
+        assert!(matches!(c, SimClass::BenignDummyWallet { .. }), "{c:?}");
+    }
+
+    #[test]
+    fn classify_token_custom_still_honeypot_without_tax_log() {
+        // Generic Custom that is NOT in the benign allow-list stays honeypot (fail-closed).
+        let c = classify_simulation_outcome(
+            Some("InstructionError(2, Custom(17))"),
+            &[],
+        );
+        assert!(matches!(c, SimClass::Honeypot { .. }), "{c:?}");
     }
 
     #[test]
