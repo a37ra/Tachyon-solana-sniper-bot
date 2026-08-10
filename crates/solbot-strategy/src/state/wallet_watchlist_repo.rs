@@ -11,18 +11,29 @@ impl WalletWatchlistRepo {
     }
 
     pub async fn is_active(&self, wallet_address: &str) -> Result<bool> {
-        let row = sqlx::query!(
-            r#"
-            SELECT status FROM wallet_watchlist WHERE wallet_address = ?
-            "#,
-            wallet_address
-        )
-        .fetch_optional(&self.pool)
-        .await?;
+        let row: Option<(String,)> =
+            sqlx::query_as("SELECT status FROM wallet_watchlist WHERE wallet_address = ?")
+                .bind(wallet_address)
+                .fetch_optional(&self.pool)
+                .await?;
 
-        match row {
-            Some(record) => Ok(record.status == "active"),
-            None => Ok(false),
-        }
+        Ok(matches!(row.as_ref().map(|r| r.0.as_str()), Some("active")))
+    }
+
+    /// Active watchlist addresses for Geyser/logs subscription (TZ §2.5).
+    pub async fn list_active(&self) -> Result<Vec<String>> {
+        let rows: Vec<(String,)> =
+            sqlx::query_as("SELECT wallet_address FROM wallet_watchlist WHERE status = 'active'")
+                .fetch_all(&self.pool)
+                .await?;
+        Ok(rows.into_iter().map(|r| r.0).collect())
+    }
+
+    pub async fn count_active(&self) -> Result<i64> {
+        let row: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM wallet_watchlist WHERE status = 'active'")
+                .fetch_one(&self.pool)
+                .await?;
+        Ok(row.0)
     }
 }
