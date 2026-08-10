@@ -37,4 +37,14 @@ impl SmartMoneyHitsRepo {
 
         Ok(())
     }
+
+    /// True if any watchlist wallet hit this mint (for hard_gate / soft_boost).
+    pub async fn has_hit_for_mint(&self, mint: &str) -> Result<bool> {
+        let row: Option<(i64,)> =
+            sqlx::query_as("SELECT 1 FROM smart_money_hits WHERE mint = ? LIMIT 1")
+                .bind(mint)
+                .fetch_optional(&self.pool)
+                .await?;
+        Ok(row.is_some())
+    }
 }
