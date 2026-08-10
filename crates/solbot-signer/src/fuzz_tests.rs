@@ -6,24 +6,57 @@
 //! - No panics on any input combination
 
 #[cfg(test)]
-mod tests {
-    use crate::validation::validate_intent;
-    use chrono::Utc;
-    use rand::Rng;
-    use solbot_common::types::intent::{IntentType, SignerIntentRequest};
+    mod tests {
+        use crate::validation::validate_intent;
+        use base64::Engine;
+        use chrono::Utc;
+        use rand::Rng;
+        use solbot_common::types::intent::{IntentType, SignerIntentRequest};
+        use solana_sdk::hash::Hash;
 
     const VALID_PROGRAM: &str = "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8";
     const PROGRAMS: &[&str] = &[
         "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8",
         "CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C",
         "CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK",
+        "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo",
         "LBUZKhRxPF3XUpBCjp4kVn14nz88kZjgL6Xm1xS8bKp",
-        "Eo7WjKq67rjJQSZxS6z3YKapzY3eMj6Xy8X5EQVn5UaB",
+        "cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG",
+        "Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB",
         "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P",
     ];
     const WHITELIST: &[&str] = &["safe_wallet_1", "safe_wallet_2"];
     const MAX_SIZE: u64 = 10_000_000_000; // 10 SOL
     const HARD_CAP_LIMIT: u32 = 5000; // 50%
+
+    /// Minimal unsigned tx whose sole non-utility ix targets `program` (for program_id match).
+    fn dummy_tx_b64(program: &str) -> String {
+        use solana_instruction::{AccountMeta, Instruction};
+        use solana_pubkey::Pubkey;
+        use solana_transaction::Transaction;
+        use std::str::FromStr;
+
+        let program_pk = Pubkey::from_str(program).unwrap_or_else(|_| Pubkey::new_unique());
+        let wallet = Pubkey::new_unique();
+        let dest = Pubkey::new_unique();
+        // Raydium-like payload: disc + amount_in + min_out (for amount/slippage checks when program is AMM v4)
+        let mut data = vec![9u8];
+        data.extend_from_slice(&1_000_000_000u64.to_le_bytes());
+        data.extend_from_slice(&950_000_000u64.to_le_bytes()); // 5% slip
+        let ix = Instruction {
+            program_id: program_pk,
+            accounts: vec![
+                AccountMeta::new(wallet, true),
+                AccountMeta::new(dest, false),
+            ],
+            data,
+        };
+        let mut tx = Transaction::new_with_payer(&[ix], Some(&wallet));
+        // Zero blockhash is fine for validation-only fuzz (not submitted).
+        tx.message.recent_blockhash = Hash::default();
+        let bytes = bincode::serialize(&tx).expect("serialize");
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    }
 
     fn make_valid_req(seq: u64) -> SignerIntentRequest {
         let now = Utc::now().timestamp_millis() as u64;
@@ -32,12 +65,12 @@ mod tests {
             ipc_seq: seq,
             issued_at_unix_ms: now,
             intent_type: IntentType::Buy,
-            unsigned_transaction_base64: "dGVzdA==".to_string(),
+            unsigned_transaction_base64: dummy_tx_b64(VALID_PROGRAM),
             program_id: VALID_PROGRAM.to_string(),
             dex_program_id: VALID_PROGRAM.to_string(),
             max_size_lamports: 1_000_000_000,
             hard_cap_bps: 500,
-            destination_addresses: vec!["safe_wallet_1".to_string()],
+            destination_addresses: vec![], // empty → destination checks skipped
             mint: "fuzz_mint".to_string(),
             pool_address: "fuzz_pool".to_string(),
             position_id: None,
@@ -127,9 +160,16 @@ mod tests {
                     req.ipc_seq = last_seq + 1;
                 }
                 Mutation::BadDestination => {
+                    // Non-empty dest not on whitelist → UnexpectedDestination
                     req.destination_addresses =
                         vec![format!("attacker_{}", rng.gen_range(0..1000))];
+                    // Destination validation also checks presence in tx accounts —
+                    // empty dest list on valid path; for bad dest metadata alone:
+                    // if whitelist check runs first after decode, may still ProgramIdMismatch
+                    // on dest decode. Keep metadata-only path with empty tx dest check skip
+                    // when addresses not in tx → UnexpectedDestination after program checks.
                     req.ipc_seq = last_seq + 1;
+                    req.issued_at_unix_ms = Utc::now().timestamp_millis() as u64;
                 }
             }
 

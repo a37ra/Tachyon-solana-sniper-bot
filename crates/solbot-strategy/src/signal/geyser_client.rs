@@ -124,19 +124,69 @@ impl ExtendedHistoryProvider {
         Self { rpc, db_pool }
     }
 
-    /// Backfill account updates for missed slots.
+    /// Backfill recent signatures for each open position's pool (slot window).
     ///
-    /// Note: This method is kept for API compatibility but is not used.
-    /// The actual backfill logic is in `perform_backfill()` which checks
-    /// open positions instead of scanning slots.
+    /// For each open position pool, fetches up to `max_sigs` recent signatures
+    /// via `getSignaturesForAddress` to detect activity during disconnect.
     pub async fn backfill_slots(
         &self,
         _program_ids: &[Pubkey],
-        _start_slot: u64,
-        _end_slot: u64,
+        start_slot: u64,
+        end_slot: u64,
     ) -> Result<Vec<AccountUpdate>> {
-        // Not used - we perform position-based backfill instead
-        Ok(vec![])
+        let positions = sqlx::query_as::<_, (String,)>(
+            r#"SELECT DISTINCT pool_address FROM positions WHERE status IN ('opening','open')"#,
+        )
+        .fetch_all(&*self.db_pool)
+        .await
+        .unwrap_or_default();
+
+        let mut out = Vec::new();
+        let max_sigs: usize = std::env::var("SOLBOT_BACKFILL_MAX_SIGS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(20);
+
+        for (pool_s,) in positions {
+            let Ok(pool_pk) = Pubkey::try_from(pool_s.as_str()) else {
+                continue;
+            };
+            let rpc = Arc::clone(&self.rpc);
+            let pool_for_rpc = pool_pk;
+            let sigs = tokio::task::spawn_blocking(move || {
+                rpc.get_signatures_for_address(&pool_for_rpc)
+            })
+            .await;
+            let Ok(Ok(list)) = sigs else {
+                continue;
+            };
+            for info in list.into_iter().take(max_sigs) {
+                let slot = info.slot;
+                if slot < start_slot || slot > end_slot {
+                    continue;
+                }
+                out.push(AccountUpdate {
+                    account: pool_pk,
+                    slot,
+                    lamports: 0,
+                    data: vec![],
+                    owner: Pubkey::default(),
+                    executable: false,
+                    rent_epoch: 0,
+                    timestamp_ms: std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_millis() as u64)
+                        .unwrap_or(0),
+                });
+            }
+        }
+        info!(
+            updates = out.len(),
+            start_slot,
+            end_slot,
+            "backfill_slots completed"
+        );
+        Ok(out)
     }
 
     /// Perform backfill for open positions after gRPC reconnection.
@@ -150,7 +200,13 @@ impl ExtendedHistoryProvider {
     pub async fn perform_backfill(&self) -> Result<usize> {
         let backfill_start = std::time::Instant::now();
 
-        let result = timeout(Duration::from_millis(150), self.perform_backfill_internal()).await;
+        // Configurable: default 2s (150ms was too tight for multi-position RPC).
+        let timeout_ms: u64 = std::env::var("SOLBOT_BACKFILL_TIMEOUT_MS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(2_000);
+        let result =
+            timeout(Duration::from_millis(timeout_ms), self.perform_backfill_internal()).await;
 
         match result {
             Ok(Ok(count)) => {
@@ -166,8 +222,8 @@ impl ExtendedHistoryProvider {
                 Err(e)
             }
             Err(_) => {
-                warn!("Backfill timeout after 150ms");
-                Ok(0) // Return success with 0 positions checked
+                warn!("Backfill timeout after {}ms", timeout_ms);
+                Ok(0)
             }
         }
     }

@@ -1035,6 +1035,17 @@ pub async fn execute_buy_pipeline(
         closed_at_utc: None,
     };
 
+    if ctx.trading_mode == TradingMode::Paper {
+        crate::paper_trade_log::log_paper_buy(
+            &ctx.mint,
+            &ctx.pool_address,
+            &ctx.dex_program_id,
+            position_size_sol,
+            entry_price_sol,
+            &position.position_id,
+        );
+    }
+
     // Persist position with Opening status
     if let Some(ref repo) = ctx.positions_repo {
         if let Err(e) = repo.insert(&position).await {
@@ -1664,11 +1675,34 @@ pub async fn execute_exit_pipeline(
                             );
 
                             // Record loss to circuit breaker if position closed with negative PnL
+                            if ctx.trading_mode == TradingMode::Paper {
+                                let entry = pos.entry_price_sol;
+                                let exit_px = if entry > 0.0 {
+                                    entry * (1.0 + pos.realized_pnl_net_sol / pos.size_sol.max(1e-12))
+                                } else {
+                                    0.0
+                                };
+                                let pnl_pct = if pos.size_sol > 0.0 {
+                                    (pos.realized_pnl_net_sol / pos.size_sol) * 100.0
+                                } else {
+                                    0.0
+                                };
+                                crate::paper_trade_log::log_paper_sell(
+                                    &pos.mint,
+                                    &pos.position_id,
+                                    pos.size_sol,
+                                    entry,
+                                    exit_px,
+                                    pos.realized_pnl_net_sol,
+                                    pnl_pct,
+                                    "exit_pipeline",
+                                );
+                            }
                             if pos.realized_pnl_net_sol < 0.0 {
-                                if let Some(ref circuit_breaker) = ctx.circuit_breaker {
+                                if let Some(ref cb) = ctx.circuit_breaker {
                                     let loss_pct =
                                         (-pos.realized_pnl_net_sol / ctx.capital_sol) * 100.0;
-                                    let status = circuit_breaker.record_loss(ctx.tier, loss_pct);
+                                    let status = cb.record_loss(ctx.tier, loss_pct);
                                     tracing::warn!(
                                         position_id = %pos.position_id,
                                         loss_sol = pos.realized_pnl_net_sol,
