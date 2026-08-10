@@ -185,12 +185,17 @@ async fn main() -> Result<()> {
                             }
                         }
                     } else if update.owner == dex_programs::PUMP_FUN {
-                        match PumpFunBondingCurve::from_account_data(&update.data, &update.account) {
+                        let dummy_mint = solana_pubkey::Pubkey::default();
+                        match PumpFunBondingCurve::from_account_data_unchecked(
+                            &update.data,
+                            &update.account,
+                            &dummy_mint,
+                        ) {
                             Ok(curve) => {
                                 counters.pump_fun += 1;
                                 println!(
-                                    "{ts} | PumpFun       | curve={} | mint={} | complete={} | slot={} | age={age}",
-                                    update.account, curve.mint, curve.complete, update.slot
+                                    "{ts} | PumpFun       | curve={} | complete={} | vtr={} | slot={} | age={age}",
+                                    update.account, curve.complete, curve.virtual_token_reserves, update.slot
                                 );
                             }
                             Err(e) => {

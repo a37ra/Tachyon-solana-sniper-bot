@@ -313,6 +313,13 @@ pub fn try_parse_meteora_dynamic(
     build_signal(mint, account, owner, slot, ts_ms, source, data)
 }
 
+/// Account-update pump parser — **does not emit signals**.
+///
+/// Mint is not present in bonding-curve account bytes (layout: vtr@8 … complete@48,
+/// creator@49). Primary source: `create_ix_source` / `SIGNAL_SOURCE=helius_logs`.
+///
+/// Still reachable via `dex_listeners/pump_fun` if someone sets `helius_ws`; emits a
+/// one-shot warn so silence is not mistaken for "no new pools".
 pub fn try_parse_pump_bonding_curve(
     account: Pubkey,
     owner: Pubkey,
@@ -323,51 +330,19 @@ pub fn try_parse_pump_bonding_curve(
     seen: &SeenPools,
     migration_only: bool,
 ) -> Option<Signal> {
-    if data.len() < PUMP_CURVE_SIZE_MIN || data.len() > PUMP_CURVE_SIZE_MAX {
-        return None;
+    let _ = (account, owner, data, slot, ts_ms, source, seen, migration_only);
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static WARNED: AtomicBool = AtomicBool::new(false);
+    if !WARNED.swap(true, Ordering::Relaxed) {
+        tracing::warn!(
+            "pump.fun account-update parser is disabled (mint not in curve layout) — \
+             use SIGNAL_SOURCE=helius_logs / create_ix; helius_ws will emit zero pump signals"
+        );
     }
-    let mint = read_pubkey(data, 8)?;
-    if !is_plausible_spl_mint(&mint) {
-        return None;
-    }
-    // Verify PDA: bonding_curve = PDA(["bonding-curve", mint], program)
-    let (expected_pda, _) =
-        Pubkey::find_program_address(&[b"bonding-curve", mint.as_ref()], &owner);
-    if expected_pda != account {
-        return None;
-    }
-
-    let complete = data.get(8 + 72).copied().unwrap_or(0) != 0;
-    if migration_only && !complete {
-        return None;
-    }
-    if !migration_only && complete {
-        return None;
-    }
-
-    // First-seen only — every trade updates the curve; without this queue explodes.
-    // Migration uses a distinct key so a curve we tracked as active can still emit migrate.
-    let claim_key = if complete {
-        format!("{}:migrated", account)
-    } else {
-        account.to_string()
-    };
-    if !seen.try_claim(&claim_key) {
-        return None;
-    }
-
-    let src = if complete {
-        "pump_fun_migration"
-    } else {
-        source
-    };
-
-    // Soft preference: brand-new curves still have near-initial virtual token reserves.
-    // Do not hard-require (migrations / edge cases) — first-seen PDA is enough.
-    let _vtr = u64::from_le_bytes(data.get(40..48).and_then(|s| s.try_into().ok()).unwrap_or([0; 8]));
+    let _ = PUMP_CURVE_SIZE_MIN;
+    let _ = PUMP_CURVE_SIZE_MAX;
     let _ = PUMP_INITIAL_VIRTUAL_TOKEN_RESERVES;
-
-    build_signal(mint, account, owner, slot, ts_ms, src, data)
+    None
 }
 
 #[cfg(test)]
@@ -418,34 +393,17 @@ mod tests {
     }
 
     #[test]
-    fn pump_rejects_non_pda_account() {
+    fn pump_account_path_disabled_without_mint_in_data() {
+        // Account-update path cannot recover mint (not in curve bytes).
         let seen = SeenPools::with_warmup_secs(0);
-        let mut data = vec![0u8; 90];
-        let mint = Pubkey::new_unique();
-        data[8..40].copy_from_slice(mint.as_ref());
+        let data = vec![0u8; 90];
         let owner = pk("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P");
-        let random_account = Pubkey::new_unique(); // not PDA
+        let (pda, _) =
+            Pubkey::find_program_address(&[b"bonding-curve", Pubkey::new_unique().as_ref()], &owner);
         assert!(
-            try_parse_pump_bonding_curve(random_account, owner, &data, 1, 1, "t", &seen, false)
+            try_parse_pump_bonding_curve(pda, owner, &data, 1, 1, "helius_ws", &seen, false)
                 .is_none()
         );
-    }
-
-    #[test]
-    fn pump_accepts_valid_pda_first_seen_only() {
-        let seen = SeenPools::with_warmup_secs(0);
-        let mut data = vec![0u8; 90];
-        let mint = Pubkey::new_unique();
-        data[8..40].copy_from_slice(mint.as_ref());
-        // non-zero virtual reserves so layout looks live
-        data[40..48].copy_from_slice(&1_000_000u64.to_le_bytes());
-        let owner = pk("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P");
-        let (pda, _) = Pubkey::find_program_address(&[b"bonding-curve", mint.as_ref()], &owner);
-        let s1 = try_parse_pump_bonding_curve(pda, owner, &data, 1, 1, "helius_ws", &seen, false);
-        assert!(s1.is_some(), "first PDA curve should emit");
-        assert_eq!(s1.unwrap().mint, mint.to_string());
-        let s2 = try_parse_pump_bonding_curve(pda, owner, &data, 2, 2, "helius_ws", &seen, false);
-        assert!(s2.is_none(), "second update must be deduped");
     }
 
     #[test]

@@ -540,9 +540,11 @@ async fn fetch_and_build_dex_swap(
         let Some(data) = fetch_account_data!(pool_pubkey) else {
             fail_or_placeholder!("Failed to fetch pool account in Live mode");
         };
-        let Ok(curve) =
-            pump_fun_builder::PumpFunBondingCurve::from_account_data(&data, &pool_pubkey)
-        else {
+        let Ok(curve) = pump_fun_builder::PumpFunBondingCurve::from_account_data(
+            &data,
+            &pool_pubkey,
+            &mint_pubkey,
+        ) else {
             fail_or_placeholder!("Failed to parse Pump.fun bonding curve in Live mode");
         };
 

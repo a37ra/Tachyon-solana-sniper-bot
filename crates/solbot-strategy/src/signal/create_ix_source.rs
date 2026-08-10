@@ -105,17 +105,20 @@ async fn run_logs_loop(
                             // Fast path: pump Create with Program data fully decoded.
                             if ps.resolved_from_log_data {
                                 if let (Some(mint), pool) = (ps.mint, ps.pool_address) {
-                                    if let Some(signal) = finalize_signal(
+                                    if let Some(mut signal) = finalize_signal(
                                         mint.to_string(),
                                         pool.to_string(),
                                         ps.dex.program_id().to_string(),
                                         ps.slot,
                                         seen,
                                     ) {
+                                        // Restore 1-RTT risk-gate path: attach curve account now.
+                                        attach_pool_account(rpc.as_ref(), &mut signal).await;
                                         info!(
                                             mint = %signal.mint,
                                             pool = %signal.pool_address,
                                             dex = %signal.dex_program,
+                                            has_raw_pool = signal.raw_pool_account_data.is_some(),
                                             "create-ix signal (log-data)"
                                         );
                                         if tx.send(signal).await.is_err() {
@@ -128,11 +131,13 @@ async fn run_logs_loop(
 
                             let Some(sig_str) = ps.signature.as_ref() else { continue };
                             match resolve_from_tx(rpc.as_ref(), sig_str, ps.slot, program_ids, seen).await {
-                                Ok(Some(signal)) => {
+                                Ok(Some(mut signal)) => {
+                                    attach_pool_account(rpc.as_ref(), &mut signal).await;
                                     info!(
                                         mint = %signal.mint,
                                         pool = %signal.pool_address,
                                         dex = %signal.dex_program,
+                                        has_raw_pool = signal.raw_pool_account_data.is_some(),
                                         "create-ix signal (getTransaction)"
                                     );
                                     if tx.send(signal).await.is_err() {
@@ -252,6 +257,10 @@ fn extract_from_versioned(
         if !looks_like_create_ix(prog, data) {
             continue;
         }
+        // One-time mainnet dump: log full account list for non-pump creates so indices
+        // can be verified against live data (not only SDK helper order).
+        log_create_accounts_once(prog, keys, acc_idxs, data);
+
         if let Some((mint, pool)) = resolve_accounts_for_program(prog, keys, acc_idxs, data) {
             if let Some(s) = finalize_signal(mint, pool, prog.to_string(), slot, seen) {
                 return Some(s);
@@ -259,6 +268,51 @@ fn extract_from_versioned(
         }
     }
     None
+}
+
+/// Log raw create-ix account indices once per program (live verification aid).
+fn log_create_accounts_once(prog: &Pubkey, keys: &[Pubkey], acc_idxs: &[u8], data: &[u8]) {
+    use std::collections::HashSet;
+    use std::sync::Mutex;
+    static LOGGED: Mutex<Option<HashSet<String>>> = Mutex::new(None);
+
+    let pid = prog.to_string();
+    // Pump is already verified via Program data path; dump Raydium/Meteora.
+    if pid == "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P" {
+        return;
+    }
+
+    let mut guard = LOGGED.lock().unwrap_or_else(|e| e.into_inner());
+    let set = guard.get_or_insert_with(HashSet::new);
+    if !set.insert(pid.clone()) {
+        return;
+    }
+
+    let disc = if data.is_empty() {
+        "empty".into()
+    } else {
+        data.iter()
+            .take(8)
+            .map(|b| format!("{b:02x}"))
+            .collect::<Vec<_>>()
+            .join("")
+    };
+
+    let mut lines = Vec::with_capacity(acc_idxs.len());
+    for (i, idx) in acc_idxs.iter().enumerate() {
+        let pk = keys
+            .get(*idx as usize)
+            .map(|k| k.to_string())
+            .unwrap_or_else(|| "?".into());
+        lines.push(format!("[{i:02}] idx={idx} {pk}"));
+    }
+    info!(
+        program = %pid,
+        disc = %disc,
+        n_accounts = acc_idxs.len(),
+        accounts = %lines.join(" | "),
+        "CREATE_IX_ACCOUNT_DUMP (first live create for this program — verify indices)"
+    );
 }
 
 /// Gate getTransaction account extraction so swaps do not invent mint/pool pairs.
@@ -297,15 +351,23 @@ fn prefer_non_wsol(a: String, b: String) -> String {
     }
 }
 
-/// Map instruction accounts → (mint, pool). Indices from upstream program sources.
+/// Map instruction accounts → (mint, pool).
 ///
-/// | Program | Source | pool idx | mint idx |
-/// |---------|--------|----------|----------|
-/// | AMM v4 Initialize2 | raydium-amm `initialize2()` | 4 | 8 (coin), 9 (pc) |
-/// | CPMM Initialize | raydium-cp-swap `Initialize` | 3 | 4/5 (token_0/1) |
-/// | CLMM CreatePool | raydium-clmm `CreatePool` | 2 | 3/4 |
-/// | DAMM v2 InitializePool | meteora damm-v2 `InitializePoolCtx` | 6 | 8/9 |
-/// | Pump create | pump accounts (mint@0 curve@2 common) | 2 | 0 |
+/// ## Provenance (not guessed)
+///
+/// | Program | Evidence | pool | mint |
+/// |---------|----------|------|------|
+/// | AMM v4 Initialize2 | github.com/raydium-io/raydium-amm `program/src/instruction.rs` `initialize2()` AccountMeta order: [0]token [1]ata [2]system [3]rent **[4]amm_pool** [5]authority [6]oo [7]lp **[8]coin_mint [9]pc_mint** …; ix tag **1** | 4 | 8/9 |
+/// | CPMM Initialize | github.com/raydium-io/raydium-cp-swap `programs/cp-swap/src/instructions/initialize.rs` `Initialize`: [0]creator [1]amm_config [2]authority **[3]pool_state** **[4]token_0_mint [5]token_1_mint** … | 3 | 4/5 |
+/// | CLMM CreatePool | github.com/raydium-io/raydium-clmm `programs/amm/src/instructions/create_pool.rs` `CreatePool`: [0]pool_creator [1]amm_config **[2]pool_state** **[3]token_mint_0 [4]token_mint_1** … | 2 | 3/4 |
+/// | DAMM v2 InitializePool | github.com/MeteoraAg/damm-v2 `…/initialize_pool/ix_initialize_pool.rs` `InitializePoolCtx`: [0]creator [1]pos_nft_mint [2]pos_nft_acc [3]payer [4]config [5]pool_authority **[6]pool** [7]position **[8]token_a_mint [9]token_b_mint** … | 6 | 8/9 |
+/// | Pump Create | Create event `Program data` (mint+curve) preferred; ix accounts mint@0 curve@2 as fallback | 2 | 0 |
+///
+/// **Mainnet getTransaction scan note (2026-08-10):** AMM v4 Initialize2 is rare
+/// (0 hits in 500 recent successful program txs — almost all swaps). Layout therefore
+/// rests on the official `initialize2()` helper, not a fresh dump. CPMM/CLMM/DAMM creates
+/// are also sparse vs swaps on free RPC; source `#[derive(Accounts)]` order is the
+/// authoritative account index list for Anchor programs.
 fn resolve_accounts_for_program(
     prog: &Pubkey,
     keys: &[Pubkey],
@@ -399,6 +461,47 @@ fn resolve_accounts_for_program(
 
     // No silent generic heuristic — better miss than invent a blue-chip mint.
     None
+}
+
+/// Fetch pool/curve account bytes into the signal so risk-gate can use `from_ws_update`
+/// (1 RTT for mint) instead of full multi-account fetch. LogsSubscribe itself has no
+/// account payload — this is the intentional recovery of that latency path.
+async fn attach_pool_account(rpc: &RpcClient, signal: &mut Signal) {
+    let Ok(pool_pk) = Pubkey::from_str(&signal.pool_address) else {
+        return;
+    };
+    // Fresh creates: short retries (curve may lag processed indexer by tens–hundreds ms).
+    for (i, wait_ms) in [0_u64, 80, 200, 400].iter().enumerate() {
+        if *wait_ms > 0 {
+            sleep(Duration::from_millis(*wait_ms)).await;
+        }
+        match rpc.get_account(&pool_pk).await {
+            Ok(acc) => {
+                signal.raw_pool_account_data = Some(acc.data);
+                signal.raw_pool_account_owner = Some(acc.owner.to_string());
+                if i > 0 {
+                    info!(
+                        pool = %signal.pool_address,
+                        attempt = i,
+                        "pool account attached after retry"
+                    );
+                }
+                return;
+            }
+            Err(_) => {
+                debug!(
+                    pool = %signal.pool_address,
+                    attempt = i,
+                    "pool account not yet available for attach"
+                );
+            }
+        }
+    }
+    warn!(
+        pool = %signal.pool_address,
+        mint = %signal.mint,
+        "could not attach raw_pool_account_data — risk-gate will multi-fetch"
+    );
 }
 
 fn finalize_signal(
