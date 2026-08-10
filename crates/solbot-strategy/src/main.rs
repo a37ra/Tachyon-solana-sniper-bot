@@ -79,9 +79,13 @@ async fn main() -> anyhow::Result<()> {
     let actor_registry = ActorRegistry::new();
 
     let rpc_url = resolve_rpc_url();
-    let shared_rpc = Arc::new(solana_rpc_client::nonblocking::rpc_client::RpcClient::new(
-        rpc_url.clone(),
-    ));
+    // processed: create-ix mints are visible earlier than confirmed/finalized
+    let shared_rpc = Arc::new(
+        solana_rpc_client::nonblocking::rpc_client::RpcClient::new_with_commitment(
+            rpc_url.clone(),
+            solana_sdk::commitment_config::CommitmentConfig::processed(),
+        ),
+    );
     // Single source of truth for live hard-guards (skip_sim / public_rpc / max_signal_age).
     // Do not duplicate bail! logic above — keep all fail-closed policy in assert_safe_for_live.
     let shared_risk = Arc::new(RiskGateConfig::from_shared_rpc(

@@ -8,12 +8,12 @@
 //!
 //! | DEX | Program | Create log marker(s) | Notes |
 //! |-----|---------|----------------------|-------|
-//! | Pump.fun | `6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P` | `Program log: Instruction: Create` / `CreateV2` / `create` | Followed by `Program data: <base64>` Anchor event: borsh `name,symbol,uri,mint,bonding_curve,user` (optional 8-byte event disc prefix) |
-//! | Raydium AMM v4 | `675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8` | `Program log: Instruction: initialize2` (if present) | Native-style program: often **no** `Instruction:` line — only `ray_log` base64. Create detection then relies on getTransaction + ix disc `1` (initialize2) / `0` (initialize). Substring-only match is unreliable. |
-//! | Raydium CPMM | `CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C` | `Instruction: Initialize` / `InitializePool` / `CreatePool` | Anchor msg |
-//! | Raydium CLMM | `CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK` | `Instruction: CreatePool` / `Initialize` | Anchor msg |
-//! | Meteora DLMM | `LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo` | `InitializeLbPair` / `InitializeCustomizablePermissionlessLbPair` | Anchor msg |
-//! | Meteora DAMM v2 | `cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG` | `InitializePool` / `Initialize` / `CreateConfig` (not a pool) | Prefer `InitializePool`; `CreateConfig` alone is **not** treated as pool create |
+//! | Pump.fun | `6EF8…F6P` | `Instruction: Create` / `CreateV2` / `create` | + `Program data:` borsh event |
+//! | Raydium AMM v4 | `675k…Mp8` | **`Program log: ray_log: <b64>` with first byte `0` = `LogType::Init`** (raydium-amm `log.rs`) | No Anchor `Instruction:` line. Swap = `ray_log` type 3/4. Ix disc `1` = Initialize2 (verified upstream). |
+//! | Raydium CPMM | `CPMM…P1C` | `Instruction: Initialize` | Anchor; accounts verified from `cp-swap` `Initialize` |
+//! | Raydium CLMM | `CAMM…rqK` | `Instruction: CreatePool` | Anchor; accounts from `clmm` `CreatePool` |
+//! | Meteora DLMM | `LBUZ…wxo` | `InitializeLbPair` / `InitializeCustomizablePermissionlessLbPair` | Anchor msg |
+//! | Meteora DAMM v2 | `cpam…sGG` | `InitializePool` / `InitializePoolWithDynamicConfig` | Anchor; `CreateConfig` is **not** pool create |
 
 use anyhow::{anyhow, Result};
 use base64::Engine;
@@ -163,11 +163,47 @@ pub fn parse_log_lines(logs: &[String], slot: u64, signature: &str) -> Vec<Parse
             current_dex = DexType::from_pubkey(&program_id);
         }
 
+        // Raydium AMM v4: native program — create is `ray_log` LogType::Init (byte 0),
+        // not `Program log: Instruction: …`. This is the primary create detector for AMM v4.
+        if matches!(current_dex, Some(DexType::RaydiumAmmV4)) {
+            if let Some(ray_ty) = classify_ray_log(log) {
+                match ray_ty {
+                    RayLogKind::Init => {
+                        signals.push(base_signal(
+                            DexType::RaydiumAmmV4,
+                            InstructionType::InitializePool,
+                            slot,
+                            signature,
+                            None,
+                            None,
+                            false,
+                        ));
+                        pending_create = Some((DexType::RaydiumAmmV4, InstructionType::InitializePool));
+                    }
+                    RayLogKind::Swap | RayLogKind::Other => {
+                        signals.push(base_signal(
+                            DexType::RaydiumAmmV4,
+                            if matches!(ray_ty, RayLogKind::Swap) {
+                                InstructionType::Swap
+                            } else {
+                                InstructionType::Unknown
+                            },
+                            slot,
+                            signature,
+                            None,
+                            None,
+                            false,
+                        ));
+                    }
+                }
+                continue;
+            }
+        }
+
         if let Some(dex) = current_dex {
             if let Some(ix_type) = classify_instruction_log(log) {
                 if ix_type.is_create_event() {
                     pending_create = Some((dex, ix_type));
-                    // Emit immediately; Program data may refine mint/pool on next lines.
                     signals.push(base_signal(dex, ix_type, slot, signature, None, None, false));
                 } else if matches!(
                     ix_type,
@@ -175,7 +211,6 @@ pub fn parse_log_lines(logs: &[String], slot: u64, signature: &str) -> Vec<Parse
                         | InstructionType::AddLiquidity
                         | InstructionType::RemoveLiquidity
                 ) {
-                    // Explicit non-create — record only for diagnostics; callers filter.
                     signals.push(base_signal(dex, ix_type, slot, signature, None, None, false));
                     pending_create = None;
                 }
@@ -185,7 +220,6 @@ pub fn parse_log_lines(logs: &[String], slot: u64, signature: &str) -> Vec<Parse
         // Pump.fun Create emits `Program data:` right after Instruction: Create.
         if let Some((DexType::PumpFun, ix_type)) = pending_create {
             if let Some((mint, curve, user)) = try_parse_pump_create_program_data(log) {
-                // Replace last create stub with fully resolved signal.
                 if let Some(last) = signals.last_mut() {
                     if last.dex == DexType::PumpFun && last.instruction_type.is_create_event() {
                         last.mint = Some(mint);
@@ -201,6 +235,31 @@ pub fn parse_log_lines(logs: &[String], slot: u64, signature: &str) -> Vec<Parse
     }
 
     signals
+}
+
+/// Raydium AMM `ray_log` payload kinds (first byte of bincode blob).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RayLogKind {
+    Init,
+    Swap,
+    Other,
+}
+
+/// Detect Raydium AMM v4 `Program log: ray_log: <base64>`.
+/// Source: raydium-amm `program/src/log.rs` — LogType::Init=0, Deposit=1, Withdraw=2,
+/// SwapBaseIn=3, SwapBaseOut=4.
+fn classify_ray_log(log: &str) -> Option<RayLogKind> {
+    let b64 = log.strip_prefix("Program log: ray_log: ")?.trim();
+    if b64.is_empty() {
+        return None;
+    }
+    let bytes = base64::engine::general_purpose::STANDARD.decode(b64).ok()?;
+    let tag = *bytes.first()?;
+    Some(match tag {
+        0 => RayLogKind::Init,
+        3 | 4 => RayLogKind::Swap,
+        _ => RayLogKind::Other,
+    })
 }
 
 fn base_signal(
@@ -501,5 +560,59 @@ mod tests {
         ];
         let sigs = parse_log_lines(&logs, 1, "c1");
         assert!(sigs.iter().all(|s| !s.instruction_type.is_create_event()));
+    }
+
+    #[test]
+    fn raydium_amm_v4_ray_log_init_is_create() {
+        // LogType::Init = 0 as first byte of bincode payload.
+        let payload = base64::engine::general_purpose::STANDARD.encode([0u8, 1, 2, 3, 4, 5, 6, 7]);
+        let pid = "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8";
+        let logs = [
+            format!("Program {pid} invoke [1]"),
+            format!("Program log: ray_log: {payload}"),
+            format!("Program {pid} success"),
+        ];
+        let sigs = parse_log_lines(&logs, 99, "rayInit");
+        let creates: Vec<_> = sigs
+            .iter()
+            .filter(|s| s.instruction_type.is_create_event())
+            .collect();
+        assert_eq!(creates.len(), 1);
+        assert_eq!(creates[0].dex, DexType::RaydiumAmmV4);
+    }
+
+    #[test]
+    fn raydium_amm_v4_ray_log_swap_is_not_create() {
+        // LogType::SwapBaseIn = 3
+        let payload = base64::engine::general_purpose::STANDARD.encode([3u8, 0, 0, 0]);
+        let pid = "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8";
+        let logs = [
+            format!("Program {pid} invoke [1]"),
+            format!("Program log: ray_log: {payload}"),
+        ];
+        let sigs = parse_log_lines(&logs, 1, "raySwap");
+        assert!(
+            sigs.iter().all(|s| !s.instruction_type.is_create_event()),
+            "swap ray_log must not create: {:?}",
+            sigs
+        );
+        assert!(sigs.iter().any(|s| s.instruction_type == InstructionType::Swap));
+    }
+
+    #[test]
+    fn raydium_amm_v4_no_instruction_line_still_detects_via_ray_log() {
+        // Prove we do NOT require "Instruction: initialize2"
+        let payload = base64::engine::general_purpose::STANDARD.encode([0u8]);
+        let pid = "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8";
+        let logs = [
+            format!("Program {pid} invoke [1]"),
+            // deliberately no Instruction: line
+            format!("Program log: ray_log: {payload}"),
+        ];
+        assert!(
+            parse_log_lines(&logs, 1, "x")
+                .iter()
+                .any(|s| s.instruction_type.is_create_event())
+        );
     }
 }

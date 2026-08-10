@@ -217,7 +217,8 @@ fn extract_from_legacy(
             return finalize_signal(mint, pool_address, dex_program, slot, seen);
         }
     }
-    heuristic_from_keys(&tx.message.account_keys, program_ids, slot, seen)
+    // No key-heuristic fallback — wrong mint indices caused blue-chip false signals.
+    None
 }
 
 fn extract_from_versioned(
@@ -257,29 +258,54 @@ fn extract_from_versioned(
             }
         }
     }
-
     None
 }
 
-/// Gate getTransaction account extraction so swaps in the same tx as a create log
-/// (or mis-tagged logs) do not invent random mint/pool pairs.
+/// Gate getTransaction account extraction so swaps do not invent mint/pool pairs.
+/// Disc values verified against upstream program source (not guessed).
 fn looks_like_create_ix(prog: &Pubkey, data: &[u8]) -> bool {
     let p = prog.to_string();
     if data.is_empty() {
         return false;
     }
     if p == "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P" {
-        // Anchor: 8-byte disc. Create/create_v2 — accept any non-empty; log already filtered.
+        // Anchor 8-byte disc; create already filtered by log layer.
         return data.len() >= 8;
     }
     if p == "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8" {
-        // Raydium AMM v4: initialize=0, initialize2=1
-        return data[0] == 0 || data[0] == 1;
+        // raydium-amm instruction.rs: Initialize2 tag = 1 (tag 0 Initialize is deprecated/unsupported).
+        // SwapBaseIn = 9 — must NOT match.
+        return data[0] == 1;
     }
-    // Other Anchor programs: 8-byte disc present; trust upstream log create filter.
+    // Anchor programs: 8-byte disc; log layer already required create Instruction name.
     data.len() >= 8
 }
 
+/// Prefer the non-WSOL side of a pair as the sniper mint.
+fn prefer_non_wsol(a: String, b: String) -> String {
+    if a == NATIVE_MINT {
+        b
+    } else if b == NATIVE_MINT {
+        a
+    } else {
+        // Prefer pump.fun style mint when present.
+        if b.ends_with("pump") && !a.ends_with("pump") {
+            b
+        } else {
+            a
+        }
+    }
+}
+
+/// Map instruction accounts → (mint, pool). Indices from upstream program sources.
+///
+/// | Program | Source | pool idx | mint idx |
+/// |---------|--------|----------|----------|
+/// | AMM v4 Initialize2 | raydium-amm `initialize2()` | 4 | 8 (coin), 9 (pc) |
+/// | CPMM Initialize | raydium-cp-swap `Initialize` | 3 | 4/5 (token_0/1) |
+/// | CLMM CreatePool | raydium-clmm `CreatePool` | 2 | 3/4 |
+/// | DAMM v2 InitializePool | meteora damm-v2 `InitializePoolCtx` | 6 | 8/9 |
+/// | Pump create | pump accounts (mint@0 curve@2 common) | 2 | 0 |
 fn resolve_accounts_for_program(
     prog: &Pubkey,
     keys: &[Pubkey],
@@ -292,95 +318,87 @@ fn resolve_accounts_for_program(
         Some(keys.get(idx)?.to_string())
     };
 
-    if acc_idxs.len() < 3 {
-        return None;
-    }
-
     let _ = data;
 
     if p == "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P" {
-        // Pump create accounts: mint@0, bonding_curve@2 (common layout)
+        if acc_idxs.len() < 3 {
+            return None;
+        }
         let mint = get(0)?;
-        let pool = get(2).or_else(|| get(3))?;
+        let pool = get(2)?;
         return Some((mint, pool));
     }
+
+    // Raydium AMM v4 Initialize2 — accounts from `initialize2()` helper (raydium-amm).
+    // [0]token [1]ata [2]system [3]rent [4]pool [5]authority [6]open_orders
+    // [7]lp_mint [8]coin_mint [9]pc_mint ...
     if p == "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8" {
-        let pool = get(4).or_else(|| get(1))?;
-        let mint = get(8).or_else(|| get(9)).or_else(|| get(6))?;
-        return Some((mint, pool));
+        if acc_idxs.len() < 10 {
+            return None;
+        }
+        let pool = get(4)?;
+        let coin = get(8)?;
+        let pc = get(9)?;
+        return Some((prefer_non_wsol(coin, pc), pool));
     }
+
+    // Raydium CPMM Initialize — `Initialize` accounts order:
+    // [0]creator [1]amm_config [2]authority [3]pool_state
+    // [4]token_0_mint [5]token_1_mint ...
     if p == "CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C" {
-        let pool = get(3).or_else(|| get(0))?;
-        let mint = get(4).or_else(|| get(5))?;
-        return Some((mint, pool));
+        if acc_idxs.len() < 6 {
+            return None;
+        }
+        let pool = get(3)?;
+        let m0 = get(4)?;
+        let m1 = get(5)?;
+        return Some((prefer_non_wsol(m0, m1), pool));
     }
+
+    // Raydium CLMM CreatePool:
+    // [0]pool_creator [1]amm_config [2]pool_state [3]token_mint_0 [4]token_mint_1 ...
     if p == "CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK" {
-        let pool = get(2).or_else(|| get(3))?;
-        let mint = get(3).or_else(|| get(4))?;
-        return Some((mint, pool));
-    }
-    if p == "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo"
-        || p == "cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG"
-    {
-        let pool = get(0).or_else(|| get(1))?;
-        let mint = get(2).or_else(|| get(3))?;
-        return Some((mint, pool));
+        if acc_idxs.len() < 5 {
+            return None;
+        }
+        let pool = get(2)?;
+        let m0 = get(3)?;
+        let m1 = get(4)?;
+        return Some((prefer_non_wsol(m0, m1), pool));
     }
 
-    let mut mint = None;
-    let mut pool = None;
-    for i in 0..acc_idxs.len().min(12) {
-        let s = get(i)?;
-        if s == SYSTEM_PROGRAM || s == NATIVE_MINT || s == p {
-            continue;
+    // Meteora DAMM v2 InitializePoolCtx:
+    // [0]creator [1]position_nft_mint [2]position_nft_account [3]payer [4]config
+    // [5]pool_authority [6]pool [7]position [8]token_a_mint [9]token_b_mint ...
+    if p == "cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG" {
+        if acc_idxs.len() < 10 {
+            return None;
         }
-        if mint.is_none() {
-            mint = Some(s);
-        } else if pool.is_none() {
-            pool = Some(s);
-            break;
-        }
+        let pool = get(6)?;
+        let m0 = get(8)?;
+        let m1 = get(9)?;
+        return Some((prefer_non_wsol(m0, m1), pool));
     }
-    Some((mint?, pool?))
-}
 
-fn heuristic_from_keys(
-    keys: &[Pubkey],
-    program_ids: &[Pubkey],
-    slot: u64,
-    seen: &SeenPools,
-) -> Option<Signal> {
-    let mut dex = None;
-    for k in keys {
-        if program_ids.iter().any(|p| p == k) {
-            dex = Some(k.to_string());
-            break;
+    // Meteora DLMM InitializeLbPair — common layout (lb_pair, …, mint_x, mint_y):
+    // Index 0 = lb_pair; mint_x/mint_y often at 2/3 or 3/4 depending on optional bitmap.
+    // Prefer keys that look like mints vs system programs; still require getTransaction path.
+    if p == "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo" {
+        if acc_idxs.len() < 4 {
+            return None;
         }
+        let pool = get(0)?;
+        // Try standard order mint_x@2 mint_y@3; fall back to 3/4.
+        let m0 = get(2).or_else(|| get(3))?;
+        let m1 = get(3).or_else(|| get(4))?;
+        if m0 == pool {
+            return None;
+        }
+        return Some((prefer_non_wsol(m0, m1), pool));
     }
-    let dex_program = dex?;
 
-    let mut mint = None;
-    let mut pool = None;
-    for k in keys {
-        let s = k.to_string();
-        if s == SYSTEM_PROGRAM || s == NATIVE_MINT {
-            continue;
-        }
-        if program_ids.iter().any(|p| p == k) {
-            continue;
-        }
-        if is_plausible_spl_mint(k) {
-            if s.ends_with("pump") {
-                mint = Some(s.clone());
-            } else if mint.is_none() {
-                mint = Some(s.clone());
-            }
-        }
-        if pool.is_none() && Some(s.as_str()) != mint.as_deref() {
-            pool = Some(s);
-        }
-    }
-    finalize_signal(mint?, pool?, dex_program, slot, seen)
+    // No silent generic heuristic — better miss than invent a blue-chip mint.
+    None
 }
 
 fn finalize_signal(
@@ -524,8 +542,56 @@ mod tests {
     #[test]
     fn raydium_amm_create_disc_gate() {
         let pid = Pubkey::from_str("675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8").unwrap();
-        assert!(looks_like_create_ix(&pid, &[1, 0, 0]));
-        assert!(looks_like_create_ix(&pid, &[0]));
-        assert!(!looks_like_create_ix(&pid, &[9])); // swap base-in
+        assert!(looks_like_create_ix(&pid, &[1, 0, 0])); // Initialize2
+        assert!(!looks_like_create_ix(&pid, &[0])); // deprecated Initialize
+        assert!(!looks_like_create_ix(&pid, &[9])); // SwapBaseIn
+    }
+
+    #[test]
+    fn raydium_amm_v4_account_layout_initialize2() {
+        let prog = Pubkey::from_str("675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8").unwrap();
+        // Build keys matching initialize2() account order.
+        let mut keys: Vec<Pubkey> = (0..21).map(|_| Pubkey::new_unique()).collect();
+        keys[8] = Pubkey::new_unique(); // coin mint
+        keys[9] = Pubkey::from_str(NATIVE_MINT).unwrap(); // pc = WSOL
+        let pool = keys[4];
+        let coin = keys[8];
+        let acc_idxs: Vec<u8> = (0..21).map(|i| i as u8).collect();
+        let (mint, pool_s) =
+            resolve_accounts_for_program(&prog, &keys, &acc_idxs, &[1]).unwrap();
+        assert_eq!(pool_s, pool.to_string());
+        assert_eq!(mint, coin.to_string(), "must pick non-WSOL coin mint");
+    }
+
+    #[test]
+    fn cpmm_initialize_account_layout() {
+        let prog = Pubkey::from_str("CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C").unwrap();
+        let mut keys: Vec<Pubkey> = (0..10).map(|_| Pubkey::new_unique()).collect();
+        keys[5] = Pubkey::from_str(NATIVE_MINT).unwrap();
+        let acc_idxs: Vec<u8> = (0..10).map(|i| i as u8).collect();
+        let (mint, pool) = resolve_accounts_for_program(&prog, &keys, &acc_idxs, &[0; 8]).unwrap();
+        assert_eq!(pool, keys[3].to_string());
+        assert_eq!(mint, keys[4].to_string());
+    }
+
+    #[test]
+    fn clmm_create_pool_account_layout() {
+        let prog = Pubkey::from_str("CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK").unwrap();
+        let keys: Vec<Pubkey> = (0..8).map(|_| Pubkey::new_unique()).collect();
+        let acc_idxs: Vec<u8> = (0..8).map(|i| i as u8).collect();
+        let (mint, pool) = resolve_accounts_for_program(&prog, &keys, &acc_idxs, &[0; 8]).unwrap();
+        assert_eq!(pool, keys[2].to_string());
+        assert_eq!(mint, keys[3].to_string());
+    }
+
+    #[test]
+    fn damm_v2_initialize_pool_account_layout() {
+        let prog = Pubkey::from_str("cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG").unwrap();
+        let mut keys: Vec<Pubkey> = (0..12).map(|_| Pubkey::new_unique()).collect();
+        keys[9] = Pubkey::from_str(NATIVE_MINT).unwrap();
+        let acc_idxs: Vec<u8> = (0..12).map(|i| i as u8).collect();
+        let (mint, pool) = resolve_accounts_for_program(&prog, &keys, &acc_idxs, &[0; 8]).unwrap();
+        assert_eq!(pool, keys[6].to_string());
+        assert_eq!(mint, keys[8].to_string());
     }
 }
