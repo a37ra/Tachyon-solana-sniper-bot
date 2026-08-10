@@ -211,29 +211,11 @@ impl PreBuyCheckContext {
             });
         }
 
-        let accounts = match tokio::time::timeout(
-            to,
-            rpc.get_multiple_accounts(&[*mint_pubkey, *pool_pubkey]),
-        )
-        .await
-        {
-            Ok(result) => result?,
-            Err(_) => {
-                tracing::warn!(
-                    mint = %mint,
-                    pool = %pool_address,
-                    "get_multiple_accounts timed out after {}ms",
-                    rpc_timeout_ms()
-                );
-                return Err(anyhow::anyhow!(
-                    "Pre-buy check RPC timed out after {}ms",
-                    rpc_timeout_ms()
-                ));
-            }
-        };
-
-        let (mint_data, mint_owner) = unpack_acc(accounts.get(0));
-        let (pool_data, pool_owner) = unpack_acc(accounts.get(1));
+        // Fresh create-ix signals often race the RPC indexer: mint may be null for
+        // a few hundred ms. Retry mint+pool fetch before treating as unavailable.
+        let (mint_data, mint_owner, pool_data, pool_owner) =
+            fetch_mint_pool_with_retry(rpc, mint_pubkey, pool_pubkey, mint, pool_address, to)
+                .await?;
 
         let (lp_mint_data, lp_mint_owner) = match (&pool_data, &pool_owner) {
             (Some(p_data), Some(p_owner)) => {
@@ -335,6 +317,87 @@ fn unpack_acc(
         Some(Some(acc)) => (Some(acc.data.clone()), Some(acc.owner)),
         _ => (None, None),
     }
+}
+
+/// Retry account fetch when mint is missing (indexing lag on brand-new create-ix).
+///
+/// Verified: post-hoc getAccountInfo on mint_unavailable rejects finds the account —
+/// so this is lag, not a bad mint. Uses multi + single get_account fallback.
+async fn fetch_mint_pool_with_retry(
+    rpc: &Arc<RpcClient>,
+    mint_pubkey: &Pubkey,
+    pool_pubkey: &Pubkey,
+    mint: &str,
+    pool_address: &str,
+    to: Duration,
+) -> anyhow::Result<(
+    Option<Vec<u8>>,
+    Option<Pubkey>,
+    Option<Vec<u8>>,
+    Option<Pubkey>,
+)> {
+    // Cumulative waits ~0+0.2+0.5+1.0+1.5 ≈ 3.2s sleep + RPC RTTs (within public pre_buy 4s).
+    const BACKOFFS_MS: &[u64] = &[0, 200, 500, 1000, 1500];
+    let mut last_pool: (Option<Vec<u8>>, Option<Pubkey>) = (None, None);
+
+    for (i, wait_ms) in BACKOFFS_MS.iter().enumerate() {
+        if *wait_ms > 0 {
+            tokio::time::sleep(Duration::from_millis(*wait_ms)).await;
+        }
+
+        // Prefer single get_account for mint first (cheaper, clearer null semantics).
+        let mint_res = tokio::time::timeout(to, rpc.get_account(mint_pubkey)).await;
+        let pool_res = tokio::time::timeout(to, rpc.get_account(pool_pubkey)).await;
+
+        let (mint_data, mint_owner) = match mint_res {
+            Ok(Ok(acc)) => (Some(acc.data), Some(acc.owner)),
+            Ok(Err(_)) => (None, None), // AccountNotFound → retry
+            Err(_) => {
+                tracing::warn!(mint = %mint, attempt = i, "get_account(mint) timed out");
+                (None, None)
+            }
+        };
+        let (pool_data, pool_owner) = match pool_res {
+            Ok(Ok(acc)) => (Some(acc.data), Some(acc.owner)),
+            Ok(Err(_)) => (None, None),
+            Err(_) => (None, None),
+        };
+        if pool_data.is_some() {
+            last_pool = (pool_data.clone(), pool_owner);
+        }
+
+        if mint_data.is_some() {
+            if i > 0 {
+                tracing::info!(
+                    mint = %mint,
+                    attempt = i,
+                    waited_ms = wait_ms,
+                    "mint account available after indexer retry"
+                );
+            }
+            return Ok((
+                mint_data,
+                mint_owner,
+                pool_data.or(last_pool.0.clone()),
+                pool_owner.or(last_pool.1),
+            ));
+        }
+
+        tracing::info!(
+            mint = %mint,
+            pool = %pool_address,
+            attempt = i,
+            waited_ms = wait_ms,
+            "mint account not yet indexed — retry"
+        );
+    }
+
+    tracing::warn!(
+        mint = %mint,
+        pool = %pool_address,
+        "mint still unavailable after indexer retries"
+    );
+    Ok((None, None, last_pool.0, last_pool.1))
 }
 
 pub fn extract_lp_mint_from_pool(pool_data: &[u8], pool_owner: &Pubkey) -> Option<Pubkey> {
@@ -798,7 +861,8 @@ impl RiskGateConfig {
             ),
             pre_buy_checks_timeout_ms: env_u64(
                 "SOLBOT_PRE_BUY_TIMEOUT_MS",
-                if public { 4_000 } else { 600 },
+                // Public: budget for create-ix mint indexer retries (~3s sleep + RPC).
+                if public { 6_000 } else { 600 },
             ),
             simulate_size_lamports: 100_000_000,
             token2022_blocklist: vec![
