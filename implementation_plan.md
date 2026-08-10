@@ -2,11 +2,13 @@
 
 ## Общая оценка (актуально 2026-08-10)
 
-**Этапы 1–5 (торговый pipeline P0): ~85–90% по логике кода.**  
-Paper trading на Helius WS работает (ACCEPT стабильно, global stats, anti-rug).  
-**Live money / prod ops: ~45–55%** — нужен private RPC, signer ops, этапы 6–11.
+**Этапы 1–5 (торговый pipeline P0 + technical risk-gate): ~85–90% по логике кода.**  
+Paper: create-ix + risk-gate ACCEPT работают.  
+**Live money / prod ops: ~40–50%** — private RPC, signer ops, этапы 6–11.  
+**Alpha Layer (этапы 12–15): 0%** — ТЗ §8 вписан; код не начат. Без него bot покупает
+технически «чистые» dev-dumps (DB→SB→DS).
 
-Устаревшая оценка «~20–25% / всё stub» **снята**: listeners, builders, signer IPC, risk gate, routing, actor buy/sell — реализованы и прогнаны в paper.
+Устаревшая оценка «~20–25% / всё stub» **снята** для 1–5.
 
 ---
 
@@ -215,13 +217,65 @@ Paper trading на Helius WS работает (ACCEPT стабильно, global
 
 ---
 
+---
+
+### Этап 12: Alpha Data Collection — bundle/funder/concentration (~1–1.5 нед) ⬜
+
+> ТЗ §8.2, formulas: `docs/alpha/ALPHA_LAYER_FORMULAS.md`, prompt: `docs/agent_prompts/stage_12_alpha_data_collection.md`
+
+- [ ] `alpha/bundle_detector.rs` — bundler_pct
+- [ ] `alpha/funder_graph.rs` — funder_cluster_pct, fresh_wallet_ratio (2-hop + cache)
+- [ ] `alpha/concentration.rs` — top10_holder_pct, CM
+- [ ] `state/alpha_signals_repo.rs` + migration `0004_alpha_layer.sql`
+- [ ] Snapshot **всех** решений (вкл. hard_block) в `alpha_signals`
+- [ ] Unit-тесты synthetic bundle/funder
+
+---
+
+### Этап 13: Alpha Dev History — Wilson + labeling (~1 нед) ⬜
+
+> ТЗ §8.3, prompt: `docs/agent_prompts/stage_13_alpha_dev_history.md`
+
+- [ ] `alpha/dev_history.rs` — Wilson lower bound
+- [ ] `alpha/labeling_worker.rs` — dump/not_dump after label_delay_min
+- [ ] Creator extract per DEX (pump curve creator@49, …)
+- [ ] `state/dev_wallet_history_repo.rs`
+- [ ] Integration test n=1..40 convergence
+
+---
+
+### Этап 14: Composite Gate + Probe-Scale (~1.5–2 нед) ⬜
+
+> ТЗ §8.4–8.5, prompt: `docs/agent_prompts/stage_14_alpha_gate_probe.md`
+
+- [ ] `alpha/composite_gate.rs` — hard_blocks + soft score → size_multiplier
+- [ ] Wire **before/parallel** risk_gate; span `alpha_gate_latency_ms`
+- [ ] `alpha/probe_scale.rs` — probe→confirm same position_id VWAP
+- [ ] Probe dump → emergency_exit 4th trigger
+- [ ] `config/alpha_layer.yaml`
+- [ ] E2E paper: probe→confirm and probe→emergency
+
+---
+
+### Этап 15: Alpha Calibration (~1–2 нед after data) ⬜
+
+> ТЗ §8.4/8.5/Прил.C, prompt: `docs/agent_prompts/stage_15_alpha_calibration.md`
+
+- [ ] ≥150–200 labels/class in `alpha_signals.outcome_label`
+- [ ] Fit w1..w5; measure δ; recompute p*
+- [ ] FP rate hard-blocks; tune hard_max_pct
+- [ ] Clear flag `alpha_weights_not_calibrated`
+
+---
+
 ## Сводка по приоритетам
 
 | Приоритет | Этапы | Статус |
 |---|---|---|
-| 🔴 P0 | 1–5 | **Логика done; live needs private RPC + e2e** |
-| 🟡 P1 | 6–8 | Не done |
-| 🟢 P2 | 9–11 | Не done |
+| 🔴 P0 | 1–5 | **Technical pipeline done; live needs private RPC** |
+| 🟠 P0-alpha | 12–14 | **Alpha Layer — must before meaningful live on pump.fun** |
+| 🟡 P1 | 6–8 | PnL / recovery / observability |
+| 🟢 P2 | 9–11, 15 | CLI, tests, deploy, calibration |
 
 ---
 
