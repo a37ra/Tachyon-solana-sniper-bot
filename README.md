@@ -90,7 +90,7 @@ cargo run -p solbot-strategy --release
 ```bash
 SIGNAL_SOURCE=helius_logs
 HELIUS_API_KEY=
-SOLBOT_RPC_URL=https://mainnet.helius-rpc.com/?api-key=
+SOLBOT_RPC_URL=https://mainnet.helius-rpc.com/?api-key= #твой апи ключ
 SOLBOT_PAPER_TRADING=true
 SOLBOT_PUBLIC_RPC=true          # paper ok; live wants false + private
 SOLBOT_PRE_BUY_TIMEOUT_MS=4000  # public; colo ~600–1500
