@@ -263,4 +263,13 @@ impl PositionsRepo {
 
         Ok(positions)
     }
+
+    /// Count closed positions (for smart_money hard_gate min_sample_size check — TZ §2.5).
+    pub async fn count_closed_positions(&self) -> Result<u64> {
+        let row: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM positions WHERE status = 'closed'")
+                .fetch_one(&self.pool)
+                .await?;
+        Ok(row.0 as u64)
+    }
 }
