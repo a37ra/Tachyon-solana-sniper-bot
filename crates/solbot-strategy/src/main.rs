@@ -577,6 +577,10 @@ async fn dispatch_to_actor(
         last_signal_slot: signal.slot,
         last_signal_received_at: signal.received_at,
         buy_attempted: false,
+        fee_ledger: solbot_strategy::pnl::PositionFeeLedger::new(),
+        smart_money_mode: solbot_strategy::smart_money::SmartMoneyMode::from_env(),
+        watchlist_cache: None,
+        wsol_manager: solbot_strategy::wsol::WsolManager::default(),
     };
 
     let actor_handle = ActorHandle {

@@ -8,13 +8,16 @@ use super::{market_data_lane::MarketDataLane, ActorConfig};
 use crate::circuit_breaker::CircuitBreaker;
 use crate::exit::{self, ExitAction};
 use crate::exit::escalation::{run_escalation, EscalationState, EscalationTrigger};
+use crate::pnl::{self, PositionFeeLedger};
 use crate::risk_gate::{self, RiskGateConfig};
 use crate::routing::{RoutingStage, SubmitResult, TransactionRouter};
 use crate::signer_client::SignerClient;
 use crate::sizing::{self, TradeStats};
+use crate::smart_money::{self, SmartMoneyMode, WatchlistCache};
 use crate::state::position_lifecycle::PositionLifecycle;
 use crate::state::positions_repo::{status_to_string, PositionsRepo};
 use crate::state::state_transitions_repo::StateTransitionsRepo;
+use crate::wsol::WsolManager;
 use crate::tx_builder::meteora_damm_v2 as meteora_damm_v2_builder;
 use crate::tx_builder::meteora_dlmm as meteora_dlmm_builder;
 use crate::tx_builder::pump_fun as pump_fun_builder;
@@ -150,6 +153,14 @@ pub struct ActorContext {
     pub last_signal_received_at: u64,
     /// Prevent duplicate buy attempts for the same pool.
     pub buy_attempted: bool,
+    /// PnL fee ledger for tracking priority fees, Jito tips, ATA rent per position (TZ §4.5).
+    pub fee_ledger: PositionFeeLedger,
+    /// Smart money mode: tag_only (default) / soft_boost / hard_gate (TZ §2.5).
+    pub smart_money_mode: SmartMoneyMode,
+    /// In-memory cache of active watchlist wallet addresses.
+    pub watchlist_cache: Option<WatchlistCache>,
+    /// WSOL manager for auto-unwrap and rent reclaim (TZ §4.7).
+    pub wsol_manager: WsolManager,
 }
 
 pub async fn run(
@@ -862,6 +873,46 @@ pub async fn execute_buy_pipeline(
         raw_pool_account_owner: ctx.raw_pool_account_owner.clone(),
     };
 
+    // Step 0.5: Smart Money pre-buy check (TZ §2.5) — before risk_gate.
+    // Determines entry policy (tag_only / soft_boost / hard_gate).
+    // Never weakens risk_gate hard checks.
+    let smart_money_hit = if let Some(ref _cache) = ctx.watchlist_cache {
+        // Check if any watchlist wallet already bought this mint
+        // This is a simple O(1) lookup in the in-memory cache
+        false // TODO: populate from smart_money_hits_repo when event arrives
+    } else {
+        false
+    };
+
+    let closed_positions_sample = if let Some(ref repo) = ctx.positions_repo {
+        repo.count_closed_positions().await.unwrap_or(0) as u32
+    } else {
+        0
+    };
+
+    let entry_decision = smart_money::apply_entry_policy(
+        ctx.smart_money_mode,
+        smart_money_hit,
+        closed_positions_sample,
+    );
+
+    // Apply smart_money entry decision
+    let sm_size_multiplier = match smart_money::apply_size_multiplier(1.0, &entry_decision) {
+        Some(mult) => mult,
+        None => {
+            // EntryDecision::Block — hard_gate blocks entry
+            if let smart_money::EntryDecision::Block { reason } = &entry_decision {
+                tracing::warn!(
+                    mint = %ctx.mint,
+                    %reason,
+                    "Smart money hard_gate blocked entry"
+                );
+                return Err(anyhow!("Smart money hard_gate: {}", reason));
+            }
+            1.0 // unreachable but safe
+        }
+    };
+
     let risk_result = risk_gate::run_pre_buy_checks_with_timeout(&signal, &ctx.risk_gate_config).await;
 
     match risk_result {
@@ -874,15 +925,21 @@ pub async fn execute_buy_pipeline(
         }
     }
 
-    // Step 2: Position sizing
-    let position_size_sol = sizing::compute_position_size(
+    // Step 2: Position sizing (with smart_money size multiplier applied)
+    let base_position_size_sol = sizing::compute_position_size(
         ctx.capital_sol,
         ctx.tier,
         &ctx.tier_params,
         ctx.trade_stats.as_ref(),
     );
+    let position_size_sol = base_position_size_sol * sm_size_multiplier;
 
-    tracing::info!("Computed position size: {} SOL", position_size_sol);
+    tracing::info!(
+        base_size = base_position_size_sol,
+        sm_multiplier = sm_size_multiplier,
+        final_size = position_size_sol,
+        "Computed position size (SOL)"
+    );
     let amount_in_lamports = (position_size_sol * 1_000_000_000.0) as u64;
 
     // Step 3: Build unsigned swap transaction
@@ -1666,6 +1723,30 @@ pub async fn execute_exit_pipeline(
                     // If we have a final status (e.g., Tp3 → Closed or Closing → Closed), perform second transition
                     if let Some(final_status_value) = final_status.clone() {
                         pos.closed_at_utc = Some(chrono::Utc::now().timestamp() as u64);
+
+                        // === PnL Net computation (TZ §4.5) ===
+                        // Take fee breakdown from ledger (or estimate for paper mode)
+                        let fees = if ctx.trading_mode == TradingMode::Paper {
+                            // Paper mode: estimate fees based on tier and ~2 transactions (buy+sell)
+                            pnl::estimate_default_fees(ctx.tier, 2)
+                        } else {
+                            ctx.fee_ledger.take(&pos.position_id)
+                        };
+                        let net_pnl = pnl::finalize_realized_pnl(pos, current_price, &fees);
+                        tracing::info!(
+                            position_id = %pos.position_id,
+                            entry_price = pos.entry_price_sol,
+                            exit_price = current_price,
+                            size_sol = pos.size_sol,
+                            priority_fees = fees.priority_fees_sol,
+                            jito_tips = fees.jito_tips_sol,
+                            ata_rent = fees.ata_rent_sol,
+                            ata_refund = fees.ata_refund_sol,
+                            total_fees = fees.total_fees(),
+                            realized_pnl_net = net_pnl,
+                            "PnL Net finalized on position close"
+                        );
+
                         if let Ok(final_transition) = lifecycle
                             .transition(pos, final_status_value.clone(), tx_signature.clone())
                             .await
@@ -1679,11 +1760,7 @@ pub async fn execute_exit_pipeline(
                             // Record loss to circuit breaker if position closed with negative PnL
                             if ctx.trading_mode == TradingMode::Paper {
                                 let entry = pos.entry_price_sol;
-                                let exit_px = if entry > 0.0 {
-                                    entry * (1.0 + pos.realized_pnl_net_sol / pos.size_sol.max(1e-12))
-                                } else {
-                                    0.0
-                                };
+                                let exit_px = current_price;
                                 let pnl_pct = if pos.size_sol > 0.0 {
                                     (pos.realized_pnl_net_sol / pos.size_sol) * 100.0
                                 } else {
@@ -2197,6 +2274,10 @@ mod tests {
             last_signal_slot: 1,
             last_signal_received_at: now.saturating_sub(age_ms),
             buy_attempted: false,
+            fee_ledger: PositionFeeLedger::new(),
+            smart_money_mode: SmartMoneyMode::default(),
+            watchlist_cache: None,
+            wsol_manager: crate::wsol::WsolManager::default(),
         }
     }
 
