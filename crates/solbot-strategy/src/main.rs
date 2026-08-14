@@ -152,6 +152,10 @@ async fn main() -> anyhow::Result<()> {
         )
     };
 
+    let backfill_provider = sqlite_pool
+        .as_ref()
+        .map(|p| solbot_strategy::signal::geyser_client::ExtendedHistoryProvider::new(shared_rpc.clone(), Arc::new(p.clone())));
+
     // Stage 7: Full System Hydration (TZ §2.4)
     let hydration_opts = HydrationOptions {
         is_live: !is_paper,
@@ -159,6 +163,8 @@ async fn main() -> anyhow::Result<()> {
         positions_repo: positions_repo.as_deref().map(|r| r.as_ref()),
         rpc: Some(&blocking_rpc),
         async_rpc: None,
+        wallet_pubkey: Some(wallet_pubkey),
+        backfill_provider: backfill_provider.as_ref(),
     };
     let hydration_report = startup::hydration::hydrate_system_state_with_opts(&hydration_opts).await?;
 
