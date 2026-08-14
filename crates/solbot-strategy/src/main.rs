@@ -16,11 +16,12 @@ use solbot_strategy::signal::dex_listeners::{
     meteora::MeteoraListener, pump_fun::PumpFunListener, raydium::RaydiumListener,
 };
 use solbot_strategy::signer_client::SignerClient;
-use solbot_strategy::smart_money::{SmartMoneyMode, WatchlistCache};
-use solbot_strategy::startup::hydration::{HydrationOptions, hydrate_system_state_with_opts};
+use solbot_strategy::smart_money::WatchlistCache;
+use solbot_strategy::startup::{self, hydration::HydrationOptions};
 use solbot_strategy::state::positions_repo::PositionsRepo;
 use solbot_strategy::state::smart_money_hits_repo::SmartMoneyHitsRepo;
 use solbot_strategy::state::wallet_watchlist_repo::WalletWatchlistRepo;
+use solbot_strategy::observability;
 use sqlx::SqlitePool;
 use std::env;
 use std::sync::Arc;
@@ -78,6 +79,10 @@ async fn main() -> anyhow::Result<()> {
         );
     }
 
+    // Spawn Prometheus /metrics HTTP endpoint (port 9090)
+    let metrics_port: u16 = env::var("METRICS_PORT").ok().and_then(|v| v.parse().ok()).unwrap_or(9090);
+    observability::spawn_metrics_server(metrics_port);
+
     let db_url = env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite:solbot.db".to_string());
     let sqlite_pool = match SqlitePool::connect(&db_url).await {
         Ok(pool) => Some(pool),
@@ -108,7 +113,7 @@ async fn main() -> anyhow::Result<()> {
             solana_sdk::commitment_config::CommitmentConfig::processed(),
         ),
     );
-    let blocking_rpc = solana_rpc_client::rpc_client::RpcClient::new(rpc_url.clone());
+    let blocking_rpc = Arc::new(solana_rpc_client::rpc_client::RpcClient::new(rpc_url.clone()));
 
     let shared_risk = Arc::new(RiskGateConfig::from_shared_rpc(
         shared_rpc.clone(),
@@ -154,13 +159,13 @@ async fn main() -> anyhow::Result<()> {
 
     let backfill_provider = sqlite_pool
         .as_ref()
-        .map(|p| solbot_strategy::signal::geyser_client::ExtendedHistoryProvider::new(shared_rpc.clone(), Arc::new(p.clone())));
+        .map(|p| solbot_strategy::signal::geyser_client::ExtendedHistoryProvider::new(blocking_rpc.clone(), Arc::new(p.clone())));
 
     // Stage 7: Full System Hydration (TZ §2.4)
     let hydration_opts = HydrationOptions {
         is_live: !is_paper,
         signer_client: signer_client.as_deref(),
-        positions_repo: positions_repo.as_deref().map(|r| r.as_ref()),
+        positions_repo: positions_repo.as_deref(),
         rpc: Some(&blocking_rpc),
         async_rpc: None,
         wallet_pubkey: Some(wallet_pubkey),
@@ -248,10 +253,14 @@ async fn main() -> anyhow::Result<()> {
         let actor_cfg = actor_config.clone();
         let risk = shared_risk.clone();
         let paper = is_paper;
+        let pos_repo = positions_repo.clone();
+        let sm_hits_repo = smart_money_hits_repo.clone();
+        let wl_cache = watchlist_cache.clone();
         tokio::spawn(async move {
             tracing::info!(listener = label, "Signal processor started");
             process_signals(
                 rx, dedup, actors, paper, wallet, router_c, signer_c, rpc_c, dex_r, actor_cfg, risk,
+                pos_repo, sm_hits_repo, Some(wl_cache),
             )
             .await;
         });
@@ -285,6 +294,9 @@ async fn process_signals(
     dex_readiness: DexReadinessConfig,
     actor_config: ActorConfig,
     shared_risk: Arc<RiskGateConfig>,
+    positions_repo: Option<Arc<PositionsRepo>>,
+    smart_money_hits_repo: Option<Arc<SmartMoneyHitsRepo>>,
+    watchlist_cache: Option<Arc<WatchlistCache>>,
 ) {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc as StdArc;
@@ -384,6 +396,9 @@ async fn process_signals(
         let risk_cfg = shared_risk.clone();
         let sem = semaphore.clone();
         let wallet_key = wallet_pubkey;
+        let positions_repo_clone = positions_repo.clone();
+        let smart_money_hits_repo_clone = smart_money_hits_repo.clone();
+        let watchlist_cache_clone = watchlist_cache.clone();
 
         let permit = match StdArc::clone(&sem).acquire_owned().await {
             Ok(p) => p,
@@ -393,6 +408,9 @@ async fn process_signals(
         tokio::spawn(async move {
             let _permit = permit;
             let process_start = Instant::now();
+            let signal_span = tracing::info_span!("signal_received", mint = %signal.mint, pool = %signal.pool_address, dex = %signal.dex_program);
+            let _enter = signal_span.enter();
+            drop(_enter); // Don't hold across await — just record the span event
 
             if !dedup.check_signal(&signal) {
                 tracing::debug!("Dedup filtered signal: {}", signal.mint);
@@ -469,6 +487,9 @@ async fn process_signals(
                     rpc_clone,
                     dex_ready,
                     actor_cfg,
+                    positions_repo_clone,
+                    smart_money_hits_repo_clone,
+                    watchlist_cache_clone,
                 )
                 .await;
             }
@@ -527,6 +548,9 @@ async fn dispatch_to_actor(
     rpc_url: Option<String>,
     dex_readiness: DexReadinessConfig,
     actor_config: ActorConfig,
+    positions_repo: Option<Arc<PositionsRepo>>,
+    smart_money_hits_repo: Option<Arc<SmartMoneyHitsRepo>>,
+    watchlist_cache: Option<Arc<WatchlistCache>>,
 ) {
     let new_pool = ControlEvent::NewPoolSignal {
         mint: signal.mint.clone(),
@@ -617,7 +641,7 @@ async fn dispatch_to_actor(
         buy_attempted: false,
         fee_ledger: solbot_strategy::pnl::PositionFeeLedger::new(),
         smart_money_mode: solbot_strategy::smart_money::SmartMoneyMode::from_env(),
-        watchlist_cache: Some((*watchlist_cache).clone()),
+        watchlist_cache: watchlist_cache.as_ref().map(|c| (**c).clone()),
         smart_money_hits_repo: smart_money_hits_repo.clone(),
         wsol_manager: solbot_strategy::wsol::WsolManager::default(),
     };

@@ -1,6 +1,7 @@
 pub mod actor;
 pub mod circuit_breaker;
 pub mod exit;
+pub mod observability;
 pub mod paper_trade_log;
 pub mod pipeline_bench;
 pub mod pnl;

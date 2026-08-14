@@ -18,6 +18,7 @@ use crate::state::position_lifecycle::PositionLifecycle;
 use crate::state::positions_repo::{status_to_string, PositionsRepo};
 use crate::state::state_transitions_repo::StateTransitionsRepo;
 use crate::wsol::WsolManager;
+use crate::observability::MetricsRegistry;
 use crate::tx_builder::meteora_damm_v2 as meteora_damm_v2_builder;
 use crate::tx_builder::meteora_dlmm as meteora_dlmm_builder;
 use crate::tx_builder::pump_fun as pump_fun_builder;
@@ -841,7 +842,10 @@ pub async fn execute_buy_pipeline(
     ctx: &mut ActorContext,
     entry_price_sol: f64,
 ) -> Result<Position> {
+    let pipeline_start = std::time::Instant::now();
+    tracing::info!(span = "execute_buy_pipeline", mint = %ctx.mint, "▶ Buy pipeline started");
     tracing::info!("Starting buy pipeline for mint {}", ctx.mint);
+    MetricsRegistry::global().record_signal_received();
 
     // Check DEX readiness for Live mode
     check_dex_readiness(&ctx.dex_program_id, &ctx.dex_readiness, ctx.trading_mode)?;
@@ -913,14 +917,20 @@ pub async fn execute_buy_pipeline(
         }
     };
 
+    tracing::info!(span = "risk_gate_start", mint = %ctx.mint, "▶ Risk gate started");
+    let risk_start = std::time::Instant::now();
     let risk_result = risk_gate::run_pre_buy_checks_with_timeout(&signal, &ctx.risk_gate_config).await;
+    let risk_latency_ms = risk_start.elapsed().as_secs_f64() * 1000.0;
+    tracing::info!(span = "risk_gate_end", mint = %ctx.mint, risk_latency_ms = format!("{:.2}", risk_latency_ms), "◀ Risk gate completed");
 
     match risk_result {
         risk_gate::RiskGateVerdict::Accept => {
-            tracing::info!("Risk gate PASSED for mint {}", ctx.mint);
+            MetricsRegistry::global().record_risk_gate(true, risk_latency_ms);
+            tracing::info!(risk_latency_ms = format!("{:.2}", risk_latency_ms), "Risk gate PASSED for mint {}", ctx.mint);
         }
         risk_gate::RiskGateVerdict::Reject { reason } => {
-            tracing::warn!("Risk gate REJECTED for mint {}: {}", ctx.mint, reason);
+            MetricsRegistry::global().record_risk_gate(false, risk_latency_ms);
+            tracing::warn!(risk_latency_ms = format!("{:.2}", risk_latency_ms), "Risk gate REJECTED for mint {}: {}", ctx.mint, reason);
             return Err(anyhow!("Risk gate rejection: {}", reason));
         }
     }
@@ -967,6 +977,7 @@ pub async fn execute_buy_pipeline(
     let blockhash = fetch_recent_blockhash(&ctx.rpc_url, ctx.trading_mode).await?;
 
     // Build complete unsigned transaction
+    tracing::info!(span = "tx_built", mint = %ctx.mint, "▶ Building unsigned transaction");
     let (unsigned_tx, unsigned_tx_base64) = build_unsigned_transaction(
         swap_instructions,
         200_000,
@@ -974,6 +985,8 @@ pub async fn execute_buy_pipeline(
         &ctx.wallet,
         blockhash,
     )?;
+    MetricsRegistry::global().record_tx_built();
+    tracing::info!(span = "tx_built", mint = %ctx.mint, "◀ Transaction built");
 
     tracing::debug!(
         "Built unsigned buy transaction: base64 len={}",
@@ -1013,6 +1026,7 @@ pub async fn execute_buy_pipeline(
                                 anyhow!("Failed to deserialize signed transaction: {}", e)
                             })?;
                         final_tx = decoded_tx;
+                        MetricsRegistry::global().record_signed();
                         tracing::info!("Signer client signed buy transaction successfully");
                     } else {
                         // Signer accepted but didn't return signed transaction
@@ -1043,10 +1057,18 @@ pub async fn execute_buy_pipeline(
     assert_signal_still_fresh(ctx, "pre_submit_buy")?;
     if ctx.trading_mode == TradingMode::Live {
         if let Some(ref mut router) = ctx.router {
+            tracing::info!(span = "bundle_submitted", mint = %ctx.mint, "▶ Submitting bundle");
+            let submit_start = std::time::Instant::now();
             tracing::info!("Submitting live buy transaction to Router pipeline");
             match router.submit_transaction(final_tx).await {
                 Ok(SubmitResult::Confirmed { signature, slot }) => {
+                    let submit_latency_ms = submit_start.elapsed().as_secs_f64() * 1000.0;
+                    MetricsRegistry::global().record_bundle_submitted(submit_latency_ms);
+                    let e2e_latency_ms = pipeline_start.elapsed().as_secs_f64() * 1000.0;
+                    MetricsRegistry::global().record_end_to_end(e2e_latency_ms);
                     tracing::info!(
+                        submit_latency_ms = format!("{:.2}", submit_latency_ms),
+                        e2e_latency_ms = format!("{:.2}", e2e_latency_ms),
                         "Buy transaction confirmed on-chain: sig={}, slot={}",
                         signature,
                         slot
