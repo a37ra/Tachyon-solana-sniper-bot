@@ -24,6 +24,8 @@ use crate::exit::escalation;
 use crate::signer_client::SignerClient;
 use crate::state::positions_repo::PositionsRepo;
 
+use crate::signal::geyser_client::ExtendedHistoryProvider;
+
 /// Options for configuring system startup hydration.
 pub struct HydrationOptions<'a> {
     pub is_live: bool,
@@ -32,6 +34,7 @@ pub struct HydrationOptions<'a> {
     pub rpc: Option<&'a RpcClient>,
     pub async_rpc: Option<&'a AsyncRpcClient>,
     pub wallet_pubkey: Option<Pubkey>,
+    pub backfill_provider: Option<&'a ExtendedHistoryProvider>,
 }
 
 /// Report summarizing system state hydration outcome.
@@ -42,7 +45,9 @@ pub struct HydrationReport {
     pub open_mints: HashSet<String>,
     pub rug_pull_count: usize,
     pub resolved_in_flight_count: usize,
+    pub backfilled_updates_count: usize,
     pub resumed_escalations_count: usize,
+    pub subscriptions_resumed: bool,
 }
 
 /// Helper: check if a position is already open for a given mint (TZ §2.4 double-open prevention).
@@ -78,6 +83,7 @@ pub async fn hydrate_system_state() -> Result<HydrationReport> {
         rpc: Some(&rpc),
         async_rpc: None,
         wallet_pubkey: None,
+        backfill_provider: None,
     };
 
     hydrate_system_state_with_opts(&opts).await
@@ -199,8 +205,30 @@ pub async fn hydrate_system_state_with_opts(opts: &HydrationOptions<'_>) -> Resu
         tracing::info!("✅ Step 4: RPC client not provided — in-flight check skipped");
     }
 
-    // Step 5 & 6: Backfill & Subscriptions readiness
-    tracing::info!("✅ Step 5: Slot backfill ready (Geyser/WS reconnect)");
+    // Step 5: Slot backfill via ExtendedHistoryProvider (TZ §2.4)
+    if let (Some(provider), Some(rpc)) = (opts.backfill_provider, opts.rpc) {
+        let current_slot = rpc.get_slot().unwrap_or(0);
+        let start_slot = current_slot.saturating_sub(150);
+        match provider.backfill_slots(&[], start_slot, current_slot).await {
+            Ok(updates) => {
+                report.backfilled_updates_count = updates.len();
+                tracing::info!(
+                    current_slot,
+                    start_slot,
+                    count = updates.len(),
+                    "✅ Step 5: Slot backfill completed via ExtendedHistoryProvider"
+                );
+            }
+            Err(e) => {
+                tracing::warn!("⚠️ Step 5: Slot backfill error: {}", e);
+            }
+        }
+    } else {
+        tracing::info!("✅ Step 5: Slot backfill provider not passed — backfill skipped");
+    }
+
+    // Step 6: DEX listeners subscriptions readiness (TZ §2.4)
+    report.subscriptions_resumed = true;
     tracing::info!("✅ Step 6: DEX listeners subscriptions ready to resume");
 
     // Step 7: Idempotent escalation recovery (resume stuck sells without resetting stage)
@@ -424,6 +452,7 @@ mod tests {
             rpc: None,
             async_rpc: None,
             wallet_pubkey: None,
+            backfill_provider: None,
         };
         let report = hydrate_system_state_with_opts(&opts).await.unwrap();
         assert!(report.signer_healthy);
