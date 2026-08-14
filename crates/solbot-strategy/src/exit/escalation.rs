@@ -302,6 +302,20 @@ impl EscalationState {
     }
 }
 
+/// Resume an existing escalation from a previously saved state without resetting its stage.
+///
+/// **Invariant**: Preserves current_stage (e.g. Stage3DurableNonceStuck stays at Stage 3 — TZ §2.4).
+pub fn resume_escalation_state(saved_state: EscalationState) -> EscalationState {
+    tracing::info!(
+        escalation_id = %saved_state.escalation_id,
+        position_id = %saved_state.position_id,
+        current_stage = %saved_state.current_stage,
+        attempts = saved_state.attempts_in_stage,
+        "Resuming escalation sequence from saved state (forward-only preserved)"
+    );
+    saved_state
+}
+
 /// Run the full escalation loop for a position.
 ///
 /// This is the main entry point for emergency exits. It drives the state machine
@@ -520,5 +534,21 @@ mod tests {
         state.advance_stage(2);
         state.advance_stage(3);
         assert!(state.is_stuck());
+    }
+
+    #[test]
+    fn test_resume_escalation_preserves_stage3() {
+        let mut state = make_state();
+        state.advance_stage(1);
+        state.advance_stage(2);
+        state.advance_stage(3); // Stage 3 Durable Nonce
+        assert_eq!(state.current_stage, EscalationStage::Stage3DurableNonceStuck);
+
+        let resumed = resume_escalation_state(state);
+        assert_eq!(
+            resumed.current_stage,
+            EscalationStage::Stage3DurableNonceStuck,
+            "Resuming must not reset Stage 3 to Stage 0"
+        );
     }
 }
