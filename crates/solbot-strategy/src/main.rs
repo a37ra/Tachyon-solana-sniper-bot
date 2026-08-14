@@ -16,7 +16,12 @@ use solbot_strategy::signal::dex_listeners::{
     meteora::MeteoraListener, pump_fun::PumpFunListener, raydium::RaydiumListener,
 };
 use solbot_strategy::signer_client::SignerClient;
-use solbot_strategy::startup;
+use solbot_strategy::smart_money::{SmartMoneyMode, WatchlistCache};
+use solbot_strategy::startup::hydration::{HydrationOptions, hydrate_system_state_with_opts};
+use solbot_strategy::state::positions_repo::PositionsRepo;
+use solbot_strategy::state::smart_money_hits_repo::SmartMoneyHitsRepo;
+use solbot_strategy::state::wallet_watchlist_repo::WalletWatchlistRepo;
+use sqlx::SqlitePool;
 use std::env;
 use std::sync::Arc;
 use std::time::Instant;
@@ -73,21 +78,38 @@ async fn main() -> anyhow::Result<()> {
         );
     }
 
-    startup::hydration::hydrate_system_state().await?;
+    let db_url = env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite:solbot.db".to_string());
+    let sqlite_pool = match SqlitePool::connect(&db_url).await {
+        Ok(pool) => Some(pool),
+        Err(e) => {
+            tracing::warn!("SQLite DB connection error ( ephemerals/dev ): {}", e);
+            None
+        }
+    };
+
+    let positions_repo = sqlite_pool.as_ref().map(|p| Arc::new(PositionsRepo::new(p.clone())));
+    let smart_money_hits_repo = sqlite_pool.as_ref().map(|p| Arc::new(SmartMoneyHitsRepo::new(p.clone())));
+    let wallet_watchlist_repo = sqlite_pool.as_ref().map(|p| Arc::new(WalletWatchlistRepo::new(p.clone())));
+
+    let watchlist_cache = Arc::new(WatchlistCache::new());
+    if let Some(ref repo) = wallet_watchlist_repo {
+        if let Ok(n) = watchlist_cache.reload_from_repo(repo).await {
+            tracing::info!(count = n, "Smart money watchlist cache hydrated from DB");
+        }
+    }
 
     let actor_config = ActorConfig::default();
     let actor_registry = ActorRegistry::new();
 
     let rpc_url = resolve_rpc_url();
-    // processed: create-ix mints are visible earlier than confirmed/finalized
     let shared_rpc = Arc::new(
         solana_rpc_client::nonblocking::rpc_client::RpcClient::new_with_commitment(
             rpc_url.clone(),
             solana_sdk::commitment_config::CommitmentConfig::processed(),
         ),
     );
-    // Single source of truth for live hard-guards (skip_sim / public_rpc / max_signal_age).
-    // Do not duplicate bail! logic above — keep all fail-closed policy in assert_safe_for_live.
+    let blocking_rpc = solana_rpc_client::rpc_client::RpcClient::new(rpc_url.clone());
+
     let shared_risk = Arc::new(RiskGateConfig::from_shared_rpc(
         shared_rpc.clone(),
         rpc_url.clone(),
@@ -95,11 +117,6 @@ async fn main() -> anyhow::Result<()> {
     if !is_paper {
         shared_risk.assert_safe_for_live()?;
     }
-
-    // Pump fee_recipient from on-chain Global — no hardcoded tip/fee addresses.
-    solbot_strategy::tx_builder::pump_fun::load_fee_recipient_from_global(shared_rpc.as_ref())
-        .await
-        .map_err(|e| anyhow::anyhow!("pump Global fee_recipient load failed (refusing start): {e}"))?;
 
     let (wallet_pubkey, router, signer_client, live_rpc_url, dex_readiness) = if !is_paper {
         let live_rpc = env::var("SOLBOT_RPC_URL").unwrap_or_else(|_| rpc_url.clone());
@@ -134,6 +151,21 @@ async fn main() -> anyhow::Result<()> {
             DexReadinessConfig::default(),
         )
     };
+
+    // Stage 7: Full System Hydration (TZ §2.4)
+    let hydration_opts = HydrationOptions {
+        is_live: !is_paper,
+        signer_client: signer_client.as_deref(),
+        positions_repo: positions_repo.as_deref().map(|r| r.as_ref()),
+        rpc: Some(&blocking_rpc),
+        async_rpc: None,
+    };
+    let hydration_report = startup::hydration::hydrate_system_state_with_opts(&hydration_opts).await?;
+
+    // Pump fee_recipient from on-chain Global — no hardcoded tip/fee addresses.
+    solbot_strategy::tx_builder::pump_fun::load_fee_recipient_from_global(shared_rpc.as_ref())
+        .await
+        .map_err(|e| anyhow::anyhow!("pump Global fee_recipient load failed (refusing start): {e}"))?;
 
     let dedup_filter = DedupFilter::new(30);
     let signal_source = env::var("SIGNAL_SOURCE").unwrap_or_else(|_| "helius_logs".into());
@@ -567,7 +599,7 @@ async fn dispatch_to_actor(
         active_position: None,
         trade_stats: None,
         dex_readiness,
-        positions_repo: None,
+        positions_repo: positions_repo.clone(),
         state_transitions_repo: None,
         position_lifecycle: None,
         lifecycle_event_tx: None,
@@ -579,7 +611,8 @@ async fn dispatch_to_actor(
         buy_attempted: false,
         fee_ledger: solbot_strategy::pnl::PositionFeeLedger::new(),
         smart_money_mode: solbot_strategy::smart_money::SmartMoneyMode::from_env(),
-        watchlist_cache: None,
+        watchlist_cache: Some((*watchlist_cache).clone()),
+        smart_money_hits_repo: smart_money_hits_repo.clone(),
         wsol_manager: solbot_strategy::wsol::WsolManager::default(),
     };
 

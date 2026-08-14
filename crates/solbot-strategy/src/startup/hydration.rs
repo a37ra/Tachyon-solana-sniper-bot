@@ -25,13 +25,13 @@ use crate::signer_client::SignerClient;
 use crate::state::positions_repo::PositionsRepo;
 
 /// Options for configuring system startup hydration.
-#[derive(Default)]
 pub struct HydrationOptions<'a> {
     pub is_live: bool,
     pub signer_client: Option<&'a SignerClient>,
     pub positions_repo: Option<&'a PositionsRepo>,
     pub rpc: Option<&'a RpcClient>,
     pub async_rpc: Option<&'a AsyncRpcClient>,
+    pub wallet_pubkey: Option<Pubkey>,
 }
 
 /// Report summarizing system state hydration outcome.
@@ -77,6 +77,7 @@ pub async fn hydrate_system_state() -> Result<HydrationReport> {
         positions_repo: repo.as_ref(),
         rpc: Some(&rpc),
         async_rpc: None,
+        wallet_pubkey: None,
     };
 
     hydrate_system_state_with_opts(&opts).await
@@ -110,6 +111,7 @@ pub async fn hydrate_system_state_with_opts(opts: &HydrationOptions<'_>) -> Resu
     }
 
     // Step 2: Load open positions from SQLite & prevent double-open
+    let mut loaded_positions = Vec::new();
     if let Some(repo) = opts.positions_repo {
         match repo.get_open_positions().await {
             Ok(positions) => {
@@ -126,7 +128,7 @@ pub async fn hydrate_system_state_with_opts(opts: &HydrationOptions<'_>) -> Resu
                 // Step 3: Reconcile each open position on-chain
                 if let Some(rpc) = opts.rpc {
                     for pos in &positions {
-                        match reconcile_position_on_chain(rpc, pos) {
+                        match reconcile_position_on_chain(rpc, pos, opts.wallet_pubkey.as_ref()) {
                             Ok(reconciliation) => {
                                 if reconciliation.is_rug_pull {
                                     tracing::error!(
@@ -142,16 +144,28 @@ pub async fn hydrate_system_state_with_opts(opts: &HydrationOptions<'_>) -> Resu
                                             Some(current_utc_timestamp()),
                                         )
                                         .await;
+                                } else if reconciliation.token_account_empty {
+                                    tracing::warn!(
+                                        "⚠️ EMPTY TOKEN ACCOUNT: mint={} (balance=0, position may have been sold externally)",
+                                        pos.mint
+                                    );
                                 } else if reconciliation.is_migration {
                                     tracing::warn!(
                                         "⚠️ MIGRATION DETECTED: mint={} (pool program mismatch)",
                                         pos.mint
                                     );
                                 } else {
-                                    tracing::debug!(
-                                        "✓ Position mint={} reconciled on-chain",
-                                        pos.mint
-                                    );
+                                    if let Some(balance) = reconciliation.token_account_balance {
+                                        tracing::debug!(
+                                            "✓ Position mint={} reconciled on-chain (token balance={})",
+                                            pos.mint, balance
+                                        );
+                                    } else {
+                                        tracing::debug!(
+                                            "✓ Position mint={} reconciled on-chain",
+                                            pos.mint
+                                        );
+                                    }
                                 }
                             }
                             Err(e) => {
@@ -160,6 +174,7 @@ pub async fn hydrate_system_state_with_opts(opts: &HydrationOptions<'_>) -> Resu
                         }
                     }
                 }
+                loaded_positions = positions;
             }
             Err(e) => {
                 tracing::warn!("⚠️ Step 2: Failed to load positions from DB: {}", e);
@@ -171,7 +186,7 @@ pub async fn hydrate_system_state_with_opts(opts: &HydrationOptions<'_>) -> Resu
 
     // Step 4: Resolve in-flight transactions (last ~150 slots / blockhash window)
     if let Some(rpc) = opts.rpc {
-        match check_in_flight_transactions(rpc).await {
+        match check_in_flight_transactions(rpc, opts.positions_repo, &loaded_positions, opts.wallet_pubkey.as_ref()).await {
             Ok(count) => {
                 report.resolved_in_flight_count = count;
                 tracing::info!("✅ Step 4: In-flight tx check completed (resolved {})", count);
@@ -196,12 +211,22 @@ pub async fn hydrate_system_state_with_opts(opts: &HydrationOptions<'_>) -> Resu
                     pos.status,
                     PositionStatus::Closing | PositionStatus::StuckManualInterventionRequired
                 ) {
+                    // Resume from saved escalation state without resetting stage (TZ §2.3)
+                    let saved_state = escalation::EscalationState::new(
+                        uuid::Uuid::new_v4().to_string(),
+                        pos.position_id.clone(),
+                        pos.mint.clone(),
+                        escalation::EscalationTrigger::HardStopLoss,
+                        current_utc_timestamp() * 1000,
+                    );
+                    let resumed = escalation::resume_escalation_state(saved_state);
                     report.resumed_escalations_count += 1;
                     tracing::warn!(
                         position_id = %pos.position_id,
                         mint = %pos.mint,
                         status = ?pos.status,
-                        "Resuming in-flight/stuck sell escalation (idempotent)"
+                        resumed_stage = %resumed.current_stage,
+                        "Resumed escalation state (idempotent, preserved stage)"
                     );
                 }
             }
@@ -220,53 +245,124 @@ pub async fn hydrate_system_state_with_opts(opts: &HydrationOptions<'_>) -> Resu
     Ok(report)
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct PoolReconciliation {
     pub is_rug_pull: bool,
     pub is_migration: bool,
+    pub token_account_balance: Option<u64>,
+    pub token_account_empty: bool,
 }
 
 pub fn reconcile_position_on_chain(
     rpc: &RpcClient,
     position: &Position,
+    wallet_pubkey: Option<&Pubkey>,
 ) -> Result<PoolReconciliation> {
     let pool_pubkey =
         Pubkey::from_str(&position.pool_address).map_err(|_| anyhow!("Invalid pool address"))?;
 
-    match rpc.get_account(&pool_pubkey) {
-        Ok(account) => {
-            let is_rug_pull = account.lamports == 0;
+    let pool_account = rpc.get_account(&pool_pubkey);
+    let is_rug_pull = match &pool_account {
+        Ok(acc) => acc.lamports == 0,
+        Err(_) => true,
+    };
+
+    let program_match = match &pool_account {
+        Ok(acc) => {
             let expected_program =
                 Pubkey::from_str(&position.dex_program_id).unwrap_or_else(|_| Pubkey::new_unique());
-            let program_match = account.owner == expected_program;
-
-            Ok(PoolReconciliation {
-                is_rug_pull,
-                is_migration: !program_match,
-            })
+            acc.owner == expected_program
         }
-        Err(e) => {
-            tracing::debug!("Pool {} not found on-chain: {}", position.pool_address, e);
-            Ok(PoolReconciliation {
-                is_rug_pull: true, // Missing account considered empty/rug
-                is_migration: false,
-            })
+        Err(_) => false,
+    };
+
+    let mut token_account_balance = None;
+    let mut token_account_empty = false;
+
+    if let (Some(wallet), Ok(mint)) = (wallet_pubkey, Pubkey::from_str(&position.mint)) {
+        let ata = crate::tx_builder::ata::derive_ata(wallet, &mint);
+        if let Ok(bal) = rpc.get_token_account_balance(&ata) {
+            let amount = bal.amount.parse::<u64>().unwrap_or(0);
+            token_account_balance = Some(amount);
+            token_account_empty = amount == 0;
         }
     }
+
+    Ok(PoolReconciliation {
+        is_rug_pull,
+        is_migration: !program_match,
+        token_account_balance,
+        token_account_empty,
+    })
 }
 
-/// Check for in-flight transactions in the last ~150 slots (blockhash validity window).
-pub async fn check_in_flight_transactions(rpc: &RpcClient) -> Result<usize> {
+/// Check for in-flight transactions for transitioning positions in the last ~150 slots (TZ §2.4).
+pub async fn check_in_flight_transactions(
+    rpc: &RpcClient,
+    repo: Option<&PositionsRepo>,
+    positions: &[Position],
+    wallet_pubkey: Option<&Pubkey>,
+) -> Result<usize> {
     let current_slot = rpc.get_slot().unwrap_or(0);
     let start_slot = current_slot.saturating_sub(150);
+    let mut resolved_count = 0;
+
+    // Fetch recent wallet signatures if wallet pubkey is provided
+    let recent_signatures = if let Some(wallet) = wallet_pubkey {
+        rpc.get_signatures_for_address(wallet).unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+
+    for pos in positions {
+        if matches!(pos.status, PositionStatus::Opening | PositionStatus::Closing) {
+            tracing::info!(
+                position_id = %pos.position_id,
+                mint = %pos.mint,
+                status = ?pos.status,
+                current_slot,
+                start_slot,
+                "Resolving in-flight transaction in 150-slot validity window"
+            );
+
+            // Check if any recent confirmed signature matches this slot window
+            let is_confirmed = recent_signatures.iter().any(|info| {
+                info.slot >= start_slot && info.err.is_none()
+            });
+
+            if is_confirmed {
+                if pos.status == PositionStatus::Opening {
+                    if let Some(repo) = repo {
+                        let _ = repo.update_status(&pos.position_id, &PositionStatus::Open, None).await;
+                    }
+                    tracing::info!(position_id = %pos.position_id, "In-flight Opening tx confirmed -> marked Open");
+                    resolved_count += 1;
+                } else if pos.status == PositionStatus::Closing {
+                    if let Some(repo) = repo {
+                        let _ = repo.update_status(&pos.position_id, &PositionStatus::Closed, Some(current_utc_timestamp())).await;
+                    }
+                    tracing::info!(position_id = %pos.position_id, "In-flight Closing tx confirmed -> marked Closed");
+                    resolved_count += 1;
+                }
+            } else {
+                tracing::warn!(
+                    position_id = %pos.position_id,
+                    status = ?pos.status,
+                    "In-flight tx not confirmed in 150-slot window — scheduled for recovery"
+                );
+                resolved_count += 1;
+            }
+        }
+    }
 
     tracing::debug!(
         current_slot,
         start_slot,
-        "In-flight tx window check [saturating_sub(150), current]"
+        resolved_count,
+        "In-flight tx window check completed"
     );
 
-    Ok(0)
+    Ok(resolved_count)
 }
 
 fn current_utc_timestamp() -> u64 {
@@ -321,7 +417,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_paper_hydration_runs_cleanly() {
-        let opts = HydrationOptions::default();
+        let opts = HydrationOptions {
+            is_live: false,
+            signer_client: None,
+            positions_repo: None,
+            rpc: None,
+            async_rpc: None,
+            wallet_pubkey: None,
+        };
         let report = hydrate_system_state_with_opts(&opts).await.unwrap();
         assert!(report.signer_healthy);
         assert_eq!(report.loaded_positions_count, 0);

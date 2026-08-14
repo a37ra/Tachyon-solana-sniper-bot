@@ -159,6 +159,8 @@ pub struct ActorContext {
     pub smart_money_mode: SmartMoneyMode,
     /// In-memory cache of active watchlist wallet addresses.
     pub watchlist_cache: Option<WatchlistCache>,
+    /// Smart money hits repo for querying wallet hits.
+    pub smart_money_hits_repo: Option<Arc<crate::state::smart_money_hits_repo::SmartMoneyHitsRepo>>,
     /// WSOL manager for auto-unwrap and rent reclaim (TZ §4.7).
     pub wsol_manager: WsolManager,
 }
@@ -876,10 +878,8 @@ pub async fn execute_buy_pipeline(
     // Step 0.5: Smart Money pre-buy check (TZ §2.5) — before risk_gate.
     // Determines entry policy (tag_only / soft_boost / hard_gate).
     // Never weakens risk_gate hard checks.
-    let smart_money_hit = if let Some(ref _cache) = ctx.watchlist_cache {
-        // Check if any watchlist wallet already bought this mint
-        // This is a simple O(1) lookup in the in-memory cache
-        false // TODO: populate from smart_money_hits_repo when event arrives
+    let smart_money_hit = if let Some(ref repo) = ctx.smart_money_hits_repo {
+        repo.has_hit_for_mint(&ctx.mint).await.unwrap_or(false)
     } else {
         false
     };
@@ -1179,6 +1179,17 @@ pub async fn execute_buy_pipeline(
             );
         }
     }
+
+    // === Fee tracking for buy transaction (TZ §4.5) ===
+    let buy_priority_fee_lamports = ctx.tier_params.emergency_exit.priority_fee_baseline as u64;
+    ctx.fee_ledger.track_priority_fee(&position.position_id, buy_priority_fee_lamports);
+    ctx.fee_ledger.track_ata_rent(&position.position_id, pnl::DEFAULT_ATA_RENT_LAMPORTS);
+    tracing::debug!(
+        position_id = %position.position_id,
+        priority_fee_lamports = buy_priority_fee_lamports,
+        ata_rent_lamports = pnl::DEFAULT_ATA_RENT_LAMPORTS,
+        "Buy fee tracked in ledger"
+    );
 
     ctx.active_position = Some(position.clone());
     tracing::info!(
@@ -1590,6 +1601,17 @@ pub async fn execute_exit_pipeline(
         }
     }
 
+    // === Fee tracking for sell transaction (TZ §4.5) ===
+    {
+        let sell_priority_fee_lamports = ctx.tier_params.emergency_exit.priority_fee_baseline as u64 * 2;
+        ctx.fee_ledger.track_priority_fee(&position.position_id, sell_priority_fee_lamports);
+        tracing::debug!(
+            position_id = %position.position_id,
+            priority_fee_lamports = sell_priority_fee_lamports,
+            "Sell fee tracked in ledger"
+        );
+    }
+
     // Step 4: Update position state based on exit action using PositionLifecycle
     if let Some(ref mut pos) = ctx.active_position {
         let old_status = pos.status.clone();
@@ -1898,6 +1920,73 @@ pub async fn execute_exit_pipeline(
         if let Some(ref repo) = ctx.positions_repo {
             if let Err(e) = repo.update_position(pos).await {
                 tracing::error!("Failed to update position {} in DB: {}", pos.position_id, e);
+            }
+        }
+
+        // === WSOL auto-unwrap + empty ATA rent reclaim (TZ §4.7) ===
+        if pos.status == PositionStatus::Closed {
+            let mint_pubkey = Pubkey::from_str(&pos.mint).ok();
+            // In paper mode, simulate successful reclaim; in live, RPC fetch WSOL balance
+            let wsol_balance = if ctx.trading_mode == TradingMode::Paper {
+                ctx.wsol_manager.threshold_sol() + 0.01 // simulate above threshold
+            } else {
+                // Attempt to fetch WSOL balance; default to 0 on error
+                0.0 // Will be fetched via async RPC in live
+            };
+
+            let reclaim_ixs = ctx.wsol_manager.post_close_reclaim_instructions(
+                &ctx.wallet,
+                wsol_balance,
+                mint_pubkey.as_ref(),
+                true, // token ATA should be empty after full sell
+            );
+
+            match reclaim_ixs {
+                Ok(ixs) if !ixs.is_empty() => {
+                    // Track ATA refund for PnL accounting
+                    ctx.fee_ledger.track_ata_refund(&pos.position_id, pnl::DEFAULT_ATA_RENT_LAMPORTS);
+                    tracing::info!(
+                        position_id = %pos.position_id,
+                        ix_count = ixs.len(),
+                        ata_refund_lamports = pnl::DEFAULT_ATA_RENT_LAMPORTS,
+                        "WSOL unwrap + ATA rent reclaim instructions generated"
+                    );
+
+                    // In live mode, submit reclaim instructions as a separate tx
+                    if ctx.trading_mode == TradingMode::Live {
+                        if let Ok(blockhash) = fetch_recent_blockhash(&ctx.rpc_url, ctx.trading_mode).await {
+                            if let Ok((reclaim_tx, _)) = build_unsigned_transaction(
+                                tx_builder::SwapInstructions {
+                                    setup_instructions: vec![],
+                                    swap_instructions: ixs,
+                                    cleanup_instructions: vec![],
+                                    additional_signers: vec![],
+                                },
+                                100_000,
+                                ctx.tier_params.emergency_exit.priority_fee_baseline as u64,
+                                &ctx.wallet,
+                                blockhash,
+                            ) {
+                                if let Some(ref mut router) = ctx.router {
+                                    match router.submit_transaction(reclaim_tx).await {
+                                        Ok(SubmitResult::Confirmed { signature, .. }) => {
+                                            tracing::info!(sig = %signature, "WSOL/ATA reclaim tx confirmed");
+                                        }
+                                        Ok(_) | Err(_) => {
+                                            tracing::warn!("WSOL/ATA reclaim tx failed (non-critical)");
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                Ok(_) => {
+                    tracing::debug!(position_id = %pos.position_id, "No WSOL/ATA reclaim needed");
+                }
+                Err(e) => {
+                    tracing::warn!(position_id = %pos.position_id, "WSOL reclaim error (non-critical): {}", e);
+                }
             }
         }
     }
@@ -2277,6 +2366,7 @@ mod tests {
             fee_ledger: PositionFeeLedger::new(),
             smart_money_mode: SmartMoneyMode::default(),
             watchlist_cache: None,
+            smart_money_hits_repo: None,
             wsol_manager: crate::wsol::WsolManager::default(),
         }
     }
