@@ -283,6 +283,7 @@ async fn measure_tx_building_latency() -> Result<()> {
         bonding_curve: pool_address,
         mint,
         associated_bonding_curve: Pubkey::new_unique(),
+        creator: Pubkey::new_unique(),
         virtual_token_reserves: 1_000_000_000_000,
         virtual_sol_reserves: 100_000_000_000,
         real_token_reserves: 500_000_000_000,

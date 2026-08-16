@@ -99,6 +99,7 @@ async fn run_microbenchmarking_test(iterations: usize) -> Result<()> {
             bonding_curve,
             mint: mint_pubkey,
             associated_bonding_curve,
+            creator: Pubkey::new_unique(),
             virtual_token_reserves: 1_000_000_000,
             virtual_sol_reserves: 30_000_000_000,
             real_token_reserves: 800_000_000,

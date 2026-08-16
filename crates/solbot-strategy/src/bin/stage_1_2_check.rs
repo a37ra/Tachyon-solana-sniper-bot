@@ -322,6 +322,7 @@ async fn main() -> Result<()> {
             bonding_curve,
             mint,
             associated_bonding_curve: Pubkey::new_unique(), // Mock
+            creator: Pubkey::new_unique(),
             virtual_token_reserves: 1_000_000_000_000,
             virtual_sol_reserves: 30_000_000_000,
             real_token_reserves: 500_000_000_000,
@@ -415,6 +416,7 @@ async fn main() -> Result<()> {
             bonding_curve: pool_address,
             mint,
             associated_bonding_curve: Pubkey::new_unique(),
+            creator: Pubkey::new_unique(),
             virtual_token_reserves: 1_000_000_000,
             virtual_sol_reserves: 10_000_000_000,
             real_token_reserves: 1_000_000,
