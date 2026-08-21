@@ -3,7 +3,6 @@
 //! Exposes OTel tracing spans & Prometheus `/metrics` endpoint on port 9090.
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
