@@ -7,7 +7,7 @@
 //! `SeenPools` is dedup-only (duplicate WS deliveries), not "is this account new".
 
 use crate::signal::logs_parser;
-use crate::signal::pool_signal::{is_plausible_spl_mint, SeenPools, NATIVE_MINT};
+use crate::signal::pool_signal::{is_plausible_spl_mint, SeenPools, NATIVE_MINT, SYSTEM_PROGRAM};
 use anyhow::{anyhow, Result};
 use base64::Engine;
 use futures_util::{SinkExt, StreamExt};
