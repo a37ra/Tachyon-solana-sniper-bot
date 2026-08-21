@@ -10,6 +10,8 @@ anyhow = { workspace = true }
 serde_yaml = "0.9"
 serde_json = "1.0"
 tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "registry"] }
+tracing-opentelemetry = "0.22"
 opentelemetry = "0.21"
-opentelemetry_sdk = "0.21"
-opentelemetry-otlp = "0.14"
+opentelemetry_sdk = { version = "0.21", features = ["rt-tokio"] }
+opentelemetry-otlp = { version = "0.14", features = ["tonic"] }

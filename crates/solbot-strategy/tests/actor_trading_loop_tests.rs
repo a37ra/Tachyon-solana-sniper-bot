@@ -177,6 +177,11 @@ async fn test_cpmm_buy_pipeline_fail_closed_pool_account_not_found() {
         last_signal_slot: 0,
         last_signal_received_at: 0,
         buy_attempted: false,
+        fee_ledger: Default::default(),
+        smart_money_mode: Default::default(),
+        watchlist_cache: None,
+        smart_money_hits_repo: None,
+        wsol_manager: Default::default(),
     };
 
     let result = execute_buy_pipeline(&mut ctx, 0.001).await;
@@ -248,6 +253,11 @@ async fn test_dlmm_buy_pipeline_fail_closed_pool_account_not_found() {
         last_signal_slot: 0,
         last_signal_received_at: 0,
         buy_attempted: false,
+        fee_ledger: Default::default(),
+        smart_money_mode: Default::default(),
+        watchlist_cache: None,
+        smart_money_hits_repo: None,
+        wsol_manager: Default::default(),
     };
 
     let result = execute_buy_pipeline(&mut ctx, 0.001).await;
@@ -356,6 +366,11 @@ async fn test_buy_pipeline_fail_closed_no_signer_client() {
         last_signal_slot: 0,
         last_signal_received_at: 0,
         buy_attempted: false,
+        fee_ledger: Default::default(),
+        smart_money_mode: Default::default(),
+        watchlist_cache: None,
+        smart_money_hits_repo: None,
+        wsol_manager: Default::default(),
     };
 
     let result = execute_buy_pipeline(&mut ctx, 0.001).await;
@@ -396,6 +411,11 @@ async fn test_buy_pipeline_fail_closed_no_router() {
         last_signal_slot: 0,
         last_signal_received_at: 0,
         buy_attempted: false,
+        fee_ledger: Default::default(),
+        smart_money_mode: Default::default(),
+        watchlist_cache: None,
+        smart_money_hits_repo: None,
+        wsol_manager: Default::default(),
     };
 
     let result = execute_buy_pipeline(&mut ctx, 0.001).await;
@@ -438,6 +458,11 @@ async fn test_exit_pipeline_fail_closed_no_signer_client() {
         last_signal_slot: 0,
         last_signal_received_at: 0,
         buy_attempted: false,
+        fee_ledger: Default::default(),
+        smart_money_mode: Default::default(),
+        watchlist_cache: None,
+        smart_money_hits_repo: None,
+        wsol_manager: Default::default(),
     };
 
     let result =
@@ -480,6 +505,11 @@ async fn test_exit_pipeline_fail_closed_no_router() {
         last_signal_slot: 0,
         last_signal_received_at: 0,
         buy_attempted: false,
+        fee_ledger: Default::default(),
+        smart_money_mode: Default::default(),
+        watchlist_cache: None,
+        smart_money_hits_repo: None,
+        wsol_manager: Default::default(),
     };
 
     let result =
@@ -656,6 +686,11 @@ fn test_actor_context_creation() {
         last_signal_slot: 0,
         last_signal_received_at: 0,
         buy_attempted: false,
+        fee_ledger: Default::default(),
+        smart_money_mode: Default::default(),
+        watchlist_cache: None,
+        smart_money_hits_repo: None,
+        wsol_manager: Default::default(),
     };
 
     assert_eq!(ctx.trading_mode, TradingMode::Paper);
@@ -691,6 +726,11 @@ fn test_buy_pipeline_risk_gate_rejection() {
         last_signal_slot: 0,
         last_signal_received_at: 0,
         buy_attempted: false,
+        fee_ledger: Default::default(),
+        smart_money_mode: Default::default(),
+        watchlist_cache: None,
+        smart_money_hits_repo: None,
+        wsol_manager: Default::default(),
     };
 
     // This should fail because risk gate checks will reject (no real RPC)
@@ -748,6 +788,11 @@ fn test_sell_pipeline_take_profit() {
         last_signal_slot: 0,
         last_signal_received_at: 0,
         buy_attempted: false,
+        fee_ledger: Default::default(),
+        smart_money_mode: Default::default(),
+        watchlist_cache: None,
+        smart_money_hits_repo: None,
+        wsol_manager: Default::default(),
     };
 
     let position = ctx.active_position.clone().unwrap();
@@ -815,6 +860,11 @@ fn test_sell_pipeline_hard_stop_loss() {
         last_signal_slot: 0,
         last_signal_received_at: 0,
         buy_attempted: false,
+        fee_ledger: Default::default(),
+        smart_money_mode: Default::default(),
+        watchlist_cache: None,
+        smart_money_hits_repo: None,
+        wsol_manager: Default::default(),
     };
 
     let position = ctx.active_position.clone().unwrap();
@@ -948,6 +998,11 @@ fn test_actor_context_with_full_components() {
         last_signal_slot: 0,
         last_signal_received_at: 0,
         buy_attempted: false,
+        fee_ledger: Default::default(),
+        smart_money_mode: Default::default(),
+        watchlist_cache: None,
+        smart_money_hits_repo: None,
+        wsol_manager: Default::default(),
     };
 
     assert_eq!(
@@ -990,6 +1045,11 @@ fn test_trading_mode_paper_vs_live() {
         last_signal_slot: 0,
         last_signal_received_at: 0,
         buy_attempted: false,
+        fee_ledger: Default::default(),
+        smart_money_mode: Default::default(),
+        watchlist_cache: None,
+        smart_money_hits_repo: None,
+        wsol_manager: Default::default(),
     };
 
     // Live mode - would submit transactions (mocked for test)
@@ -1019,6 +1079,11 @@ fn test_trading_mode_paper_vs_live() {
         last_signal_slot: 0,
         last_signal_received_at: 0,
         buy_attempted: false,
+        fee_ledger: Default::default(),
+        smart_money_mode: Default::default(),
+        watchlist_cache: None,
+        smart_money_hits_repo: None,
+        wsol_manager: Default::default(),
     };
 
     assert_eq!(ctx_paper.trading_mode, TradingMode::Paper);
@@ -1071,6 +1136,11 @@ fn test_kill_switch_emergency_exit() {
         last_signal_slot: 0,
         last_signal_received_at: 0,
         buy_attempted: false,
+        fee_ledger: Default::default(),
+        smart_money_mode: Default::default(),
+        watchlist_cache: None,
+        smart_money_hits_repo: None,
+        wsol_manager: Default::default(),
     };
 
     let position = ctx.active_position.clone().unwrap();
@@ -1186,6 +1256,11 @@ async fn test_position_lifecycle_sqlite_persistence_and_transitions() {
         last_signal_slot: 0,
         last_signal_received_at: 0,
         buy_attempted: false,
+        fee_ledger: Default::default(),
+        smart_money_mode: Default::default(),
+        watchlist_cache: None,
+        smart_money_hits_repo: None,
+        wsol_manager: Default::default(),
     };
 
     // 1. Insert initial position into DB
@@ -1381,6 +1456,11 @@ async fn test_position_lifecycle_stuck_manual_intervention_required() {
         last_signal_slot: 0,
         last_signal_received_at: 0,
         buy_attempted: false,
+        fee_ledger: Default::default(),
+        smart_money_mode: Default::default(),
+        watchlist_cache: None,
+        smart_money_hits_repo: None,
+        wsol_manager: Default::default(),
     };
 
     // Trigger price tick for HardStopLoss
@@ -1458,5 +1538,10 @@ fn make_test_actor_context(
         last_signal_slot: 0,
         last_signal_received_at: 0,
         buy_attempted: false,
+        fee_ledger: Default::default(),
+        smart_money_mode: Default::default(),
+        watchlist_cache: None,
+        smart_money_hits_repo: None,
+        wsol_manager: Default::default(),
     }
 }

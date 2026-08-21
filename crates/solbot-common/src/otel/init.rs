@@ -1,5 +1,6 @@
 use anyhow::Result;
 use opentelemetry::KeyValue;
+use opentelemetry_otlp::WithExportConfig;
 use opentelemetry_sdk::trace::{self, RandomIdGenerator, Sampler};
 use opentelemetry_sdk::Resource;
 use tracing_subscriber::layer::SubscriberExt;
