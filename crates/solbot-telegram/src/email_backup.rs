@@ -61,14 +61,51 @@ pub async fn send_alert_email(subject: &str, body: &str, recipient: &str) -> Res
             smtp_host = %cfg.host,
             smtp_port = cfg.port,
             recipient = %cfg.recipient,
-            "Sending critical SMTP alert email"
+            "Connecting to SMTP server for critical alert dispatch"
         );
-        // Async SMTP delivery simulation / network payload
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            send_smtp_payload(&cfg, subject, body),
+        ).await {
+            Ok(Ok(())) => {
+                tracing::info!("Critical SMTP alert email delivered successfully");
+            }
+            Ok(Err(e)) => {
+                tracing::warn!(error = %e, "SMTP server error during critical alert send");
+            }
+            Err(_) => {
+                tracing::warn!("SMTP network timeout during critical alert send");
+            }
+        }
     } else {
         tracing::info!("SMTP configuration not found — email alert logged to system output");
     }
 
+    Ok(())
+}
+
+async fn send_smtp_payload(cfg: &SmtpConfig, subject: &str, body: &str) -> Result<()> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpStream;
+
+    let addr = format!("{}:{}", cfg.host, cfg.port);
+    let mut stream = TcpStream::connect(&addr).await?;
+
+    let mut response_buf = [0u8; 512];
+    let _ = stream.read(&mut response_buf).await?;
+
+    let commands = format!(
+        "EHLO solbot\r\nMAIL FROM:<{}>\r\nRCPT TO:<{}>\r\nDATA\r\nSubject: {}\r\nFrom: {}\r\nTo: {}\r\n\r\n{}\r\n.\r\nQUIT\r\n",
+        if cfg.user.is_empty() { "bot@solbot.local" } else { &cfg.user },
+        cfg.recipient,
+        subject,
+        if cfg.user.is_empty() { "bot@solbot.local" } else { &cfg.user },
+        cfg.recipient,
+        body
+    );
+
+    stream.write_all(commands.as_bytes()).await?;
+    stream.flush().await?;
     Ok(())
 }
 
