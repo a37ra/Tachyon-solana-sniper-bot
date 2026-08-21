@@ -31,7 +31,26 @@ use tokio::sync::mpsc;
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
-    tracing_subscriber::fmt::init();
+
+    if let Ok(endpoint) = env::var("OTEL_EXPORTER_OTLP_ENDPOINT") {
+        if !endpoint.trim().is_empty() {
+            if let Err(err) = solbot_common::otel::init::init_telemetry("solbot-strategy", &endpoint) {
+                tracing::warn!(endpoint, error = %err, "OpenTelemetry init failed; falling back to stdout logging");
+            }
+        } else {
+            let _ = tracing_subscriber::fmt()
+                .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+                .with_target(false)
+                .with_ansi(false)
+                .try_init();
+        }
+    } else {
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+            .with_target(false)
+            .with_ansi(false)
+            .try_init();
+    }
 
     // Default: logsSubscribe create-ix only (not programSubscribe account updates).
     // Account-update path falsely treats first-seen old pools as "new".
