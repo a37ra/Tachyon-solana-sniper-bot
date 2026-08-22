@@ -1,10 +1,11 @@
 use super::tier::CapitalTier;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum PositionStatus {
     Opening,
+    #[default]
     Open,
     Tp1Filled,
     Tp2Filled,
@@ -12,12 +13,6 @@ pub enum PositionStatus {
     Closing,
     Closed,
     StuckManualInterventionRequired,
-}
-
-impl Default for PositionStatus {
-    fn default() -> Self {
-        PositionStatus::Open
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
