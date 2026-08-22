@@ -6,13 +6,14 @@
 use serde::{Deserialize, Serialize};
 
 /// Live readiness status for a DEX.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum DexLiveReadiness {
     /// Real pricing has been verified - Live mode is safe.
     Ready,
     /// Approximate pricing (e.g., single-bin DLMM) - may be inaccurate for large orders.
     Approximate,
     /// Only placeholder pricing available - Live mode will error.
+    #[default]
     PlaceholderOnly,
 }
 
@@ -23,11 +24,5 @@ impl DexLiveReadiness {
             self,
             DexLiveReadiness::Ready | DexLiveReadiness::Approximate
         )
-    }
-}
-
-impl Default for DexLiveReadiness {
-    fn default() -> Self {
-        DexLiveReadiness::PlaceholderOnly
     }
 }
