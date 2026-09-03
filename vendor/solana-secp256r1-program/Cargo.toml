@@ -9,3 +9,7 @@ default = []
 openssl-vendored = []
 
 [dependencies]
+bytemuck = { version = "1.14", features = ["derive"] }
+solana-feature-set = "2.2.1"
+solana-precompile-error = "2.2.1"
+solana-sdk-ids = "2.2.1"
