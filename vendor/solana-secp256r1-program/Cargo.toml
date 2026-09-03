@@ -6,3 +6,6 @@ description = "Pure-Rust stub for secp256r1 precompile (eliminates OpenSSL C bui
 
 [features]
 default = []
+openssl-vendored = []
+
+[dependencies]
