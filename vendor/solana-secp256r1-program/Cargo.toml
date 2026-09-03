@@ -2,3 +2,7 @@
 name = "solana-secp256r1-program"
 version = "2.2.4"
 edition = "2021"
+description = "Pure-Rust stub for secp256r1 precompile (eliminates OpenSSL C build requirement on client builds)"
+
+[features]
+default = []
