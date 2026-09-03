@@ -1,0 +1,4 @@
+[package]
+name = "solana-secp256r1-program"
+version = "2.2.4"
+edition = "2021"
