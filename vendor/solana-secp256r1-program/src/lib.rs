@@ -19,3 +19,13 @@ pub struct Secp256r1SignatureOffsets {
     pub public_key_instruction_index: u16,
     pub message_data_offset: u16,
     pub message_data_size: u16,
+    pub message_instruction_index: u16,
+}
+
+pub fn verify(
+    _data: &[u8],
+    _instruction_datas: &[&[u8]],
+    _feature_set: &solana_feature_set::FeatureSet,
+) -> Result<(), PrecompileError> {
+    Err(PrecompileError::InvalidSignature)
+}
