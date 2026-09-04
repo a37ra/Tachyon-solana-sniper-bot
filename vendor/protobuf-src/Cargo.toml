@@ -1,3 +1,5 @@
 [package]
 name = "protobuf-src"
 version = "1.1.0+21.5"
+edition = "2021"
+description = "Uses system/PATH protoc instead of building C++ protobuf via autotools"
