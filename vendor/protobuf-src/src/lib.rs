@@ -8,3 +8,6 @@ pub fn protoc() -> PathBuf {
 
 pub fn include() -> PathBuf {
     std::env::var_os("PROTOC_INCLUDE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."))
+}
