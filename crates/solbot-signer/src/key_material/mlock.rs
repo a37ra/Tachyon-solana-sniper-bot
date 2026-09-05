@@ -37,15 +37,18 @@ impl GuardedKeypair {
         if locked {
             tracing::info!(
                 pubkey = %keypair.pubkey(),
-        let ptr = &keypair as *const Keypair as *const u8;
-        let len = std::mem::size_of::<Keypair>();
-
-        let locked = unsafe { lock_memory(ptr, len) };
-
-        if locked {
-            tracing::info!(
-                pubkey = %keypair.pubkey(),
                 "Keypair memory mlock'd successfully ({} bytes)", len
+            );
+        } else {
+            tracing::warn!(
+                pubkey = %keypair.pubkey(),
+                "Failed to mlock keypair memory — relying on LimitCORE=0 and systemd hardening"
+            );
+        }
+
+        Self { keypair, locked }
+    }
+
             );
         } else {
             tracing::warn!(
