@@ -1,14 +1,17 @@
 //! Secure memory handling for keypair material.
 //!
-//! Uses `mlock(2)` to prevent the keypair bytes from being swapped to disk
-//! and `madvise(MADV_DONTDUMP)` to exclude them from core dumps.
+//! Uses `mlock(2)` (or `VirtualLock` on Windows) to prevent the keypair bytes
+//! from being swapped to disk and `madvise(MADV_DONTDUMP)` to exclude them from core dumps.
 //!
 //! The `GuardedKeypair` wrapper provides RAII semantics: memory is locked
 //! on construction and unlocked + zeroized on drop.
 
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use solana_keypair::Keypair;
 use solana_signer::Signer;
+use std::ops::Deref;
+
+/// A keypair whose underlying memory is mlock'd and excluded from core dumps.
 use std::ops::Deref;
 
 /// A keypair whose underlying memory is mlock'd and excluded from core dumps.
