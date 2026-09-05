@@ -12,16 +12,18 @@ use solana_signer::Signer;
 use std::ops::Deref;
 
 /// A keypair whose underlying memory is mlock'd and excluded from core dumps.
-use std::ops::Deref;
-
-/// A keypair whose underlying memory is mlock'd and excluded from core dumps.
 ///
 /// # Safety invariants
 /// - The keypair's 64-byte secret is mlock'd immediately after construction.
 /// - On drop, the memory is munlock'd (allowing the OS to reclaim it).
-/// - We call `madvise(MADV_DONTDUMP)` to exclude from core dumps.
+/// - We call `madvise(MADV_DONTDUMP)` to exclude from core dumps on Linux.
 pub struct GuardedKeypair {
     keypair: Keypair,
+    /// Whether mlock succeeded (graceful degradation if it didn't).
+    locked: bool,
+}
+
+impl GuardedKeypair {
     /// Whether mlock succeeded (graceful degradation if it didn't).
     locked: bool,
 }
