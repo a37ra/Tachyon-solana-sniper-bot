@@ -49,15 +49,18 @@ impl GuardedKeypair {
         Self { keypair, locked }
     }
 
-            );
-        } else {
-            tracing::warn!(
-                pubkey = %keypair.pubkey(),
-                "Failed to mlock keypair memory — relying on LimitCORE=0 and systemd hardening"
-            );
-        }
+    /// Access the inner keypair.
+    pub fn keypair(&self) -> &Keypair {
+        &self.keypair
+    }
+}
 
-        Self { keypair, locked }
+impl Deref for GuardedKeypair {
+    type Target = Keypair;
+
+    fn deref(&self) -> &Self::Target {
+        &self.keypair
+    }
     }
 
     /// Access the inner keypair.
