@@ -44,11 +44,11 @@ solana-sdk = "2.2"
 # SPL crates
 spl-token = "6.0"
 spl-associated-token-account = "4.0"
-spl-token = "6.0"
-spl-associated-token-account = "4.0"
 spl-pod = "0.3"
 
 # Yellowstone gRPC
+yellowstone-grpc-client = "7.0"
+yellowstone-grpc-proto = { version = "7.0", default-features = false, features = ["tonic", "tonic-compression"] }
 yellowstone-grpc-client = "7.0"
 yellowstone-grpc-proto = "7.0"
 tonic = { version = "0.12", features = ["tls", "tls-native-roots", "transport"] }
