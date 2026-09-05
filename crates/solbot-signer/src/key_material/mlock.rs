@@ -24,16 +24,19 @@ pub struct GuardedKeypair {
 }
 
 impl GuardedKeypair {
-    /// Whether mlock succeeded (graceful degradation if it didn't).
-    locked: bool,
-}
-
-impl GuardedKeypair {
     /// Wrap a Keypair with mlock protection.
     ///
     /// If mlock fails (e.g., insufficient `RLIMIT_MEMLOCK`), a warning is logged
     /// but the keypair is still usable — defense in depth with `LimitCORE=0`.
     pub fn new(keypair: Keypair) -> Self {
+        let ptr = &keypair as *const Keypair as *const u8;
+        let len = std::mem::size_of::<Keypair>();
+
+        let locked = unsafe { lock_memory(ptr, len) };
+
+        if locked {
+            tracing::info!(
+                pubkey = %keypair.pubkey(),
         let ptr = &keypair as *const Keypair as *const u8;
         let len = std::mem::size_of::<Keypair>();
 
