@@ -61,16 +61,18 @@ impl Deref for GuardedKeypair {
     fn deref(&self) -> &Self::Target {
         &self.keypair
     }
-    }
-
-    /// Access the inner keypair.
-    pub fn keypair(&self) -> &Keypair {
-        &self.keypair
-    }
 }
 
-impl Deref for GuardedKeypair {
-    type Target = Keypair;
+impl Drop for GuardedKeypair {
+    fn drop(&mut self) {
+        if self.locked {
+            let ptr = &self.keypair as *const Keypair as *const u8;
+            let len = std::mem::size_of::<Keypair>();
+            unsafe {
+                unlock_memory(ptr, len);
+            }
+            tracing::info!("Keypair memory munlock'd on drop");
+        }
 
     fn deref(&self) -> &Self::Target {
         &self.keypair
