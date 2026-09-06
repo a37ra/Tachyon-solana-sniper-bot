@@ -12,11 +12,13 @@ mod fuzz_tests;
 use anyhow::Result;
 use sqlx::sqlite::SqlitePoolOptions;
 use std::sync::Arc;
-use tokio::net::UnixListener;
-use tokio_stream::wrappers::UnixListenerStream;
 use tonic::transport::Server;
 
 use crate::audit_log::AuditLog;
+use crate::compromise_detection::CompromiseDetection;
+use crate::ipc_server::SignerService;
+use crate::key_material::mlock::{enforce_no_core_dumps, GuardedKeypair};
+use crate::key_material::vault_kms_client::load_keypair;
 use crate::compromise_detection::CompromiseDetection;
 use crate::ipc_server::SignerService;
 use crate::key_material::mlock::{enforce_no_core_dumps, GuardedKeypair};
