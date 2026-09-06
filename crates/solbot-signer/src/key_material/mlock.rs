@@ -159,15 +159,17 @@ pub fn enforce_no_core_dumps() -> Result<()> {
             "RLIMIT_CORE is not zero — enforcing zero limit"
         );
         setrlimit(Resource::CORE, 0, 0)
-            hard_limit = hard,
-            "RLIMIT_CORE is not zero — enforcing zero limit"
-        );
-        setrlimit(Resource::CORE, 0, 0)
             .map_err(|e| anyhow!("Failed to set RLIMIT_CORE to 0: {e}"))?;
         tracing::info!("RLIMIT_CORE set to 0 — core dumps disabled");
     } else {
         tracing::info!("RLIMIT_CORE is already 0 — core dumps disabled");
     }
 
+    Ok(())
+}
+
+#[cfg(not(unix))]
+pub fn enforce_no_core_dumps() -> Result<()> {
+    tracing::info!("RLIMIT_CORE is not applicable on non-Unix platforms");
     Ok(())
 }
