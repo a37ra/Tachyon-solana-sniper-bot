@@ -86,15 +86,18 @@ unsafe fn lock_memory(ptr: *const u8, len: usize) -> bool {
     // mlock: prevent swapping to disk
     let mlock_ok = libc::mlock(void_ptr, len) == 0;
     if !mlock_ok {
-            let len = std::mem::size_of::<Keypair>();
-            unsafe {
-                unlock_memory(ptr, len);
-            }
-            tracing::info!("Keypair memory munlock'd on drop");
-        }
+        let err = std::io::Error::last_os_error();
+        tracing::warn!("mlock failed: {}", err);
     }
-}
 
+    // MADV_DONTDUMP: exclude from core dumps (Linux 3.4+)
+    #[cfg(target_os = "linux")]
+    {
+        const MADV_DONTDUMP: i32 = 16;
+        let madvise_ok = libc::madvise(void_ptr, len, MADV_DONTDUMP) == 0;
+        if !madvise_ok {
+            tracing::warn!("madvise(MADV_DONTDUMP) failed");
+        }
 /// Lock memory pages containing `[ptr, ptr+len)` and exclude from core dumps.
 ///
 /// Returns `true` if both mlock and madvise succeeded.
