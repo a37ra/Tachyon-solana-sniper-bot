@@ -147,7 +147,6 @@ unsafe fn unlock_memory(ptr: *const u8, len: usize) {
 #[cfg(unix)]
 pub fn enforce_no_core_dumps() -> Result<()> {
     use anyhow::anyhow;
-pub fn enforce_no_core_dumps() -> Result<()> {
     use rlimit::{getrlimit, setrlimit, Resource};
 
     let (soft, hard) =
@@ -156,6 +155,10 @@ pub fn enforce_no_core_dumps() -> Result<()> {
     if soft != 0 || hard != 0 {
         tracing::warn!(
             soft_limit = soft,
+            hard_limit = hard,
+            "RLIMIT_CORE is not zero — enforcing zero limit"
+        );
+        setrlimit(Resource::CORE, 0, 0)
             hard_limit = hard,
             "RLIMIT_CORE is not zero — enforcing zero limit"
         );
