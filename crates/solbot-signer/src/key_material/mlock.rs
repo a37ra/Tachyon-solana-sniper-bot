@@ -122,16 +122,18 @@ unsafe fn lock_memory(ptr: *const u8, len: usize) -> bool {
 #[cfg(unix)]
 unsafe fn unlock_memory(ptr: *const u8, len: usize) {
     let void_ptr = ptr as *mut libc::c_void;
-            tracing::warn!("madvise(MADV_DONTDUMP) failed");
-        }
+    if libc::munlock(void_ptr, len) != 0 {
+        tracing::warn!("munlock failed");
     }
-
-    mlock_ok
 }
 
-/// Unlock previously mlock'd memory.
+#[cfg(windows)]
 unsafe fn unlock_memory(ptr: *const u8, len: usize) {
-    let void_ptr = ptr as *mut libc::c_void;
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn VirtualUnlock(lp_address: *const core::ffi::c_void, dw_size: usize) -> i32;
+    }
+
     if libc::munlock(void_ptr, len) != 0 {
         tracing::warn!("munlock failed");
     }
