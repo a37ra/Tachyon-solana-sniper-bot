@@ -26,10 +26,12 @@ fn ipc_socket_to_tcp_addr(socket_path: &str) -> std::net::SocketAddr {
     if let Ok(addr) = socket_path.parse::<std::net::SocketAddr>() {
         return addr;
     }
-
-#[tokio::main]
-async fn main() -> Result<()> {
-    tracing_subscriber::fmt::init();
+    if socket_path == "/tmp/solbot-signer.sock" {
+        return std::net::SocketAddr::from(([127, 0, 0, 1], 50051));
+    }
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for b in socket_path.bytes() {
+        hash ^= b as u64;
     tracing::info!("Starting solbot-signer");
 
     // Defense-in-depth: enforce no core dumps before loading any secrets
