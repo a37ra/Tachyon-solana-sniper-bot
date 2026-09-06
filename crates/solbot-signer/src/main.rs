@@ -19,11 +19,13 @@ use crate::compromise_detection::CompromiseDetection;
 use crate::ipc_server::SignerService;
 use crate::key_material::mlock::{enforce_no_core_dumps, GuardedKeypair};
 use crate::key_material::vault_kms_client::load_keypair;
-use crate::compromise_detection::CompromiseDetection;
-use crate::ipc_server::SignerService;
-use crate::key_material::mlock::{enforce_no_core_dumps, GuardedKeypair};
-use crate::key_material::vault_kms_client::load_keypair;
 use crate::sequence_ledger::SequenceLedger;
+
+#[cfg(not(unix))]
+fn ipc_socket_to_tcp_addr(socket_path: &str) -> std::net::SocketAddr {
+    if let Ok(addr) = socket_path.parse::<std::net::SocketAddr>() {
+        return addr;
+    }
 
 #[tokio::main]
 async fn main() -> Result<()> {
