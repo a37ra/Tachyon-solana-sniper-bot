@@ -134,8 +134,9 @@ unsafe fn unlock_memory(ptr: *const u8, len: usize) {
         fn VirtualUnlock(lp_address: *const core::ffi::c_void, dw_size: usize) -> i32;
     }
 
-    if libc::munlock(void_ptr, len) != 0 {
-        tracing::warn!("munlock failed");
+    if VirtualUnlock(ptr as *const core::ffi::c_void, len) == 0 {
+        let err = std::io::Error::last_os_error();
+        tracing::warn!("VirtualUnlock failed: {}", err);
     }
 }
 
@@ -143,6 +144,9 @@ unsafe fn unlock_memory(ptr: *const u8, len: usize) {
 ///
 /// This is defense-in-depth on top of systemd `LimitCORE=0`.
 /// Should be called early in main() before any secrets are loaded.
+#[cfg(unix)]
+pub fn enforce_no_core_dumps() -> Result<()> {
+    use anyhow::anyhow;
 pub fn enforce_no_core_dumps() -> Result<()> {
     use rlimit::{getrlimit, setrlimit, Resource};
 
