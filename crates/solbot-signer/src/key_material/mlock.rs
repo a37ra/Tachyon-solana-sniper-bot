@@ -73,16 +73,19 @@ impl Drop for GuardedKeypair {
             }
             tracing::info!("Keypair memory munlock'd on drop");
         }
-
-    fn deref(&self) -> &Self::Target {
-        &self.keypair
     }
 }
 
-impl Drop for GuardedKeypair {
-    fn drop(&mut self) {
-        if self.locked {
-            let ptr = &self.keypair as *const Keypair as *const u8;
+/// Lock memory pages containing `[ptr, ptr+len)` and exclude from core dumps.
+///
+/// Returns `true` if locking succeeded.
+#[cfg(unix)]
+unsafe fn lock_memory(ptr: *const u8, len: usize) -> bool {
+    let void_ptr = ptr as *mut libc::c_void;
+
+    // mlock: prevent swapping to disk
+    let mlock_ok = libc::mlock(void_ptr, len) == 0;
+    if !mlock_ok {
             let len = std::mem::size_of::<Keypair>();
             unsafe {
                 unlock_memory(ptr, len);
