@@ -110,16 +110,18 @@ unsafe fn lock_memory(ptr: *const u8, len: usize) -> bool {
         fn VirtualLock(lp_address: *const core::ffi::c_void, dw_size: usize) -> i32;
     }
 
-        let errno = *libc::__errno_location();
-        tracing::warn!("mlock failed with errno={}", errno);
+    let ok = VirtualLock(ptr as *const core::ffi::c_void, len) != 0;
+    if !ok {
+        let err = std::io::Error::last_os_error();
+        tracing::warn!("VirtualLock failed: {}", err);
     }
+    ok
+}
 
-    // MADV_DONTDUMP: exclude from core dumps (Linux 3.4+)
-    #[cfg(target_os = "linux")]
-    {
-        const MADV_DONTDUMP: i32 = 16;
-        let madvise_ok = libc::madvise(void_ptr, len, MADV_DONTDUMP) == 0;
-        if !madvise_ok {
+/// Unlock previously locked memory.
+#[cfg(unix)]
+unsafe fn unlock_memory(ptr: *const u8, len: usize) {
+    let void_ptr = ptr as *mut libc::c_void;
             tracing::warn!("madvise(MADV_DONTDUMP) failed");
         }
     }
