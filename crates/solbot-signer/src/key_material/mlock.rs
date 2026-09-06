@@ -98,15 +98,18 @@ unsafe fn lock_memory(ptr: *const u8, len: usize) -> bool {
         if !madvise_ok {
             tracing::warn!("madvise(MADV_DONTDUMP) failed");
         }
-/// Lock memory pages containing `[ptr, ptr+len)` and exclude from core dumps.
-///
-/// Returns `true` if both mlock and madvise succeeded.
-unsafe fn lock_memory(ptr: *const u8, len: usize) -> bool {
-    let void_ptr = ptr as *mut libc::c_void;
+    }
 
-    // mlock: prevent swapping to disk
-    let mlock_ok = libc::mlock(void_ptr, len) == 0;
-    if !mlock_ok {
+    mlock_ok
+}
+
+#[cfg(windows)]
+unsafe fn lock_memory(ptr: *const u8, len: usize) -> bool {
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn VirtualLock(lp_address: *const core::ffi::c_void, dw_size: usize) -> i32;
+    }
+
         let errno = *libc::__errno_location();
         tracing::warn!("mlock failed with errno={}", errno);
     }
