@@ -52,11 +52,13 @@ async fn main() -> Result<()> {
     // Database connection
     let db_path =
         std::env::var("SOLBOT_DB_PATH").unwrap_or_else(|_| "sqlite:../../solbot.db".to_string());
+
+    let pool = SqlitePoolOptions::new()
+        .max_connections(5)
+        .connect(&db_path)
         .await?;
 
     // Step 1 (ТЗ 2.4): Hydrate IPC sequence ledger BEFORE accepting any intents
-    let ledger = Arc::new(SequenceLedger::new(pool.clone()));
-    ledger.hydrate_all().await?;
     tracing::info!("IPC sequence ledger hydrated — anti-replay protection active");
 
     let audit_log = Arc::new(AuditLog::new(pool.clone()));
