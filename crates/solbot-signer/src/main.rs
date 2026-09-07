@@ -39,11 +39,13 @@ fn ipc_socket_to_tcp_addr(socket_path: &str) -> std::net::SocketAddr {
 }
 
 #[tokio::main]
-        // Continue anyway — systemd LimitCORE=0 is the primary protection
-    }
+async fn main() -> Result<()> {
+    tracing_subscriber::fmt::init();
+    tracing::info!("Starting solbot-signer");
 
-    // Database connection
-    let db_path =
+    // Defense-in-depth: enforce no core dumps before loading any secrets
+    if let Err(e) = enforce_no_core_dumps() {
+        tracing::error!(error = %e, "Failed to enforce core dump prevention");
         std::env::var("SOLBOT_DB_PATH").unwrap_or_else(|_| "sqlite:../../solbot.db".to_string());
 
     let pool = SqlitePoolOptions::new()
