@@ -46,11 +46,12 @@ async fn main() -> Result<()> {
     // Defense-in-depth: enforce no core dumps before loading any secrets
     if let Err(e) = enforce_no_core_dumps() {
         tracing::error!(error = %e, "Failed to enforce core dump prevention");
-        std::env::var("SOLBOT_DB_PATH").unwrap_or_else(|_| "sqlite:../../solbot.db".to_string());
+        // Continue anyway — systemd LimitCORE=0 is the primary protection
+    }
 
-    let pool = SqlitePoolOptions::new()
-        .max_connections(5)
-        .connect(&db_path)
+    // Database connection
+    let db_path =
+        std::env::var("SOLBOT_DB_PATH").unwrap_or_else(|_| "sqlite:../../solbot.db".to_string());
         .await?;
 
     // Step 1 (ТЗ 2.4): Hydrate IPC sequence ledger BEFORE accepting any intents
