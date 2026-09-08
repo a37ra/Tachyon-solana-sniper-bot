@@ -59,6 +59,8 @@ async fn main() -> Result<()> {
         .await?;
 
     // Step 1 (ТЗ 2.4): Hydrate IPC sequence ledger BEFORE accepting any intents
+    let ledger = Arc::new(SequenceLedger::new(pool.clone()));
+    ledger.hydrate_all().await?;
     tracing::info!("IPC sequence ledger hydrated — anti-replay protection active");
 
     let audit_log = Arc::new(AuditLog::new(pool.clone()));
