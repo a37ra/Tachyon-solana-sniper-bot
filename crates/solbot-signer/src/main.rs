@@ -93,11 +93,13 @@ async fn main() -> Result<()> {
         use tokio_stream::wrappers::UnixListenerStream;
 
         // Remove old socket if exists
+        let _ = std::fs::remove_file(&socket_path);
+        let uds = UnixListener::bind(&socket_path)?;
+        std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o600))?;
+        let stream = UnixListenerStream::new(uds);
 
-    // Set restrictive permissions on the socket (owner only)
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
+        tracing::info!(socket = %socket_path, "Signer listening (UDS)");
+        Server::builder()
         std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o600))?;
     }
 
