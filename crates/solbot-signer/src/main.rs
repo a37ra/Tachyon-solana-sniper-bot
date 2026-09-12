@@ -100,10 +100,12 @@ async fn main() -> Result<()> {
 
         tracing::info!(socket = %socket_path, "Signer listening (UDS)");
         Server::builder()
-        std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o600))?;
+            .add_service(TransactionSignerServiceServer::new(service))
+            .serve_with_incoming(stream)
+            .await?;
     }
 
-    let stream = UnixListenerStream::new(uds);
+    #[cfg(not(unix))]
 
     let service = SignerService::new(ledger, audit_log, compromise_detection, keypair, pool);
 
