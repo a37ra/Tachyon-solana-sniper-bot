@@ -86,11 +86,13 @@ async fn main() -> Result<()> {
 
     use crate::ipc_server::signer_proto::transaction_signer_service_server::TransactionSignerServiceServer;
 
-        .unwrap_or_else(|_| "/tmp/solbot-signer.sock".to_string());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        use tokio::net::UnixListener;
+        use tokio_stream::wrappers::UnixListenerStream;
 
-    // Remove old socket if exists
-    let _ = std::fs::remove_file(&socket_path);
-    let uds = UnixListener::bind(&socket_path)?;
+        // Remove old socket if exists
 
     // Set restrictive permissions on the socket (owner only)
     #[cfg(unix)]
