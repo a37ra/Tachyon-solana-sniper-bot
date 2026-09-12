@@ -113,11 +113,13 @@ async fn main() -> Result<()> {
         let addr = ipc_socket_to_tcp_addr(&socket_path);
         let listener = TcpListener::bind(addr).await?;
         let stream = TcpListenerStream::new(listener);
-    use crate::ipc_server::signer_proto::transaction_signer_service_server::TransactionSignerServiceServer;
-    Server::builder()
-        .add_service(TransactionSignerServiceServer::new(service))
-        .serve_with_incoming(stream)
-        .await?;
+
+        tracing::info!(socket = %socket_path, tcp_addr = %addr, "Signer listening (TCP localhost fallback)");
+        Server::builder()
+            .add_service(TransactionSignerServiceServer::new(service))
+            .serve_with_incoming(stream)
+            .await?;
+    }
 
     Ok(())
 }
