@@ -80,11 +80,12 @@ async fn main() -> Result<()> {
 
     // Socket path from env or default
     let socket_path = std::env::var("SOLBOT_SIGNER_SOCKET")
-    let guarded = GuardedKeypair::new(raw_keypair);
-    let keypair = Arc::new(guarded);
+        .unwrap_or_else(|_| "/tmp/solbot-signer.sock".to_string());
 
-    // Socket path from env or default
-    let socket_path = std::env::var("SOLBOT_SIGNER_SOCKET")
+    let service = SignerService::new(ledger, audit_log, compromise_detection, keypair, pool);
+
+    use crate::ipc_server::signer_proto::transaction_signer_service_server::TransactionSignerServiceServer;
+
         .unwrap_or_else(|_| "/tmp/solbot-signer.sock".to_string());
 
     // Remove old socket if exists
