@@ -106,11 +106,13 @@ async fn main() -> Result<()> {
     }
 
     #[cfg(not(unix))]
+    {
+        use tokio::net::TcpListener;
+        use tokio_stream::wrappers::TcpListenerStream;
 
-    let service = SignerService::new(ledger, audit_log, compromise_detection, keypair, pool);
-
-    tracing::info!(socket = %socket_path, "Signer listening");
-
+        let addr = ipc_socket_to_tcp_addr(&socket_path);
+        let listener = TcpListener::bind(addr).await?;
+        let stream = TcpListenerStream::new(listener);
     use crate::ipc_server::signer_proto::transaction_signer_service_server::TransactionSignerServiceServer;
     Server::builder()
         .add_service(TransactionSignerServiceServer::new(service))
