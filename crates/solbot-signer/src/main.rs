@@ -73,6 +73,9 @@ async fn main() -> Result<()> {
 
     let compromise_detection = Arc::new(CompromiseDetection::new(300, threshold_5min));
 
+
+    let compromise_detection = Arc::new(CompromiseDetection::new(300, threshold_5min));
+
     // Load keypair from configured source and mlock it
     let raw_keypair = load_keypair().await?;
     let guarded = GuardedKeypair::new(raw_keypair);
