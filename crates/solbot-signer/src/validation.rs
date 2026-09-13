@@ -230,20 +230,22 @@ fn validate_transaction_program_ids(
             "Transaction contains only utility programs but metadata declares DEX program"
         );
         return Err(RejectionReason::ProgramIdMismatch);
-            tracing::error!(
-                declared_program_id = %declared_program_id,
-                actual_program_id = %actual_program_id,
-                "Transaction instruction program_id does not match declared program_id"
-            );
-            return Err(RejectionReason::ProgramIdMismatch);
-        }
     }
 
-    // If metadata declares a DEX program but transaction has no such instruction → reject
-    if declared_program_id != SYSTEM_PROGRAM_ID && !has_declared_program_instruction {
-        tracing::error!(
-            declared_program_id = %declared_program_id,
-            "Transaction contains no instructions with declared program_id"
+    Ok(())
+}
+
+/// Validate that the actual slippage in the decoded transaction instruction
+/// is consistent with declared_hard_cap_bps.
+fn validate_slippage(
+    unsigned_tx_base64: &str,
+    declared_program_id: &str,
+    declared_hard_cap_bps: u32,
+    intent_type: &IntentType,
+) -> Result<(), RejectionReason> {
+    let tx_bytes = base64::engine::general_purpose::STANDARD
+        .decode(unsigned_tx_base64)
+        .map_err(|_| RejectionReason::SlippageMismatch)?;
         );
         return Err(RejectionReason::ProgramIdMismatch);
     }
