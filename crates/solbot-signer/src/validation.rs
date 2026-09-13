@@ -198,21 +198,22 @@ fn validate_transaction_program_ids(
 
         let actual_program_id = tx.message.account_keys[program_id_index].to_string();
 
-
-    // System Program and Compute Budget Program are utility programs
-    const SYSTEM_PROGRAM_ID: &str = "11111111111111111111111111111111";
-    const COMPUTE_BUDGET_PROGRAM_ID: &str = "ComputeBudget111111111111111111111111111111";
-
-    let mut has_non_utility_instruction = false;
-    let mut has_declared_program_instruction = false;
-
-    // Check each instruction's program_id
-    for instruction in &tx.message.instructions {
-        let program_id_index = usize::from(instruction.program_id_index);
-        if program_id_index >= tx.message.account_keys.len() {
-            return Err(RejectionReason::ProgramIdMismatch);
+        if is_utility_instruction(&actual_program_id, &instruction.data) {
+            continue;
         }
 
+        has_non_utility_instruction = true;
+
+        if actual_program_id == declared_program_id {
+            has_declared_program_instruction = true;
+        } else {
+            tracing::error!(
+                declared_program_id = %declared_program_id,
+                actual_program_id = %actual_program_id,
+                "Transaction instruction program_id does not match declared program_id"
+            );
+            return Err(RejectionReason::ProgramIdMismatch);
+        }
         let actual_program_id = tx.message.account_keys[program_id_index].to_string();
 
         // Skip utility programs (System, Compute Budget)
