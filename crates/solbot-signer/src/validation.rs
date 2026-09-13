@@ -214,20 +214,22 @@ fn validate_transaction_program_ids(
             );
             return Err(RejectionReason::ProgramIdMismatch);
         }
-        let actual_program_id = tx.message.account_keys[program_id_index].to_string();
+    }
 
-        // Skip utility programs (System, Compute Budget)
-        if actual_program_id == SYSTEM_PROGRAM_ID || actual_program_id == COMPUTE_BUDGET_PROGRAM_ID
-        {
-            continue;
-        }
+    if declared_program_id != SYSTEM_PROGRAM_ID && !has_declared_program_instruction {
+        tracing::error!(
+            declared_program_id = %declared_program_id,
+            "Transaction contains no instructions with declared program_id"
+        );
+        return Err(RejectionReason::ProgramIdMismatch);
+    }
 
-        has_non_utility_instruction = true;
-
-        // For non-utility programs, they must match the declared program_id
-        if actual_program_id == declared_program_id {
-            has_declared_program_instruction = true;
-        } else {
+    if !has_non_utility_instruction && declared_program_id != SYSTEM_PROGRAM_ID {
+        tracing::error!(
+            declared_program_id = %declared_program_id,
+            "Transaction contains only utility programs but metadata declares DEX program"
+        );
+        return Err(RejectionReason::ProgramIdMismatch);
             tracing::error!(
                 declared_program_id = %declared_program_id,
                 actual_program_id = %actual_program_id,
