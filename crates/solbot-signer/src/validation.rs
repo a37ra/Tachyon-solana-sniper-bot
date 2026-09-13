@@ -134,21 +134,22 @@ pub fn validate_intent(
 
     // 7.4. Validate that actual amount_in matches declared max_size_lamports
     validate_amount(
+        &req.unsigned_transaction_base64,
+        &req.program_id,
+        req.max_size_lamports,
+        &req.intent_type,
+    )?;
 
-    // 5. Hard cap BPS — reject if the intent's slippage tolerance is insane
-    //    This prevents a compromised strategy from sending a swap with 99% slippage.
-    //    Typical production limit: 5000 bps (50%) for meme tokens.
-    if req.hard_cap_bps > hard_cap_bps_limit {
-        tracing::warn!(
-            context_key = %req.context_key,
-            hard_cap_bps = req.hard_cap_bps,
-            limit = hard_cap_bps_limit,
-            "Intent hard_cap_bps exceeds signer limit"
-        );
-        return Err(RejectionReason::HardCapBpsExceeded);
-    }
+    Ok(())
+}
 
-    // 6. Destination address whitelist
+/// Check if an instruction is a safe utility instruction (System, ComputeBudget, ATA creation,
+/// or WSOL SyncNative / CloseAccount).
+fn is_utility_instruction(program_id: &str, data: &[u8]) -> bool {
+    const SYSTEM_PROGRAM_ID: &str = "11111111111111111111111111111111";
+    const COMPUTE_BUDGET_PROGRAM_ID: &str = "ComputeBudget111111111111111111111111111111";
+    const ATA_PROGRAM_ID: &str = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL";
+    const SPL_TOKEN_PROGRAM_ID: &str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
     //    If the whitelist is non-empty, every destination in the intent
     //    must appear in the whitelist. This catches compromised strategy
     //    processes trying to send funds to attacker wallets.
