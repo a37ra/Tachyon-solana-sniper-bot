@@ -246,21 +246,21 @@ fn validate_slippage(
     let tx_bytes = base64::engine::general_purpose::STANDARD
         .decode(unsigned_tx_base64)
         .map_err(|_| RejectionReason::SlippageMismatch)?;
-        );
-        return Err(RejectionReason::ProgramIdMismatch);
-    }
 
-    // If transaction has only utility programs but metadata declares DEX → reject
-    if !has_non_utility_instruction && declared_program_id != SYSTEM_PROGRAM_ID {
-        tracing::error!(
-            declared_program_id = %declared_program_id,
-            "Transaction contains only utility programs but metadata declares DEX program"
-        );
-        return Err(RejectionReason::ProgramIdMismatch);
-    }
+    let tx: Transaction =
+        bincode::deserialize(&tx_bytes).map_err(|_| RejectionReason::SlippageMismatch)?;
 
-    Ok(())
-}
+    const RAYDIUM_AMM_V4: &str = "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8";
+    const PUMP_FUN: &str = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P";
+    const RAYDIUM_CPMM: &str = "CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C";
+    const METEORA_DLMM: &str = "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo";
+    const METEORA_DAMM_V2: &str = "cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG";
+
+    let is_single_ix_tx = tx.message.instructions.len() == 1;
+
+    for instruction in &tx.message.instructions {
+        let program_id_index = usize::from(instruction.program_id_index);
+        if program_id_index >= tx.message.account_keys.len() {
 
 /// Validate that the actual slippage in the decoded transaction instruction
 /// matches the declared hard_cap_bps from intent metadata.
