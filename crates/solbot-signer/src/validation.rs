@@ -7,21 +7,22 @@
 //! 2. Staleness (max 500ms clock drift)
 //! 3. Program ID allowlist
 //! 4. Max size (absolute lamports cap per tier)
-//! 5. Hard cap BPS (slippage sanity — reject if amount_or_pct exceeds cap)
+//! 5. Hard cap BPS (slippage sanity — reject if hard_cap_bps exceeds cap)
 //! 6. Destination address whitelist (reject unexpected recipients)
-//! 7. Transaction instruction validation (program_id mismatch detection)
+//! 7. Transaction instruction validation (program_id, slippage, destination, amount)
 
 use anyhow::Result;
 use base64::Engine;
 use chrono::Utc;
 use solana_transaction::Transaction;
-use solbot_common::types::intent::SignerIntentRequest;
+use solbot_common::types::intent::{IntentType, SignerIntentRequest};
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum RejectionReason {
     StaleIntent,
     InvalidProgramId,
     SizeTooLarge,
+    SequenceTooOld,
     SequenceTooOld,
     RateLimitExceeded,
     HardCapBpsExceeded,
