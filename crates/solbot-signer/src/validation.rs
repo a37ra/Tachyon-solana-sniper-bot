@@ -118,21 +118,22 @@ pub fn validate_intent(
         }
     }
 
+    // 7.1. Validate that declared program_id matches actual transaction instructions
+    validate_transaction_program_ids(&req.unsigned_transaction_base64, &req.program_id)?;
 
-    // 3.8. Validate that actual amount_in matches declared max_size_lamports
-    // This prevents claiming small amount while submitting large amount
-    if let Err(e) = validate_amount(
+    // 7.2. Validate that actual slippage in instruction matches declared hard_cap_bps
+    validate_slippage(
         &req.unsigned_transaction_base64,
         &req.program_id,
-        req.max_size_lamports,
-    ) {
-        return Err(e);
-    }
+        req.hard_cap_bps,
+        &req.intent_type,
+    )?;
 
-    // 4. Absolute size cap (metadata check - now redundant with decoded validation above)
-    if req.max_size_lamports > max_size_absolute_lamports {
-        return Err(RejectionReason::SizeTooLarge);
-    }
+    // 7.3. Validate that declared destinations are present in transaction accounts
+    validate_destinations(&req.unsigned_transaction_base64, &req.destination_addresses)?;
+
+    // 7.4. Validate that actual amount_in matches declared max_size_lamports
+    validate_amount(
 
     // 5. Hard cap BPS — reject if the intent's slippage tolerance is insane
     //    This prevents a compromised strategy from sending a swap with 99% slippage.
