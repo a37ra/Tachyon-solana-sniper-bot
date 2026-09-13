@@ -39,9 +39,6 @@ impl RejectionReason {
             Self::InvalidProgramId => "InvalidProgramId",
             Self::SizeTooLarge => "SizeTooLarge",
             Self::SequenceTooOld => "SequenceTooOld",
-            Self::InvalidProgramId => "InvalidProgramId",
-            Self::SizeTooLarge => "SizeTooLarge",
-            Self::SequenceTooOld => "SequenceTooOld",
             Self::RateLimitExceeded => "RateLimitExceeded",
             Self::HardCapBpsExceeded => "HardCapBpsExceeded",
             Self::UnexpectedDestination => "UnexpectedDestination",
@@ -53,6 +50,11 @@ impl RejectionReason {
     }
 }
 
+/// Full validation pipeline.
+///
+/// # Arguments
+/// - `req` — the incoming intent
+/// - `last_ipc_seq` — last accepted sequence for this context_key (0 if first)
 /// Full validation pipeline.
 ///
 /// # Arguments
