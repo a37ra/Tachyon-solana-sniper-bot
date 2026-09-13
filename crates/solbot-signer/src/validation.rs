@@ -87,20 +87,21 @@ pub fn validate_intent(
     if req.max_size_lamports > max_size_absolute_lamports {
         return Err(RejectionReason::SizeTooLarge);
     }
-        return Err(RejectionReason::InvalidProgramId);
+
+    // 5. Hard cap BPS — reject if the intent's slippage tolerance is insane
+    //    This prevents a compromised strategy from sending a swap with 99% slippage.
+    //    Typical production limit: 5000 bps (50%) for meme tokens.
+    if req.hard_cap_bps > hard_cap_bps_limit {
+        tracing::warn!(
+            context_key = %req.context_key,
+            hard_cap_bps = req.hard_cap_bps,
+            limit = hard_cap_bps_limit,
+            "Intent hard_cap_bps exceeds signer limit"
+        );
+        return Err(RejectionReason::HardCapBpsExceeded);
     }
 
-    // 3.5. Validate that declared program_id matches actual transaction instructions
-    // This prevents metadata spoofing attacks
-    if let Err(e) =
-        validate_transaction_program_ids(&req.unsigned_transaction_base64, &req.program_id)
-    {
-        return Err(e);
-    }
-
-    // 3.6. Validate that actual slippage in instruction matches declared hard_cap_bps
-    // This prevents claiming low slippage while submitting high slippage swaps
-    if let Err(e) = validate_slippage(
+    // 6. Destination address whitelist
         &req.unsigned_transaction_base64,
         &req.program_id,
         req.hard_cap_bps,
