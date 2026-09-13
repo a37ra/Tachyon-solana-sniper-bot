@@ -102,20 +102,22 @@ pub fn validate_intent(
     }
 
     // 6. Destination address whitelist
-        &req.unsigned_transaction_base64,
-        &req.program_id,
-        req.hard_cap_bps,
-    ) {
-        return Err(e);
+    //    If the whitelist is non-empty, every destination in the intent
+    //    must appear in the whitelist. This catches compromised strategy
+    //    processes trying to send funds to attacker wallets.
+    if !destination_whitelist.is_empty() && !req.destination_addresses.is_empty() {
+        for dest in &req.destination_addresses {
+            if !destination_whitelist.contains(&dest.as_str()) {
+                tracing::error!(
+                    context_key = %req.context_key,
+                    unexpected_dest = %dest,
+                    "Intent contains destination NOT in signer whitelist — possible compromise"
+                );
+                return Err(RejectionReason::UnexpectedDestination);
+            }
+        }
     }
 
-    // 3.7. Validate that declared destinations are present in transaction accounts
-    // This prevents claiming tokens go to safe wallet while sending to attacker
-    if let Err(e) =
-        validate_destinations(&req.unsigned_transaction_base64, &req.destination_addresses)
-    {
-        return Err(e);
-    }
 
     // 3.8. Validate that actual amount_in matches declared max_size_lamports
     // This prevents claiming small amount while submitting large amount
