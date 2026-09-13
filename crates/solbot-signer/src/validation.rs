@@ -71,12 +71,6 @@ pub fn validate_intent(
     if req.ipc_seq <= last_ipc_seq {
         return Err(RejectionReason::SequenceTooOld);
     }
-    hard_cap_bps_limit: u32,
-) -> Result<(), RejectionReason> {
-    // 1. Anti-replay: sequence must be strictly monotonic
-    if req.ipc_seq <= last_ipc_seq {
-        return Err(RejectionReason::SequenceTooOld);
-    }
 
     // 2. Staleness: reject if issued_at is too far in the past
     let now = Utc::now().timestamp_millis() as u64;
@@ -86,6 +80,13 @@ pub fn validate_intent(
 
     // 3. Program ID allowlist
     if !allowed_programs.contains(&req.program_id.as_str()) {
+        return Err(RejectionReason::InvalidProgramId);
+    }
+
+    // 4. Absolute size cap
+    if req.max_size_lamports > max_size_absolute_lamports {
+        return Err(RejectionReason::SizeTooLarge);
+    }
         return Err(RejectionReason::InvalidProgramId);
     }
 
