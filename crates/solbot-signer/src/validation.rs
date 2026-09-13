@@ -261,21 +261,22 @@ fn validate_slippage(
     for instruction in &tx.message.instructions {
         let program_id_index = usize::from(instruction.program_id_index);
         if program_id_index >= tx.message.account_keys.len() {
+            continue;
+        }
 
-/// Validate that the actual slippage in the decoded transaction instruction
-/// matches the declared hard_cap_bps from intent metadata.
-///
-/// This prevents a compromised strategy from claiming low slippage (e.g., 1%)
-/// while actually submitting a swap with high slippage (e.g., 50%).
-///
-/// # Arguments
-/// - `unsigned_tx_base64` — base64-encoded unsigned transaction
-/// - `declared_program_id` — program_id declared in intent metadata
-/// - `declared_hard_cap_bps` — hard_cap_bps declared in intent metadata
-///
-/// # Returns
-/// Ok(()) if validation passes, Err(RejectionReason::SlippageMismatch) if mismatch
-fn validate_slippage(
+        let actual_program_id = tx.message.account_keys[program_id_index].to_string();
+
+        if is_utility_instruction(&actual_program_id, &instruction.data) {
+            continue;
+        }
+
+        // 1. Raydium AMM v4: discriminator (1 byte) + amount_in (u64) + minimum_amount_out (u64)
+        if actual_program_id == RAYDIUM_AMM_V4 && declared_program_id == RAYDIUM_AMM_V4 {
+            if instruction.data.len() < 17 {
+                tracing::error!(
+                    "Raydium instruction data too short: {} bytes",
+                    instruction.data.len()
+                );
     unsigned_tx_base64: &str,
     declared_program_id: &str,
     declared_hard_cap_bps: u32,
