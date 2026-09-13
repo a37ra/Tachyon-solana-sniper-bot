@@ -182,21 +182,22 @@ fn validate_transaction_program_ids(
         .decode(unsigned_tx_base64)
         .map_err(|_| RejectionReason::ProgramIdMismatch)?;
 
-///
-/// # Returns
-/// Ok(()) if validation passes, Err(RejectionReason::ProgramIdMismatch) if mismatch
-fn validate_transaction_program_ids(
-    unsigned_tx_base64: &str,
-    declared_program_id: &str,
-) -> Result<(), RejectionReason> {
-    // Decode base64 transaction
-    let tx_bytes = base64::engine::general_purpose::STANDARD
-        .decode(unsigned_tx_base64)
-        .map_err(|_| RejectionReason::ProgramIdMismatch)?;
-
-    // Deserialize transaction
     let tx: Transaction =
         bincode::deserialize(&tx_bytes).map_err(|_| RejectionReason::ProgramIdMismatch)?;
+
+    const SYSTEM_PROGRAM_ID: &str = "11111111111111111111111111111111";
+
+    let mut has_non_utility_instruction = false;
+    let mut has_declared_program_instruction = false;
+
+    for instruction in &tx.message.instructions {
+        let program_id_index = usize::from(instruction.program_id_index);
+        if program_id_index >= tx.message.account_keys.len() {
+            return Err(RejectionReason::ProgramIdMismatch);
+        }
+
+        let actual_program_id = tx.message.account_keys[program_id_index].to_string();
+
 
     // System Program and Compute Budget Program are utility programs
     const SYSTEM_PROGRAM_ID: &str = "11111111111111111111111111111111";
