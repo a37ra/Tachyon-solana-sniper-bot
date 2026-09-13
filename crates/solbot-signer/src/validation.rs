@@ -166,9 +166,7 @@ fn is_utility_instruction(program_id: &str, data: &[u8]) -> bool {
         }
     }
 
-    }
-
-    Ok(())
+    false
 }
 
 /// Validate that the declared program_id in intent metadata matches
@@ -176,10 +174,14 @@ fn is_utility_instruction(program_id: &str, data: &[u8]) -> bool {
 ///
 /// This prevents a compromised strategy from lying about the transaction type
 /// (e.g., claiming it's a Raydium swap when it's actually a system transfer).
-///
-/// # Arguments
-/// - `unsigned_tx_base64` — base64-encoded unsigned transaction
-/// - `declared_program_id` — program_id declared in intent metadata
+fn validate_transaction_program_ids(
+    unsigned_tx_base64: &str,
+    declared_program_id: &str,
+) -> Result<(), RejectionReason> {
+    let tx_bytes = base64::engine::general_purpose::STANDARD
+        .decode(unsigned_tx_base64)
+        .map_err(|_| RejectionReason::ProgramIdMismatch)?;
+
 ///
 /// # Returns
 /// Ok(()) if validation passes, Err(RejectionReason::ProgramIdMismatch) if mismatch
