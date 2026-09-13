@@ -55,11 +55,6 @@ impl RejectionReason {
 /// # Arguments
 /// - `req` — the incoming intent
 /// - `last_ipc_seq` — last accepted sequence for this context_key (0 if first)
-/// Full validation pipeline.
-///
-/// # Arguments
-/// - `req` — the incoming intent
-/// - `last_ipc_seq` — last accepted sequence for this context_key (0 if first)
 /// - `max_size_absolute_lamports` — absolute cap from tier config
 /// - `allowed_programs` — DEX program IDs that the signer will accept
 /// - `destination_whitelist` — if non-empty, all `destination_addresses` must be in this set
@@ -70,6 +65,12 @@ pub fn validate_intent(
     max_size_absolute_lamports: u64,
     allowed_programs: &[&str],
     destination_whitelist: &[&str],
+    hard_cap_bps_limit: u32,
+) -> Result<(), RejectionReason> {
+    // 1. Anti-replay: sequence must be strictly monotonic
+    if req.ipc_seq <= last_ipc_seq {
+        return Err(RejectionReason::SequenceTooOld);
+    }
     hard_cap_bps_limit: u32,
 ) -> Result<(), RejectionReason> {
     // 1. Anti-replay: sequence must be strictly monotonic
