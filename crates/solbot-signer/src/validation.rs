@@ -23,7 +23,6 @@ pub enum RejectionReason {
     InvalidProgramId,
     SizeTooLarge,
     SequenceTooOld,
-    SequenceTooOld,
     RateLimitExceeded,
     HardCapBpsExceeded,
     UnexpectedDestination,
@@ -37,6 +36,9 @@ impl RejectionReason {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::StaleIntent => "StaleIntent",
+            Self::InvalidProgramId => "InvalidProgramId",
+            Self::SizeTooLarge => "SizeTooLarge",
+            Self::SequenceTooOld => "SequenceTooOld",
             Self::InvalidProgramId => "InvalidProgramId",
             Self::SizeTooLarge => "SizeTooLarge",
             Self::SequenceTooOld => "SequenceTooOld",
