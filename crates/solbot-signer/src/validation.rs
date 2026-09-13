@@ -277,20 +277,22 @@ fn validate_slippage(
                     "Raydium instruction data too short: {} bytes",
                     instruction.data.len()
                 );
-    unsigned_tx_base64: &str,
-    declared_program_id: &str,
-    declared_hard_cap_bps: u32,
-) -> Result<(), RejectionReason> {
-    // Decode base64 transaction
-    let tx_bytes = base64::engine::general_purpose::STANDARD
-        .decode(unsigned_tx_base64)
-        .map_err(|_| RejectionReason::SlippageMismatch)?;
+                return Err(RejectionReason::SlippageMismatch);
+            }
 
-    // Deserialize transaction
-    let tx: Transaction =
-        bincode::deserialize(&tx_bytes).map_err(|_| RejectionReason::SlippageMismatch)?;
+            let amount_in =
+                u64::from_le_bytes(instruction.data[1..9].try_into().unwrap_or([0u8; 8]));
+            let minimum_amount_out =
+                u64::from_le_bytes(instruction.data[9..17].try_into().unwrap_or([0u8; 8]));
 
-    // Raydium AMM v4 program ID
+            if amount_in == 0 || minimum_amount_out == 0 {
+                tracing::error!(
+                    amount_in = amount_in,
+                    minimum_amount_out = minimum_amount_out,
+                    "Invalid zero amount_in or minimum_amount_out (uncapped slippage)"
+                );
+                return Err(RejectionReason::SlippageMismatch);
+            }
     const RAYDIUM_AMM_V4: &str = "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8";
 
     // Only validate slippage for known DEX programs
