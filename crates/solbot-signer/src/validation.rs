@@ -150,20 +150,22 @@ fn is_utility_instruction(program_id: &str, data: &[u8]) -> bool {
     const COMPUTE_BUDGET_PROGRAM_ID: &str = "ComputeBudget111111111111111111111111111111";
     const ATA_PROGRAM_ID: &str = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL";
     const SPL_TOKEN_PROGRAM_ID: &str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
-    //    If the whitelist is non-empty, every destination in the intent
-    //    must appear in the whitelist. This catches compromised strategy
-    //    processes trying to send funds to attacker wallets.
-    if !destination_whitelist.is_empty() && !req.destination_addresses.is_empty() {
-        for dest in &req.destination_addresses {
-            if !destination_whitelist.contains(&dest.as_str()) {
-                tracing::error!(
-                    context_key = %req.context_key,
-                    unexpected_dest = %dest,
-                    "Intent contains destination NOT in signer whitelist — possible compromise"
-                );
-                return Err(RejectionReason::UnexpectedDestination);
-            }
+    const TOKEN_2022_PROGRAM_ID: &str = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
+
+    if program_id == SYSTEM_PROGRAM_ID
+        || program_id == COMPUTE_BUDGET_PROGRAM_ID
+        || program_id == ATA_PROGRAM_ID
+    {
+        return true;
+    }
+
+    // Allow SPL Token / Token-2022 ONLY for CloseAccount (9) and SyncNative (17) used in WSOL wrap/unwrap
+    if program_id == SPL_TOKEN_PROGRAM_ID || program_id == TOKEN_2022_PROGRAM_ID {
+        if let Some(&disc) = data.first() {
+            return disc == 9 || disc == 17;
         }
+    }
+
     }
 
     Ok(())
