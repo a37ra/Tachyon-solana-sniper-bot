@@ -293,20 +293,22 @@ fn validate_slippage(
                 );
                 return Err(RejectionReason::SlippageMismatch);
             }
-    const RAYDIUM_AMM_V4: &str = "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8";
 
-    // Only validate slippage for known DEX programs
-    if declared_program_id != RAYDIUM_AMM_V4 {
-        // Skip validation for other programs (can be extended later)
-        return Ok(());
-    }
+            if is_single_ix_tx && *intent_type == IntentType::Buy {
+                let actual_slippage_bps = if minimum_amount_out >= amount_in {
+                    0
+                } else {
+                    ((amount_in - minimum_amount_out) as u128 * 10000 / amount_in as u128) as u32
+                };
 
-    // Find the DEX instruction (skip System and Compute Budget)
-    const SYSTEM_PROGRAM_ID: &str = "11111111111111111111111111111111";
-    const COMPUTE_BUDGET_PROGRAM_ID: &str = "ComputeBudget111111111111111111111111111111";
-
-    for instruction in &tx.message.instructions {
-        let program_id_index = usize::from(instruction.program_id_index);
+                if actual_slippage_bps > declared_hard_cap_bps {
+                    tracing::error!(
+                        declared_hard_cap_bps = declared_hard_cap_bps,
+                        actual_slippage_bps = actual_slippage_bps,
+                        amount_in = amount_in,
+                        minimum_amount_out = minimum_amount_out,
+                        "Actual slippage exceeds declared hard_cap_bps"
+                    );
         if program_id_index >= tx.message.account_keys.len() {
             continue;
         }
