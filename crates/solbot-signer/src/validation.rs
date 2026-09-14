@@ -325,21 +325,22 @@ fn validate_slippage(
             if instruction.data.len() < 24 {
                 tracing::error!(
                     program = %actual_program_id,
-            if instruction.data.len() < 17 {
-                tracing::error!(
-                    "Raydium instruction data too short: {} bytes",
-                    instruction.data.len()
+                    len = instruction.data.len(),
+                    "Anchor DEX swap instruction data too short (need >= 24 bytes)"
                 );
                 return Err(RejectionReason::SlippageMismatch);
             }
 
-            // Skip discriminator (first byte)
-            let amount_in =
-                u64::from_le_bytes(instruction.data[1..9].try_into().unwrap_or([0u8; 8]));
-            let minimum_amount_out =
-                u64::from_le_bytes(instruction.data[9..17].try_into().unwrap_or([0u8; 8]));
+            let arg0 = u64::from_le_bytes(instruction.data[8..16].try_into().unwrap_or([0u8; 8]));
+            let arg1 = u64::from_le_bytes(instruction.data[16..24].try_into().unwrap_or([0u8; 8]));
 
-            if amount_in == 0 {
+            if arg0 == 0 || arg1 == 0 {
+                tracing::error!(
+                    program = %actual_program_id,
+                    arg0 = arg0,
+                    arg1 = arg1,
+                    "Zero amount or slippage cap in Anchor DEX swap instruction"
+                );
                 tracing::error!("Invalid amount_in: 0");
                 return Err(RejectionReason::SlippageMismatch);
             }
