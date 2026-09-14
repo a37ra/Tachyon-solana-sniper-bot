@@ -341,20 +341,22 @@ fn validate_slippage(
                     arg1 = arg1,
                     "Zero amount or slippage cap in Anchor DEX swap instruction"
                 );
-                tracing::error!("Invalid amount_in: 0");
                 return Err(RejectionReason::SlippageMismatch);
             }
 
-            // Calculate actual slippage in basis points
-            // slippage_bps = ((amount_in - minimum_amount_out) / amount_in) * 10000
-            let actual_slippage_bps = if minimum_amount_out >= amount_in {
-                0 // No slippage or negative (shouldn't happen)
-            } else {
-                ((amount_in - minimum_amount_out) as u128 * 10000 / amount_in as u128) as u32
-            };
+            return Ok(());
+        }
+    }
 
-            // Compare with declared hard_cap_bps
-            if actual_slippage_bps > declared_hard_cap_bps {
+    Ok(())
+}
+
+/// Validate that the actual amount_in in the decoded transaction instruction
+/// matches the declared max_size_lamports from intent metadata.
+fn validate_amount(
+    unsigned_tx_base64: &str,
+    declared_program_id: &str,
+    declared_max_size: u64,
                 tracing::error!(
                     declared_hard_cap_bps = declared_hard_cap_bps,
                     actual_slippage_bps = actual_slippage_bps,
