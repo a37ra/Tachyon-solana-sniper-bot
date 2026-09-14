@@ -309,21 +309,22 @@ fn validate_slippage(
                         minimum_amount_out = minimum_amount_out,
                         "Actual slippage exceeds declared hard_cap_bps"
                     );
-        if program_id_index >= tx.message.account_keys.len() {
-            continue;
+                    return Err(RejectionReason::SlippageMismatch);
+                }
+            }
+
+            return Ok(());
         }
 
-        let actual_program_id = tx.message.account_keys[program_id_index].to_string();
-
-        // Skip utility programs
-        if actual_program_id == SYSTEM_PROGRAM_ID || actual_program_id == COMPUTE_BUDGET_PROGRAM_ID
+        // 2. Anchor 8-byte discriminator DEXes: Pump.fun, Raydium CPMM, Meteora DLMM, Meteora DAMM v2
+        if actual_program_id == PUMP_FUN
+            || actual_program_id == RAYDIUM_CPMM
+            || actual_program_id == METEORA_DLMM
+            || actual_program_id == METEORA_DAMM_V2
         {
-            continue;
-        }
-
-        // Parse Raydium AMM v4 swap instruction data
-        // Format: discriminator (1 byte) + amount_in (u64) + minimum_amount_out (u64)
-        if actual_program_id == RAYDIUM_AMM_V4 {
+            if instruction.data.len() < 24 {
+                tracing::error!(
+                    program = %actual_program_id,
             if instruction.data.len() < 17 {
                 tracing::error!(
                     "Raydium instruction data too short: {} bytes",
