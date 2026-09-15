@@ -389,21 +389,22 @@ fn validate_amount(
             if instruction.data.len() < 17 {
                 tracing::error!(
                     "Raydium instruction data too short: {} bytes",
-///
-/// # Arguments
-/// - `unsigned_tx_base64` — base64-encoded unsigned transaction
-/// - `declared_program_id` — program_id declared in intent metadata
-/// - `declared_max_size` — max_size_lamports declared in intent metadata
-///
-/// # Returns
-/// Ok(()) if validation passes, Err(RejectionReason::SizeMismatch) if mismatch
-fn validate_amount(
-    unsigned_tx_base64: &str,
-    declared_program_id: &str,
-    declared_max_size: u64,
-) -> Result<(), RejectionReason> {
-    // Decode base64 transaction
-    let tx_bytes = base64::engine::general_purpose::STANDARD
+                    instruction.data.len()
+                );
+                return Err(RejectionReason::SizeMismatch);
+            }
+
+            let amount_in =
+                u64::from_le_bytes(instruction.data[1..9].try_into().unwrap_or([0u8; 8]));
+
+            // For Buy, amount_in is SOL lamports and must not exceed declared_max_size.
+            // For Sell/Emergency, amount_in is in token base units.
+            if *intent_type == IntentType::Buy && amount_in > declared_max_size {
+                tracing::error!(
+                    declared_max_size = declared_max_size,
+                    actual_amount_in = amount_in,
+                    "Actual amount_in exceeds declared max_size_lamports"
+                );
         .decode(unsigned_tx_base64)
         .map_err(|_| RejectionReason::SizeMismatch)?;
 
