@@ -357,20 +357,22 @@ fn validate_amount(
     unsigned_tx_base64: &str,
     declared_program_id: &str,
     declared_max_size: u64,
-                tracing::error!(
-                    declared_hard_cap_bps = declared_hard_cap_bps,
-                    actual_slippage_bps = actual_slippage_bps,
-                    amount_in = amount_in,
-                    minimum_amount_out = minimum_amount_out,
-                    "Actual slippage exceeds declared hard_cap_bps"
-                );
-                return Err(RejectionReason::SlippageMismatch);
-            }
+    intent_type: &IntentType,
+) -> Result<(), RejectionReason> {
+    let tx_bytes = base64::engine::general_purpose::STANDARD
+        .decode(unsigned_tx_base64)
+        .map_err(|_| RejectionReason::SizeMismatch)?;
 
-            tracing::info!(
-                actual_slippage_bps = actual_slippage_bps,
-                declared_hard_cap_bps = declared_hard_cap_bps,
-                "Slippage validation passed"
+    let tx: Transaction =
+        bincode::deserialize(&tx_bytes).map_err(|_| RejectionReason::SizeMismatch)?;
+
+    const RAYDIUM_AMM_V4: &str = "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8";
+    const PUMP_FUN: &str = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P";
+    const RAYDIUM_CPMM: &str = "CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C";
+    const METEORA_DLMM: &str = "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo";
+    const METEORA_DAMM_V2: &str = "cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG";
+    const PUMP_BUY_DISC: [u8; 8] = [0x66, 0x06, 0x3d, 0x12, 0x01, 0xda, 0xeb, 0xea];
+
             );
 
             return Ok(());
