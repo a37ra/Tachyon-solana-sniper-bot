@@ -373,21 +373,22 @@ fn validate_amount(
     const METEORA_DAMM_V2: &str = "cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG";
     const PUMP_BUY_DISC: [u8; 8] = [0x66, 0x06, 0x3d, 0x12, 0x01, 0xda, 0xeb, 0xea];
 
-            );
-
-            return Ok(());
+    for instruction in &tx.message.instructions {
+        let program_id_index = usize::from(instruction.program_id_index);
+        if program_id_index >= tx.message.account_keys.len() {
+            continue;
         }
-    }
 
-    // No DEX instruction found - skip validation
-    Ok(())
-}
+        let actual_program_id = tx.message.account_keys[program_id_index].to_string();
 
-/// Validate that the actual amount_in in the decoded transaction instruction
-/// matches the declared max_size_lamports from intent metadata.
-///
-/// This prevents a compromised strategy from claiming a small amount
-/// while actually submitting a transaction with a large amount.
+        if is_utility_instruction(&actual_program_id, &instruction.data) {
+            continue;
+        }
+
+        if actual_program_id == RAYDIUM_AMM_V4 && declared_program_id == RAYDIUM_AMM_V4 {
+            if instruction.data.len() < 17 {
+                tracing::error!(
+                    "Raydium instruction data too short: {} bytes",
 ///
 /// # Arguments
 /// - `unsigned_tx_base64` — base64-encoded unsigned transaction
