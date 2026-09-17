@@ -468,20 +468,22 @@ fn validate_destinations(
 
     let tx_bytes = base64::engine::general_purpose::STANDARD
         .decode(unsigned_tx_base64)
+        .map_err(|_| RejectionReason::DestinationMismatch)?;
 
-            tracing::info!(
-                actual_amount_in = amount_in,
-                declared_max_size = declared_max_size,
-                "Amount validation passed"
-            );
+    let tx: Transaction =
+        bincode::deserialize(&tx_bytes).map_err(|_| RejectionReason::DestinationMismatch)?;
 
-            return Ok(());
-        }
-    }
+    let actual_accounts: std::collections::HashSet<String> = tx
+        .message
+        .account_keys
+        .iter()
+        .map(|key| key.to_string())
+        .collect();
 
-    // No DEX instruction found - skip validation
-    Ok(())
-}
+    for declared_dest in declared_destinations {
+        if !actual_accounts.contains(declared_dest) {
+            tracing::error!(
+                declared_destination = %declared_dest,
 
 /// Validate that the actual destination account keys in the decoded transaction
 /// match the declared destination_addresses from intent metadata.
