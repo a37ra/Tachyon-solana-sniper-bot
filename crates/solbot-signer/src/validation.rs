@@ -436,21 +436,22 @@ fn validate_amount(
             || actual_program_id == METEORA_DAMM_V2
         {
             if instruction.data.len() < 24 {
-        // Skip utility programs
-        if actual_program_id == SYSTEM_PROGRAM_ID || actual_program_id == COMPUTE_BUDGET_PROGRAM_ID
-        {
-            continue;
-        }
-
-        // Parse Raydium AMM v4 swap instruction data
-        // Format: discriminator (1 byte) + amount_in (u64) + minimum_amount_out (u64)
-        if actual_program_id == RAYDIUM_AMM_V4 {
-            if instruction.data.len() < 17 {
+                return Err(RejectionReason::SizeMismatch);
+            }
+            let amount_in =
+                u64::from_le_bytes(instruction.data[8..16].try_into().unwrap_or([0u8; 8]));
+            if *intent_type == IntentType::Buy && amount_in > declared_max_size {
                 tracing::error!(
-                    "Raydium instruction data too short: {} bytes",
-                    instruction.data.len()
+                    program = %actual_program_id,
+                    declared_max_size = declared_max_size,
+                    actual_amount_in = amount_in,
+                    "Anchor DEX amount_in exceeds declared max_size_lamports"
                 );
                 return Err(RejectionReason::SizeMismatch);
+            }
+            return Ok(());
+        }
+    }
             }
 
             // Skip discriminator (first byte)
