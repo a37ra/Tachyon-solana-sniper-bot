@@ -421,20 +421,21 @@ fn validate_amount(
                     u64::from_le_bytes(instruction.data[16..24].try_into().unwrap_or([0u8; 8]));
                 if max_sol_cost > declared_max_size {
                     tracing::error!(
-    }
-
-    // Find the DEX instruction (skip System and Compute Budget)
-    const SYSTEM_PROGRAM_ID: &str = "11111111111111111111111111111111";
-    const COMPUTE_BUDGET_PROGRAM_ID: &str = "ComputeBudget111111111111111111111111111111";
-
-    for instruction in &tx.message.instructions {
-        let program_id_index = usize::from(instruction.program_id_index);
-        if program_id_index >= tx.message.account_keys.len() {
-            continue;
+                        declared_max_size = declared_max_size,
+                        max_sol_cost = max_sol_cost,
+                        "Pump.fun max_sol_cost exceeds declared max_size_lamports"
+                    );
+                    return Err(RejectionReason::SizeMismatch);
+                }
+            }
+            return Ok(());
         }
 
-        let actual_program_id = tx.message.account_keys[program_id_index].to_string();
-
+        if actual_program_id == RAYDIUM_CPMM
+            || actual_program_id == METEORA_DLMM
+            || actual_program_id == METEORA_DAMM_V2
+        {
+            if instruction.data.len() < 24 {
         // Skip utility programs
         if actual_program_id == SYSTEM_PROGRAM_ID || actual_program_id == COMPUTE_BUDGET_PROGRAM_ID
         {
