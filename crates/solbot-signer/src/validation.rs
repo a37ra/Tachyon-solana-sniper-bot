@@ -405,20 +405,22 @@ fn validate_amount(
                     actual_amount_in = amount_in,
                     "Actual amount_in exceeds declared max_size_lamports"
                 );
-        .decode(unsigned_tx_base64)
-        .map_err(|_| RejectionReason::SizeMismatch)?;
+                return Err(RejectionReason::SizeMismatch);
+            }
 
-    // Deserialize transaction
-    let tx: Transaction =
-        bincode::deserialize(&tx_bytes).map_err(|_| RejectionReason::SizeMismatch)?;
+            return Ok(());
+        }
 
-    // Raydium AMM v4 program ID
-    const RAYDIUM_AMM_V4: &str = "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8";
-
-    // Only validate amount for known DEX programs
-    if declared_program_id != RAYDIUM_AMM_V4 {
-        // Skip validation for other programs (can be extended later)
-        return Ok(());
+        if actual_program_id == PUMP_FUN && declared_program_id == PUMP_FUN {
+            if instruction.data.len() < 24 {
+                return Err(RejectionReason::SizeMismatch);
+            }
+            // In Pump.fun Buy, bytes[8..16] is token_amount and bytes[16..24] is max_sol_cost
+            if *intent_type == IntentType::Buy && instruction.data[0..8] == PUMP_BUY_DISC {
+                let max_sol_cost =
+                    u64::from_le_bytes(instruction.data[16..24].try_into().unwrap_or([0u8; 8]));
+                if max_sol_cost > declared_max_size {
+                    tracing::error!(
     }
 
     // Find the DEX instruction (skip System and Compute Budget)
