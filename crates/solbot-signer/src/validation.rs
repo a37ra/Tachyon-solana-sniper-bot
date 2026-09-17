@@ -452,21 +452,22 @@ fn validate_amount(
             return Ok(());
         }
     }
-            }
 
-            // Skip discriminator (first byte)
-            let amount_in =
-                u64::from_le_bytes(instruction.data[1..9].try_into().unwrap_or([0u8; 8]));
+    Ok(())
+}
 
-            // Compare with declared max_size_lamports
-            if amount_in > declared_max_size {
-                tracing::error!(
-                    declared_max_size = declared_max_size,
-                    actual_amount_in = amount_in,
-                    "Actual amount_in exceeds declared max_size_lamports"
-                );
-                return Err(RejectionReason::SizeMismatch);
-            }
+/// Validate that the actual destination account keys in the decoded transaction
+/// match the declared destination_addresses from intent metadata.
+fn validate_destinations(
+    unsigned_tx_base64: &str,
+    declared_destinations: &[String],
+) -> Result<(), RejectionReason> {
+    if declared_destinations.is_empty() {
+        return Ok(());
+    }
+
+    let tx_bytes = base64::engine::general_purpose::STANDARD
+        .decode(unsigned_tx_base64)
 
             tracing::info!(
                 actual_amount_in = amount_in,
