@@ -484,20 +484,22 @@ fn validate_destinations(
         if !actual_accounts.contains(declared_dest) {
             tracing::error!(
                 declared_destination = %declared_dest,
+                "Declared destination not found in transaction accounts"
+            );
+            return Err(RejectionReason::DestinationMismatch);
+        }
+    }
 
-/// Validate that the actual destination account keys in the decoded transaction
-/// match the declared destination_addresses from intent metadata.
-///
-/// This prevents a compromised strategy from claiming tokens go to a safe wallet
-/// while actually sending them to an attacker-controlled address.
-///
-/// # Arguments
-/// - `unsigned_tx_base64` — base64-encoded unsigned transaction
-/// - `declared_destinations` — destination_addresses declared in intent metadata
-///
-/// # Returns
-/// Ok(()) if validation passes, Err(RejectionReason::DestinationMismatch) if mismatch
-fn validate_destinations(
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_instruction::{AccountMeta, Instruction};
+    use solana_pubkey::Pubkey;
+    use std::str::FromStr;
+
     unsigned_tx_base64: &str,
     declared_destinations: &[String],
 ) -> Result<(), RejectionReason> {
