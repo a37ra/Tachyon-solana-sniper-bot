@@ -500,21 +500,22 @@ mod tests {
     use solana_pubkey::Pubkey;
     use std::str::FromStr;
 
-    unsigned_tx_base64: &str,
-    declared_destinations: &[String],
-) -> Result<(), RejectionReason> {
-    // If no destinations declared in metadata, skip validation
-    if declared_destinations.is_empty() {
-        return Ok(());
-    }
+    const RAYDIUM_PROGRAM: &str = "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8";
+    const SAFE_DEST: &str = "11111111111111111111111111111112";
 
-    // Decode base64 transaction
-    let tx_bytes = base64::engine::general_purpose::STANDARD
-        .decode(unsigned_tx_base64)
-        .map_err(|_| RejectionReason::DestinationMismatch)?;
+    fn build_valid_tx_b64() -> String {
+        let program_pk = Pubkey::from_str(RAYDIUM_PROGRAM).unwrap();
+        let wallet = Pubkey::new_unique();
+        let dest = Pubkey::from_str(SAFE_DEST).unwrap();
 
-    // Deserialize transaction
-    let tx: Transaction =
+        let mut data = vec![9u8];
+        data.extend_from_slice(&1_000_000_000u64.to_le_bytes());
+        data.extend_from_slice(&950_000_000u64.to_le_bytes()); // 5% slippage
+
+        let ix = Instruction {
+            program_id: program_pk,
+            accounts: vec![
+                AccountMeta::new(wallet, true),
         bincode::deserialize(&tx_bytes).map_err(|_| RejectionReason::DestinationMismatch)?;
 
     // Collect all account keys from the transaction
