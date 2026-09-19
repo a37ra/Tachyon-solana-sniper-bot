@@ -26,14 +26,17 @@ const MAX_RETRIES: u32 = 3;
 /// Delay between retry attempts.
 const RETRY_DELAY: Duration = Duration::from_millis(50);
 
-/// Delay between retry attempts.
-const RETRY_DELAY: Duration = Duration::from_millis(50);
-
-/// Real gRPC client for the signer IPC service over Unix Domain Socket.
-///
-/// Connects to `solbot-signer` via UDS and sends intent requests
-/// for validation and signing. This replaces the previous placeholder
-/// that returned dummy responses.
+/// Map a UDS socket path to a deterministic localhost TCP address on non-Unix platforms.
+#[cfg(not(unix))]
+pub fn ipc_socket_to_tcp_addr(socket_path: &str) -> std::net::SocketAddr {
+    if let Ok(addr) = socket_path.parse::<std::net::SocketAddr>() {
+        return addr;
+    }
+    if socket_path == "/tmp/solbot-signer.sock" {
+        return std::net::SocketAddr::from(([127, 0, 0, 1], 50051));
+    }
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for b in socket_path.bytes() {
 pub struct SignerClient {
     socket_path: String,
     seq_counter: ipc_seq_counter::IpcSeqCounter,
