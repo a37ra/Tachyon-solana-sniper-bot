@@ -595,20 +595,22 @@ mod tests {
 
     #[test]
     fn test_hard_cap_bps_exceeded() {
-    fn test_stale_rejected() {
         let mut req = make_valid_req(1);
-        req.issued_at_unix_ms = 1000; // way in the past
+        req.hard_cap_bps = 9900; // 99% — clearly malicious
         assert!(matches!(
             validate_intent(&req, 0, 10_000_000_000, PROGRAMS, WHITELIST, 5000),
-            Err(RejectionReason::StaleIntent)
+            Err(RejectionReason::HardCapBpsExceeded)
         ));
     }
 
     #[test]
-    fn test_invalid_program_rejected() {
+    fn test_hard_cap_bps_at_limit_ok() {
         let mut req = make_valid_req(1);
-        req.program_id = "EVIL_PROGRAM".to_string();
-        assert!(matches!(
+        req.hard_cap_bps = 5000; // exactly at limit
+        assert!(validate_intent(&req, 0, 10_000_000_000, PROGRAMS, WHITELIST, 5000).is_ok());
+    }
+
+    #[test]
             validate_intent(&req, 0, 10_000_000_000, PROGRAMS, WHITELIST, 5000),
             Err(RejectionReason::InvalidProgramId)
         ));
