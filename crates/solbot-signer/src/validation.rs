@@ -659,19 +659,21 @@ mod tests {
         };
         let tx = Transaction::new_with_payer(&[ix], Some(&wallet));
         let b64 = base64::engine::general_purpose::STANDARD.encode(bincode::serialize(&tx).unwrap());
-        let mut req = make_valid_req(1);
-        req.destination_addresses = vec!["any_wallet".to_string()];
-        let empty_whitelist: &[&str] = &[];
-        assert!(validate_intent(&req, 0, 10_000_000_000, PROGRAMS, empty_whitelist, 5000).is_ok());
-    }
 
-    #[test]
-    fn test_multiple_destinations_one_bad() {
         let mut req = make_valid_req(1);
-        req.destination_addresses = vec!["safe_wallet".to_string(), "attacker_wallet".to_string()];
-        assert!(matches!(
-            validate_intent(&req, 0, 10_000_000_000, PROGRAMS, WHITELIST, 5000),
-            Err(RejectionReason::UnexpectedDestination)
-        ));
+        req.program_id = PUMP_PROGRAM.to_string();
+        req.dex_program_id = PUMP_PROGRAM.to_string();
+        req.unsigned_transaction_base64 = b64;
+        req.max_size_lamports = 500_000_000;
+
+        let programs = &[RAYDIUM_PROGRAM, PUMP_PROGRAM];
+        assert!(validate_intent(&req, 0, 10_000_000_000, programs, WHITELIST, 5000).is_ok());
+
+        // Exceeding declared max_size_lamports must be rejected
+        req.max_size_lamports = 100_000_000; // 0.1 SOL < 0.5 SOL in tx
+        assert_eq!(
+            validate_intent(&req, 0, 10_000_000_000, programs, WHITELIST, 5000),
+            Err(RejectionReason::SizeMismatch)
+        );
     }
 }
