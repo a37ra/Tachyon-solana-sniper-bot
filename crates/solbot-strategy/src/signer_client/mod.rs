@@ -17,13 +17,14 @@ pub mod signer_proto {
 
 use signer_proto::transaction_signer_service_client::TransactionSignerServiceClient;
 
-use signer_proto::transaction_signer_service_client::TransactionSignerServiceClient;
-
 /// Default timeout for gRPC calls to the signer.
 const DEFAULT_TIMEOUT: Duration = Duration::from_millis(500);
 
 /// Maximum number of retry attempts on transient errors.
 const MAX_RETRIES: u32 = 3;
+
+/// Delay between retry attempts.
+const RETRY_DELAY: Duration = Duration::from_millis(50);
 
 /// Delay between retry attempts.
 const RETRY_DELAY: Duration = Duration::from_millis(50);
