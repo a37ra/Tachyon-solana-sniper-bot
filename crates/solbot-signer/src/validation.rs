@@ -532,19 +532,21 @@ mod tests {
             ipc_seq,
             issued_at_unix_ms: now,
             intent_type: IntentType::Buy,
-                "Declared destination not found in transaction accounts"
-            );
-            return Err(RejectionReason::DestinationMismatch);
+            unsigned_transaction_base64: build_valid_tx_b64(),
+            program_id: RAYDIUM_PROGRAM.to_string(),
+            dex_program_id: RAYDIUM_PROGRAM.to_string(),
+            max_size_lamports: 1_000_000_000, // 1 SOL
+            hard_cap_bps: 500,                // 5%
+            destination_addresses: vec![SAFE_DEST.to_string()],
+            mint: "test_mint".to_string(),
+            pool_address: SAFE_DEST.to_string(),
+            position_id: None,
+            amount_or_pct: 1_000_000_000.0,
         }
     }
 
-    tracing::info!(
-        declared_destinations_count = declared_destinations.len(),
-        "Destination validation passed"
-    );
-
-    Ok(())
-}
+    const PROGRAMS: &[&str] = &[RAYDIUM_PROGRAM];
+    const WHITELIST: &[&str] = &[SAFE_DEST];
 
 #[cfg(test)]
 mod tests {
