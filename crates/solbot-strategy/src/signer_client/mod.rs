@@ -37,15 +37,17 @@ pub fn ipc_socket_to_tcp_addr(socket_path: &str) -> std::net::SocketAddr {
     }
     let mut hash: u64 = 0xcbf29ce484222325;
     for b in socket_path.bytes() {
-pub struct SignerClient {
-    socket_path: String,
-    seq_counter: ipc_seq_counter::IpcSeqCounter,
-    /// Cached gRPC channel — lazily initialized on first call.
-    channel: tokio::sync::OnceCell<Channel>,
-    /// Timeout for each RPC call.
-    timeout: Duration,
+        hash ^= b as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    let port = 40000 + (hash % 20000) as u16;
+    std::net::SocketAddr::from(([127, 0, 0, 1], port))
 }
 
+/// Real gRPC client for the signer IPC service over Unix Domain Socket (or localhost TCP on Windows).
+///
+/// Connects to `solbot-signer` via IPC and sends intent requests
+/// for validation and signing.
 impl SignerClient {
     pub fn new(socket_path: String) -> Self {
         Self {
