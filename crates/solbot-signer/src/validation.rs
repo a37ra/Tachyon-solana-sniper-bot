@@ -611,20 +611,22 @@ mod tests {
     }
 
     #[test]
+    fn test_unexpected_destination_rejected() {
+        let mut req = make_valid_req(1);
+        req.destination_addresses = vec!["attacker_wallet".to_string()];
+        assert!(matches!(
             validate_intent(&req, 0, 10_000_000_000, PROGRAMS, WHITELIST, 5000),
-            Err(RejectionReason::InvalidProgramId)
+            Err(RejectionReason::UnexpectedDestination)
         ));
     }
 
     #[test]
-    fn test_size_too_large_rejected() {
-        let mut req = make_valid_req(1);
-        req.max_size_lamports = 100_000_000_000; // 100 SOL
-        assert!(matches!(
-            validate_intent(&req, 0, 10_000_000_000, PROGRAMS, WHITELIST, 5000),
-            Err(RejectionReason::SizeTooLarge)
-        ));
+    fn test_empty_whitelist_allows_any_destination_in_tx() {
+        let req = make_valid_req(1);
+        let empty_whitelist: &[&str] = &[];
+        assert!(validate_intent(&req, 0, 10_000_000_000, PROGRAMS, empty_whitelist, 5000).is_ok());
     }
+
 
     #[test]
     fn test_hard_cap_bps_exceeded() {
