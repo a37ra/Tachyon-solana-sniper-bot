@@ -516,21 +516,22 @@ mod tests {
             program_id: program_pk,
             accounts: vec![
                 AccountMeta::new(wallet, true),
-        bincode::deserialize(&tx_bytes).map_err(|_| RejectionReason::DestinationMismatch)?;
+                AccountMeta::new(dest, false),
+            ],
+            data,
+        };
+        let tx = Transaction::new_with_payer(&[ix], Some(&wallet));
+        let bytes = bincode::serialize(&tx).unwrap();
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    }
 
-    // Collect all account keys from the transaction
-    let actual_accounts: std::collections::HashSet<String> = tx
-        .message
-        .account_keys
-        .iter()
-        .map(|key| key.to_string())
-        .collect();
-
-    // Check that each declared destination is present in the transaction
-    for declared_dest in declared_destinations {
-        if !actual_accounts.contains(declared_dest) {
-            tracing::error!(
-                declared_destination = %declared_dest,
+    fn make_valid_req(ipc_seq: u64) -> SignerIntentRequest {
+        let now = Utc::now().timestamp_millis() as u64;
+        SignerIntentRequest {
+            context_key: "test_mint".to_string(),
+            ipc_seq,
+            issued_at_unix_ms: now,
+            intent_type: IntentType::Buy,
                 "Declared destination not found in transaction accounts"
             );
             return Err(RejectionReason::DestinationMismatch);
