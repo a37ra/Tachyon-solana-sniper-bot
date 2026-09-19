@@ -580,21 +580,21 @@ mod tests {
         assert!(matches!(
             validate_intent(&req, 0, 10_000_000_000, PROGRAMS, WHITELIST, 5000),
             Err(RejectionReason::InvalidProgramId)
-    fn test_valid_intent_passes() {
-        let req = make_valid_req(1);
-        assert!(validate_intent(&req, 0, 10_000_000_000, PROGRAMS, WHITELIST, 5000).is_ok());
-    }
-
-    #[test]
-    fn test_replay_rejected() {
-        let req = make_valid_req(5);
-        assert!(matches!(
-            validate_intent(&req, 5, 10_000_000_000, PROGRAMS, WHITELIST, 5000),
-            Err(RejectionReason::SequenceTooOld)
         ));
     }
 
     #[test]
+    fn test_size_too_large_rejected() {
+        let mut req = make_valid_req(1);
+        req.max_size_lamports = 100_000_000_000; // 100 SOL
+        assert!(matches!(
+            validate_intent(&req, 0, 10_000_000_000, PROGRAMS, WHITELIST, 5000),
+            Err(RejectionReason::SizeTooLarge)
+        ));
+    }
+
+    #[test]
+    fn test_hard_cap_bps_exceeded() {
     fn test_stale_rejected() {
         let mut req = make_valid_req(1);
         req.issued_at_unix_ms = 1000; // way in the past
