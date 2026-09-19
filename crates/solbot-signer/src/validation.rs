@@ -564,21 +564,22 @@ mod tests {
     }
 
     #[test]
-            dex_program_id: "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8".to_string(),
-            max_size_lamports: 1_000_000_000, // 1 SOL
-            hard_cap_bps: 500,                // 5%
-            destination_addresses: vec!["safe_wallet".to_string()],
-            mint: "test_mint".to_string(),
-            pool_address: "test_pool".to_string(),
-            position_id: None,
-            amount_or_pct: 1_000_000_000.0,
-        }
+    fn test_stale_rejected() {
+        let mut req = make_valid_req(1);
+        req.issued_at_unix_ms = 1000; // way in the past
+        assert!(matches!(
+            validate_intent(&req, 0, 10_000_000_000, PROGRAMS, WHITELIST, 5000),
+            Err(RejectionReason::StaleIntent)
+        ));
     }
 
-    const PROGRAMS: &[&str] = &["675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8"];
-    const WHITELIST: &[&str] = &["safe_wallet"];
-
     #[test]
+    fn test_invalid_program_rejected() {
+        let mut req = make_valid_req(1);
+        req.program_id = "EVIL_PROGRAM".to_string();
+        assert!(matches!(
+            validate_intent(&req, 0, 10_000_000_000, PROGRAMS, WHITELIST, 5000),
+            Err(RejectionReason::InvalidProgramId)
     fn test_valid_intent_passes() {
         let req = make_valid_req(1);
         assert!(validate_intent(&req, 0, 10_000_000_000, PROGRAMS, WHITELIST, 5000).is_ok());
