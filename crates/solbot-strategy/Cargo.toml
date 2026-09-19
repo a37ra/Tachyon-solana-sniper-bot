@@ -55,7 +55,6 @@ solana-message = { workspace = true }
 solana-instruction = { workspace = true }
 solana-rpc-client = { workspace = true }
 solana-rpc-client-api = { workspace = true }
-solana-account-decoder = { workspace = true }
 solana-transaction-status = { workspace = true }
 solana-compute-budget = { workspace = true }
 solana-program = { workspace = true }
