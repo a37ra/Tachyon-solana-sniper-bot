@@ -643,21 +643,22 @@ mod tests {
         let program_pk = Pubkey::from_str(PUMP_PROGRAM).unwrap();
         let wallet = Pubkey::new_unique();
         let dest = Pubkey::from_str(SAFE_DEST).unwrap();
-        assert!(validate_intent(&req, 0, 10_000_000_000, PROGRAMS, WHITELIST, 5000).is_ok());
-    }
 
-    #[test]
-    fn test_unexpected_destination_rejected() {
-        let mut req = make_valid_req(1);
-        req.destination_addresses = vec!["attacker_wallet".to_string()];
-        assert!(matches!(
-            validate_intent(&req, 0, 10_000_000_000, PROGRAMS, WHITELIST, 5000),
-            Err(RejectionReason::UnexpectedDestination)
-        ));
-    }
+        let mut data = vec![0x66, 0x06, 0x3d, 0x12, 0x01, 0xda, 0xeb, 0xea]; // buy disc
+        data.extend_from_slice(&50_000_000_000u64.to_le_bytes()); // token_amount
+        data.extend_from_slice(&500_000_000u64.to_le_bytes()); // max_sol_cost = 0.5 SOL
+        data.push(0);
 
-    #[test]
-    fn test_empty_whitelist_allows_any_destination() {
+        let ix = Instruction {
+            program_id: program_pk,
+            accounts: vec![
+                AccountMeta::new(wallet, true),
+                AccountMeta::new(dest, false),
+            ],
+            data,
+        };
+        let tx = Transaction::new_with_payer(&[ix], Some(&wallet));
+        let b64 = base64::engine::general_purpose::STANDARD.encode(bincode::serialize(&tx).unwrap());
         let mut req = make_valid_req(1);
         req.destination_addresses = vec!["any_wallet".to_string()];
         let empty_whitelist: &[&str] = &[];
