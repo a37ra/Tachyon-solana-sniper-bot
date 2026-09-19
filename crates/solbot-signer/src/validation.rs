@@ -548,20 +548,22 @@ mod tests {
     const PROGRAMS: &[&str] = &[RAYDIUM_PROGRAM];
     const WHITELIST: &[&str] = &[SAFE_DEST];
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use solbot_common::types::intent::IntentType;
+    #[test]
+    fn test_valid_intent_passes() {
+        let req = make_valid_req(1);
+        assert!(validate_intent(&req, 0, 10_000_000_000, PROGRAMS, WHITELIST, 5000).is_ok());
+    }
 
-    fn make_valid_req(ipc_seq: u64) -> SignerIntentRequest {
-        let now = Utc::now().timestamp_millis() as u64;
-        SignerIntentRequest {
-            context_key: "test_mint".to_string(),
-            ipc_seq,
-            issued_at_unix_ms: now,
-            intent_type: IntentType::Buy,
-            unsigned_transaction_base64: "dGVzdA==".to_string(),
-            program_id: "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8".to_string(),
+    #[test]
+    fn test_replay_rejected() {
+        let req = make_valid_req(5);
+        assert!(matches!(
+            validate_intent(&req, 5, 10_000_000_000, PROGRAMS, WHITELIST, 5000),
+            Err(RejectionReason::SequenceTooOld)
+        ));
+    }
+
+    #[test]
             dex_program_id: "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8".to_string(),
             max_size_lamports: 1_000_000_000, // 1 SOL
             hard_cap_bps: 500,                // 5%
