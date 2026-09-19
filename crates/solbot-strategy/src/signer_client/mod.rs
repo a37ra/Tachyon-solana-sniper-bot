@@ -5,6 +5,7 @@ use solbot_common::types::intent::{
     IntentType, SignerIntentRequest, SignerIntentResponse, VerdictStatus,
 };
 use std::time::Duration;
+#[cfg(unix)]
 use tokio::net::UnixStream;
 use tonic::transport::{Channel, Endpoint, Uri};
 use tower::service_fn;
@@ -13,6 +14,8 @@ use tower::service_fn;
 pub mod signer_proto {
     tonic::include_proto!("signer");
 }
+
+use signer_proto::transaction_signer_service_client::TransactionSignerServiceClient;
 
 use signer_proto::transaction_signer_service_client::TransactionSignerServiceClient;
 
