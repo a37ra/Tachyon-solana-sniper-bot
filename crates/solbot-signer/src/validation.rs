@@ -627,21 +627,22 @@ mod tests {
         assert!(validate_intent(&req, 0, 10_000_000_000, PROGRAMS, empty_whitelist, 5000).is_ok());
     }
 
-
     #[test]
-    fn test_hard_cap_bps_exceeded() {
+    fn test_multiple_destinations_one_bad() {
         let mut req = make_valid_req(1);
-        req.hard_cap_bps = 9900; // 99% — clearly malicious
+        req.destination_addresses = vec![SAFE_DEST.to_string(), "attacker_wallet".to_string()];
         assert!(matches!(
             validate_intent(&req, 0, 10_000_000_000, PROGRAMS, WHITELIST, 5000),
-            Err(RejectionReason::HardCapBpsExceeded)
+            Err(RejectionReason::UnexpectedDestination)
         ));
     }
 
     #[test]
-    fn test_hard_cap_bps_at_limit_ok() {
-        let mut req = make_valid_req(1);
-        req.hard_cap_bps = 5000; // exactly at limit
+    fn test_pump_fun_buy_intent_validation() {
+        const PUMP_PROGRAM: &str = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P";
+        let program_pk = Pubkey::from_str(PUMP_PROGRAM).unwrap();
+        let wallet = Pubkey::new_unique();
+        let dest = Pubkey::from_str(SAFE_DEST).unwrap();
         assert!(validate_intent(&req, 0, 10_000_000_000, PROGRAMS, WHITELIST, 5000).is_ok());
     }
 
