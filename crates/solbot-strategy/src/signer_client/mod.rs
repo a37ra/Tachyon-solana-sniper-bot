@@ -94,11 +94,13 @@ impl SignerClient {
                     .connect_with_connector(service_fn(move |_: Uri| {
                         let path = socket_path.clone();
                         async move {
-                            let stream = UnixStream::connect(path).await?;
-                            Ok::<_, std::io::Error>(hyper_util::rt::TokioIo::new(stream))
-                        }
-                    }))
-                    .await
+                            #[cfg(unix)]
+                            {
+                                let stream = UnixStream::connect(path).await?;
+                                Ok::<_, std::io::Error>(hyper_util::rt::TokioIo::new(stream))
+                            }
+                            #[cfg(not(unix))]
+                            {
                     .context("Failed to connect to solbot-signer via UDS")?;
 
                 Ok::<Channel, anyhow::Error>(channel)
