@@ -69,14 +69,17 @@ impl SignerClient {
 
     /// Create a client with a custom timeout.
     #[allow(dead_code)]
+    pub fn with_timeout(socket_path: String, timeout: Duration) -> Self {
+        Self {
+            socket_path,
+            seq_counter: ipc_seq_counter::IpcSeqCounter::new(),
+            channel: tokio::sync::OnceCell::new(),
             timeout,
         }
     }
 
-    /// Get or create the gRPC channel over UDS.
+    /// Get or create the gRPC channel over UDS (Unix) or localhost TCP (Windows).
     async fn get_channel(&self) -> Result<Channel> {
-        let channel = self
-            .channel
             .get_or_try_init(|| async {
                 let socket_path = self.socket_path.clone();
 
