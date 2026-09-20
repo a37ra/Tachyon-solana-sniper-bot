@@ -80,10 +80,12 @@ impl SignerClient {
 
     /// Get or create the gRPC channel over UDS (Unix) or localhost TCP (Windows).
     async fn get_channel(&self) -> Result<Channel> {
+        let channel = self
+            .channel
             .get_or_try_init(|| async {
                 let socket_path = self.socket_path.clone();
 
-                // Endpoint URI is ignored for UDS — the connector overrides it.
+                // Endpoint URI is ignored for custom connector — the connector overrides it.
                 // We use a dummy HTTP URI because tonic requires one.
                 let channel = Endpoint::try_from("http://[::]:50051")
                     .context("Failed to create endpoint")?
