@@ -122,6 +122,9 @@ impl SignerClient {
     /// Automatically assigns the next IPC sequence number for anti-replay.
     /// Retries on transient transport errors (up to MAX_RETRIES).
     pub async fn sign_intent(
+        &self,
+        mut request: SignerIntentRequest,
+    ) -> Result<SignerIntentResponse> {
         let seq = self.seq_counter.next_seq(&request.context_key);
         request.ipc_seq = seq;
 
@@ -129,7 +132,7 @@ impl SignerClient {
             context_key = %request.context_key,
             seq = seq,
             intent_type = ?request.intent_type,
-            "Sending intent to solbot-signer via gRPC over UDS"
+            "Sending intent to solbot-signer via gRPC over IPC"
         );
 
         // Convert domain type to proto
