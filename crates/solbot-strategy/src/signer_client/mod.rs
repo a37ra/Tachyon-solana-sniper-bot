@@ -48,14 +48,16 @@ pub fn ipc_socket_to_tcp_addr(socket_path: &str) -> std::net::SocketAddr {
 ///
 /// Connects to `solbot-signer` via IPC and sends intent requests
 /// for validation and signing.
+pub struct SignerClient {
+    socket_path: String,
+    seq_counter: ipc_seq_counter::IpcSeqCounter,
+    /// Cached gRPC channel — lazily initialized on first call.
+    channel: tokio::sync::OnceCell<Channel>,
+    /// Timeout for each RPC call.
+    timeout: Duration,
+}
+
 impl SignerClient {
-    pub fn new(socket_path: String) -> Self {
-        Self {
-            socket_path,
-            seq_counter: ipc_seq_counter::IpcSeqCounter::new(),
-            channel: tokio::sync::OnceCell::new(),
-            timeout: DEFAULT_TIMEOUT,
-        }
     }
 
     /// Create a client with a custom timeout.
