@@ -58,15 +58,17 @@ pub struct SignerClient {
 }
 
 impl SignerClient {
-    }
-
-    /// Create a client with a custom timeout.
-    #[allow(dead_code)]
-    pub fn with_timeout(socket_path: String, timeout: Duration) -> Self {
+    pub fn new(socket_path: String) -> Self {
         Self {
             socket_path,
             seq_counter: ipc_seq_counter::IpcSeqCounter::new(),
             channel: tokio::sync::OnceCell::new(),
+            timeout: DEFAULT_TIMEOUT,
+        }
+    }
+
+    /// Create a client with a custom timeout.
+    #[allow(dead_code)]
             timeout,
         }
     }
