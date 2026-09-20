@@ -101,14 +101,17 @@ impl SignerClient {
                             }
                             #[cfg(not(unix))]
                             {
-                    .context("Failed to connect to solbot-signer via UDS")?;
+                                let addr = ipc_socket_to_tcp_addr(&path);
+                                let stream = tokio::net::TcpStream::connect(addr).await?;
+                                Ok::<_, std::io::Error>(hyper_util::rt::TokioIo::new(stream))
+                            }
+                        }
+                    }))
+                    .await
+                    .context("Failed to connect to solbot-signer via IPC")?;
 
                 Ok::<Channel, anyhow::Error>(channel)
             })
-            .await?;
-
-        Ok(channel.clone())
-    }
 
     /// Send a signing intent to solbot-signer via gRPC over UDS.
     ///
