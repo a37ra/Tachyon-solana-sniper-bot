@@ -1,13 +1,12 @@
 //! Integration tests for SignerClient with real mock gRPC server.
 //!
 //! Tests the SignerClient's communication with the solbot-signer
-//! using an in-process mock gRPC server over UnixStream.
+//! using an in-process mock gRPC server over UnixStream (Unix) or localhost TCP (Windows).
 
 use base64::Engine;
 use solbot_common::types::intent::{IntentType, SignerIntentRequest, VerdictStatus};
 use solbot_strategy::signer_client::SignerClient;
 use std::time::Duration;
-use tokio::net::UnixListener;
 use tokio::task::JoinHandle;
 use tonic::transport::Server;
 use tonic::{Request, Response, Status};
@@ -23,6 +22,9 @@ use signer_proto::transaction_signer_service_server::TransactionSignerServiceSer
 struct MockSignerService {
     response_behavior: ResponseBehavior,
 }
+
+#[derive(Clone)]
+enum ResponseBehavior {
 
 #[derive(Clone)]
 enum ResponseBehavior {
