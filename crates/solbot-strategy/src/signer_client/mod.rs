@@ -112,15 +112,16 @@ impl SignerClient {
 
                 Ok::<Channel, anyhow::Error>(channel)
             })
+            .await?;
+
+        Ok(channel.clone())
+    }
 
     /// Send a signing intent to solbot-signer via gRPC over UDS.
     ///
     /// Automatically assigns the next IPC sequence number for anti-replay.
     /// Retries on transient transport errors (up to MAX_RETRIES).
     pub async fn sign_intent(
-        &self,
-        mut request: SignerIntentRequest,
-    ) -> Result<SignerIntentResponse> {
         let seq = self.seq_counter.next_seq(&request.context_key);
         request.ipc_seq = seq;
 
