@@ -48,9 +48,6 @@ impl signer_proto::transaction_signer_service_server::TransactionSignerService
                     rejection_reason: String::new(),
                     last_ipc_seq: req.ipc_seq,
                     constructed_tx_signature: String::new(),
-                    rejection_reason: String::new(),
-                    last_ipc_seq: req.ipc_seq,
-                    constructed_tx_signature: String::new(),
                 };
                 Ok(Response::new(response))
             }
@@ -70,6 +67,11 @@ impl signer_proto::transaction_signer_service_server::TransactionSignerService
                 Err(Status::deadline_exceeded("Mock timeout"))
             }
         }
+    }
+}
+
+/// Helper to spawn a mock gRPC server on a Unix socket (Unix) or localhost TCP (Windows).
+async fn spawn_mock_server(socket_path: String, behavior: ResponseBehavior) -> JoinHandle<()> {
     }
 }
 
