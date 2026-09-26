@@ -72,28 +72,30 @@ impl signer_proto::transaction_signer_service_server::TransactionSignerService
 
 /// Helper to spawn a mock gRPC server on a Unix socket (Unix) or localhost TCP (Windows).
 async fn spawn_mock_server(socket_path: String, behavior: ResponseBehavior) -> JoinHandle<()> {
-    }
-}
-
-/// Helper to spawn a mock gRPC server on a Unix socket.
-async fn spawn_mock_server(socket_path: String, behavior: ResponseBehavior) -> JoinHandle<()> {
     tokio::spawn(async move {
-        let listener = UnixListener::bind(&socket_path).expect("Failed to bind Unix socket");
-
         let svc = TransactionSignerServiceServer::new(MockSignerService {
             response_behavior: behavior,
         });
 
-        Server::builder()
-            .add_service(svc)
-            .serve_with_incoming(tokio_stream::wrappers::UnixListenerStream::new(listener))
-            .await
-            .expect("Mock server failed");
-    })
-}
+        #[cfg(unix)]
+        {
+            use tokio::net::UnixListener;
+            let listener = UnixListener::bind(&socket_path).expect("Failed to bind Unix socket");
+            Server::builder()
+                .add_service(svc)
+                .serve_with_incoming(tokio_stream::wrappers::UnixListenerStream::new(listener))
+                .await
+                .expect("Mock server failed");
+        }
 
-#[tokio::test]
-async fn test_signer_client_successful_sign_intent() {
+        #[cfg(not(unix))]
+        {
+            use solbot_strategy::signer_client::ipc_socket_to_tcp_addr;
+            use tokio::net::TcpListener;
+            let addr = ipc_socket_to_tcp_addr(&socket_path);
+            let listener = TcpListener::bind(addr)
+                .await
+                .expect("Failed to bind TCP socket");
     let temp_file = tempfile::NamedTempFile::new().expect("Failed to create temp file");
     let socket_path = temp_file.path().to_str().unwrap().to_string();
     drop(temp_file);
