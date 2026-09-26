@@ -25,9 +25,6 @@ struct MockSignerService {
 
 #[derive(Clone)]
 enum ResponseBehavior {
-
-#[derive(Clone)]
-enum ResponseBehavior {
     Accept { signed_tx: String },
     Reject { reason: String },
     Timeout,
@@ -48,6 +45,9 @@ impl signer_proto::transaction_signer_service_server::TransactionSignerService
                 let response = signer_proto::SignerIntentResponse {
                     status: signer_proto::VerdictStatus::VerdictAccepted as i32,
                     signed_transaction_base64: signed_tx.clone(),
+                    rejection_reason: String::new(),
+                    last_ipc_seq: req.ipc_seq,
+                    constructed_tx_signature: String::new(),
                     rejection_reason: String::new(),
                     last_ipc_seq: req.ipc_seq,
                     constructed_tx_signature: String::new(),
