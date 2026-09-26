@@ -96,6 +96,17 @@ async fn spawn_mock_server(socket_path: String, behavior: ResponseBehavior) -> J
             let listener = TcpListener::bind(addr)
                 .await
                 .expect("Failed to bind TCP socket");
+            Server::builder()
+                .add_service(svc)
+                .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(listener))
+                .await
+                .expect("Mock server failed");
+        }
+    })
+}
+
+#[tokio::test]
+async fn test_signer_client_successful_sign_intent() {
     let temp_file = tempfile::NamedTempFile::new().expect("Failed to create temp file");
     let socket_path = temp_file.path().to_str().unwrap().to_string();
     drop(temp_file);
@@ -108,16 +119,6 @@ async fn spawn_mock_server(socket_path: String, behavior: ResponseBehavior) -> J
             signed_tx: signed_tx_base64.clone(),
         },
     )
-    .await;
-
-    tokio::time::sleep(Duration::from_millis(100)).await;
-
-    let client = SignerClient::new(socket_path.clone());
-
-    let request = SignerIntentRequest {
-        context_key: "test_mint".to_string(),
-        intent_type: IntentType::Buy,
-        mint: "TestMint111111111111111111111111111111111".to_string(),
         pool_address: "TestPool111111111111111111111111111111111".to_string(),
         dex_program_id: "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8".to_string(),
         unsigned_transaction_base64: "mock_unsigned_tx".to_string(),
