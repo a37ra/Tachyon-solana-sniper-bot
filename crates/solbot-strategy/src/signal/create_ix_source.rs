@@ -166,35 +166,37 @@ async fn run_logs_loop(
 async fn resolve_from_tx(
     rpc: &RpcClient,
     signature: &str,
-                }
-            }
-        }
-    }
-}
-
-async fn resolve_from_tx(
-    rpc: &RpcClient,
-    signature: &str,
     slot: u64,
     program_ids: &[Pubkey],
     seen: &SeenPools,
 ) -> Result<Option<Signal>> {
     let sig = Signature::from_str(signature)?;
+    let tx_cfg = RpcTransactionConfig {
+        encoding: Some(UiTransactionEncoding::Base64),
+        commitment: Some(CommitmentConfig::confirmed()),
+        max_supported_transaction_version: Some(0),
+    };
     let conf = rpc
-        .get_transaction(&sig, UiTransactionEncoding::Base64)
+        .get_transaction_with_config(&sig, tx_cfg)
         .await
         .map_err(|e| anyhow!("getTransaction: {e}"))?;
 
-    let encoded = conf.transaction.transaction;
-    let bytes = match encoded {
-        solana_transaction_status::EncodedTransaction::Binary(b64, _) => {
-            base64::engine::general_purpose::STANDARD
-                .decode(b64)
-                .map_err(|e| anyhow!("b64: {e}"))?
+    // Extract Address Lookup Table (ALT) loaded addresses from transaction meta for V0 txs
+    let mut loaded_keys = Vec::new();
+    if let Some(ref meta) = conf.transaction.meta {
+        if let OptionSerializer::Some(ref loaded) = meta.loaded_addresses {
+            for k in &loaded.writable {
+                if let Ok(pk) = Pubkey::from_str(k) {
+                    loaded_keys.push(pk);
+                }
+            }
+            for k in &loaded.readonly {
+                if let Ok(pk) = Pubkey::from_str(k) {
+                    loaded_keys.push(pk);
+                }
+            }
         }
-        solana_transaction_status::EncodedTransaction::LegacyBinary(b64) => {
-            base64::engine::general_purpose::STANDARD
-                .decode(b64)
+    }
                 .map_err(|e| anyhow!("b64: {e}"))?
         }
         _ => return Ok(None),
