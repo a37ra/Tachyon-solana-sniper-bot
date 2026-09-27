@@ -197,6 +197,17 @@ async fn resolve_from_tx(
             }
         }
     }
+
+    let encoded = conf.transaction.transaction;
+    let bytes = match encoded {
+        solana_transaction_status::EncodedTransaction::Binary(b64, _) => {
+            base64::engine::general_purpose::STANDARD
+                .decode(b64)
+                .map_err(|e| anyhow!("b64: {e}"))?
+        }
+        solana_transaction_status::EncodedTransaction::LegacyBinary(b64) => {
+            base64::engine::general_purpose::STANDARD
+                .decode(b64)
                 .map_err(|e| anyhow!("b64: {e}"))?
         }
         _ => return Ok(None),
@@ -210,21 +221,12 @@ async fn resolve_from_tx(
 
     if let Ok(vtx) = bincode::deserialize::<solana_transaction::versioned::VersionedTransaction>(&bytes)
     {
-        if let Some(s) = extract_from_versioned(&vtx, program_ids, slot, seen) {
+        if let Some(s) = extract_from_versioned(&vtx, &loaded_keys, program_ids, slot, seen) {
             return Ok(Some(s));
         }
     }
 
     Ok(None)
-}
-
-fn extract_from_legacy(
-    tx: &solana_transaction::Transaction,
-    program_ids: &[Pubkey],
-    slot: u64,
-    seen: &SeenPools,
-) -> Option<Signal> {
-    use crate::signal::instruction_parser::{parse_transaction_instructions, ParsedInstruction};
     for inst in parse_transaction_instructions(tx, program_ids) {
         if let ParsedInstruction::InitializePool {
             mint,
