@@ -105,11 +105,6 @@ async fn run_logs_loop(
                             }
 
                             // Fast path: pump Create with Program data fully decoded.
-                            if !ps.instruction_type.is_create_event() {
-                                continue;
-                            }
-
-                            // Fast path: pump Create with Program data fully decoded.
                             if ps.resolved_from_log_data {
                                 if let (Some(mint), pool) = (ps.mint, ps.pool_address) {
                                     if let Some(mut signal) = finalize_signal(
@@ -134,6 +129,12 @@ async fn run_logs_loop(
                                     }
                                 }
                                 continue;
+                            }
+
+                            let Some(sig_str) = ps.signature.as_ref() else { continue };
+                            match resolve_from_tx(rpc.as_ref(), sig_str, ps.slot, program_ids, seen).await {
+                                Ok(Some(mut signal)) => {
+                                    attach_pool_account(rpc.as_ref(), &mut signal).await;
                             }
 
                             let Some(sig_str) = ps.signature.as_ref() else { continue };
