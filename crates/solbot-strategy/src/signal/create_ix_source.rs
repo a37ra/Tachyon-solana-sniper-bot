@@ -74,8 +74,6 @@ async fn run_logs_loop(
 
     for (i, pid) in program_ids.iter().enumerate() {
         let msg = serde_json::json!({
-    for (i, pid) in program_ids.iter().enumerate() {
-        let msg = serde_json::json!({
             "jsonrpc": "2.0",
             "id": i + 1,
             "method": "logsSubscribe",
@@ -102,6 +100,11 @@ async fn run_logs_loop(
                             Err(_) => continue,
                         };
                         for ps in parsed {
+                            if !ps.instruction_type.is_create_event() {
+                                continue;
+                            }
+
+                            // Fast path: pump Create with Program data fully decoded.
                             if !ps.instruction_type.is_create_event() {
                                 continue;
                             }
