@@ -227,6 +227,15 @@ async fn resolve_from_tx(
     }
 
     Ok(None)
+}
+
+fn extract_from_legacy(
+    tx: &solana_transaction::Transaction,
+    program_ids: &[Pubkey],
+    slot: u64,
+    seen: &SeenPools,
+) -> Option<Signal> {
+    use crate::signal::instruction_parser::{parse_transaction_instructions, ParsedInstruction};
     for inst in parse_transaction_instructions(tx, program_ids) {
         if let ParsedInstruction::InitializePool {
             mint,
@@ -243,19 +252,12 @@ async fn resolve_from_tx(
 
 fn extract_from_versioned(
     vtx: &solana_transaction::versioned::VersionedTransaction,
+    loaded_keys: &[Pubkey],
     program_ids: &[Pubkey],
     slot: u64,
     seen: &SeenPools,
 ) -> Option<Signal> {
     use solana_message::VersionedMessage;
-    let keys = vtx.message.static_account_keys();
-
-    let ixs: Vec<_> = match &vtx.message {
-        VersionedMessage::Legacy(m) => m
-            .instructions
-            .iter()
-            .map(|ix| (ix.program_id_index, ix.accounts.as_slice(), ix.data.as_slice()))
-            .collect(),
         VersionedMessage::V0(m) => m
             .instructions
             .iter()
