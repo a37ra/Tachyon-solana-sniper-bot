@@ -13,8 +13,10 @@ use base64::Engine;
 use futures_util::{SinkExt, StreamExt};
 use solana_pubkey::Pubkey;
 use solana_rpc_client::nonblocking::rpc_client::RpcClient;
+use solana_rpc_client_api::config::RpcTransactionConfig;
+use solana_sdk::commitment_config::CommitmentConfig;
 use solana_sdk::signature::Signature;
-use solana_transaction_status::UiTransactionEncoding;
+use solana_transaction_status::{option_serializer::OptionSerializer, UiTransactionEncoding};
 use solbot_common::types::Signal;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -41,6 +43,7 @@ pub async fn subscribe_create_ix_signals(
         .unwrap_or_else(|_| "YOUR_API_KEY".to_string());
     let ws_url = std::env::var("HELIUS_WS_URL")
         .unwrap_or_else(|_| format!("wss://mainnet.helius-rpc.com/?api-key={}", api_key));
+
 
     tokio::spawn(async move {
         let mut attempts = 0u32;
