@@ -44,7 +44,6 @@ pub async fn subscribe_create_ix_signals(
     let ws_url = std::env::var("HELIUS_WS_URL")
         .unwrap_or_else(|_| format!("wss://mainnet.helius-rpc.com/?api-key={}", api_key));
 
-
     tokio::spawn(async move {
         let mut attempts = 0u32;
         loop {
@@ -73,6 +72,8 @@ async fn run_logs_loop(
     let (ws_stream, _) = tokio_tungstenite::connect_async(ws_url).await?;
     let (mut write, mut read) = ws_stream.split();
 
+    for (i, pid) in program_ids.iter().enumerate() {
+        let msg = serde_json::json!({
     for (i, pid) in program_ids.iter().enumerate() {
         let msg = serde_json::json!({
             "jsonrpc": "2.0",
