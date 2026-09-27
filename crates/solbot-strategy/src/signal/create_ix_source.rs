@@ -258,6 +258,16 @@ fn extract_from_versioned(
     seen: &SeenPools,
 ) -> Option<Signal> {
     use solana_message::VersionedMessage;
+    let mut all_keys = vtx.message.static_account_keys().to_vec();
+    all_keys.extend_from_slice(loaded_keys);
+    let keys = all_keys.as_slice();
+
+    let ixs: Vec<_> = match &vtx.message {
+        VersionedMessage::Legacy(m) => m
+            .instructions
+            .iter()
+            .map(|ix| (ix.program_id_index, ix.accounts.as_slice(), ix.data.as_slice()))
+            .collect(),
         VersionedMessage::V0(m) => m
             .instructions
             .iter()
@@ -279,13 +289,6 @@ fn extract_from_versioned(
         log_create_accounts_once(prog, keys, acc_idxs, data);
 
         if let Some((mint, pool)) = resolve_accounts_for_program(prog, keys, acc_idxs, data) {
-            if let Some(s) = finalize_signal(mint, pool, prog.to_string(), slot, seen) {
-                return Some(s);
-            }
-        }
-    }
-    None
-}
 
 /// Log raw create-ix account indices once per program (live verification aid).
 fn log_create_accounts_once(prog: &Pubkey, keys: &[Pubkey], acc_idxs: &[u8], data: &[u8]) {
