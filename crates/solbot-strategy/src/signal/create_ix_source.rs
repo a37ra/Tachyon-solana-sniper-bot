@@ -135,12 +135,6 @@ async fn run_logs_loop(
                             match resolve_from_tx(rpc.as_ref(), sig_str, ps.slot, program_ids, seen).await {
                                 Ok(Some(mut signal)) => {
                                     attach_pool_account(rpc.as_ref(), &mut signal).await;
-                            }
-
-                            let Some(sig_str) = ps.signature.as_ref() else { continue };
-                            match resolve_from_tx(rpc.as_ref(), sig_str, ps.slot, program_ids, seen).await {
-                                Ok(Some(mut signal)) => {
-                                    attach_pool_account(rpc.as_ref(), &mut signal).await;
                                     info!(
                                         mint = %signal.mint,
                                         pool = %signal.pool_address,
@@ -163,6 +157,15 @@ async fn run_logs_loop(
                     }
                     Some(Err(e)) => return Err(e.into()),
                     _ => {}
+                }
+            }
+        }
+    }
+}
+
+async fn resolve_from_tx(
+    rpc: &RpcClient,
+    signature: &str,
                 }
             }
         }
