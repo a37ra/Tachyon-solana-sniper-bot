@@ -191,6 +191,11 @@ async fn test_signer_client_rejection_handling() {
     };
 
     let result = client.sign_intent(request).await;
+
+    assert!(result.is_ok());
+    let response = result.unwrap();
+    assert_eq!(response.status, VerdictStatus::Rejected);
+    assert_eq!(
         response.rejection_reason,
         Some("Insufficient balance".to_string())
     );
@@ -209,11 +214,6 @@ async fn test_signer_client_timeout_handling() {
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    // Client with short timeout
-    let client = SignerClient::with_timeout(socket_path.clone(), Duration::from_millis(500));
-
-    let request = SignerIntentRequest {
-        context_key: "test_mint".to_string(),
         intent_type: IntentType::Buy,
         mint: "TestMint111111111111111111111111111111111".to_string(),
         pool_address: "TestPool111111111111111111111111111111111".to_string(),
