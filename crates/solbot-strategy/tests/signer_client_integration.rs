@@ -214,6 +214,11 @@ async fn test_signer_client_timeout_handling() {
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
+    // Client with short timeout
+    let client = SignerClient::with_timeout(socket_path.clone(), Duration::from_millis(500));
+
+    let request = SignerIntentRequest {
+        context_key: "test_mint".to_string(),
         intent_type: IntentType::Buy,
         mint: "TestMint111111111111111111111111111111111".to_string(),
         pool_address: "TestPool111111111111111111111111111111111".to_string(),
@@ -233,9 +238,6 @@ async fn test_signer_client_timeout_handling() {
 
     assert!(result.is_err());
     let error_msg = result.unwrap_err().to_string();
-    // Note: SignerClient has retry logic (MAX_RETRIES=3) that wraps deadline_exceeded errors
-    // The actual error message will be "Signer RPC failed after 3 retries: gRPC SignIntent call failed"
-    // which indicates the timeout occurred but was caught by the retry mechanism
     assert!(
         error_msg.contains("failed")
             || error_msg.contains("timeout")
