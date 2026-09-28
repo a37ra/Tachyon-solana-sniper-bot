@@ -289,6 +289,13 @@ fn extract_from_versioned(
         log_create_accounts_once(prog, keys, acc_idxs, data);
 
         if let Some((mint, pool)) = resolve_accounts_for_program(prog, keys, acc_idxs, data) {
+            if let Some(s) = finalize_signal(mint, pool, prog.to_string(), slot, seen) {
+                return Some(s);
+            }
+        }
+    }
+    None
+}
 
 /// Log raw create-ix account indices once per program (live verification aid).
 fn log_create_accounts_once(prog: &Pubkey, keys: &[Pubkey], acc_idxs: &[u8], data: &[u8]) {
@@ -312,12 +319,6 @@ fn log_create_accounts_once(prog: &Pubkey, keys: &[Pubkey], acc_idxs: &[u8], dat
         "empty".into()
     } else {
         data.iter()
-            .take(8)
-            .map(|b| format!("{b:02x}"))
-            .collect::<Vec<_>>()
-            .join("")
-    };
-
     let mut lines = Vec::with_capacity(acc_idxs.len());
     for (i, idx) in acc_idxs.iter().enumerate() {
         let pk = keys
