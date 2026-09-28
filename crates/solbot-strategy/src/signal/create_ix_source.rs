@@ -319,6 +319,12 @@ fn log_create_accounts_once(prog: &Pubkey, keys: &[Pubkey], acc_idxs: &[u8], dat
         "empty".into()
     } else {
         data.iter()
+            .take(8)
+            .map(|b| format!("{b:02x}"))
+            .collect::<Vec<_>>()
+            .join("")
+    };
+
     let mut lines = Vec::with_capacity(acc_idxs.len());
     for (i, idx) in acc_idxs.iter().enumerate() {
         let pk = keys
@@ -344,9 +350,6 @@ fn looks_like_create_ix(prog: &Pubkey, data: &[u8]) -> bool {
         return false;
     }
     if p == "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P" {
-        // Anchor 8-byte disc; create already filtered by log layer.
-        return data.len() >= 8;
-    }
     if p == "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8" {
         // raydium-amm instruction.rs: Initialize2 tag = 1 (tag 0 Initialize is deprecated/unsupported).
         // SwapBaseIn = 9 — must NOT match.
