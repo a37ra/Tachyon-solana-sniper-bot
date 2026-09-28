@@ -350,6 +350,9 @@ fn looks_like_create_ix(prog: &Pubkey, data: &[u8]) -> bool {
         return false;
     }
     if p == "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P" {
+        // Anchor 8-byte disc; create already filtered by log layer.
+        return data.len() >= 8;
+    }
     if p == "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8" {
         // raydium-amm instruction.rs: Initialize2 tag = 1 (tag 0 Initialize is deprecated/unsupported).
         // SwapBaseIn = 9 — must NOT match.
@@ -376,8 +379,8 @@ fn prefer_non_wsol(a: String, b: String) -> String {
 }
 
 /// Map instruction accounts → (mint, pool).
-///
-/// ## Provenance (not guessed)
+fn resolve_accounts_for_program(
+    prog: &Pubkey,
 ///
 /// | Program | Evidence | pool | mint |
 /// |---------|----------|------|------|
