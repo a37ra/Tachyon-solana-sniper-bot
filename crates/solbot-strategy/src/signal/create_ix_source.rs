@@ -381,22 +381,6 @@ fn prefer_non_wsol(a: String, b: String) -> String {
 /// Map instruction accounts → (mint, pool).
 fn resolve_accounts_for_program(
     prog: &Pubkey,
-///
-/// | Program | Evidence | pool | mint |
-/// |---------|----------|------|------|
-/// | AMM v4 Initialize2 | github.com/raydium-io/raydium-amm `program/src/instruction.rs` `initialize2()` AccountMeta order: [0]token [1]ata [2]system [3]rent **[4]amm_pool** [5]authority [6]oo [7]lp **[8]coin_mint [9]pc_mint** …; ix tag **1** | 4 | 8/9 |
-/// | CPMM Initialize | github.com/raydium-io/raydium-cp-swap `programs/cp-swap/src/instructions/initialize.rs` `Initialize`: [0]creator [1]amm_config [2]authority **[3]pool_state** **[4]token_0_mint [5]token_1_mint** … | 3 | 4/5 |
-/// | CLMM CreatePool | github.com/raydium-io/raydium-clmm `programs/amm/src/instructions/create_pool.rs` `CreatePool`: [0]pool_creator [1]amm_config **[2]pool_state** **[3]token_mint_0 [4]token_mint_1** … | 2 | 3/4 |
-/// | DAMM v2 InitializePool | github.com/MeteoraAg/damm-v2 `…/initialize_pool/ix_initialize_pool.rs` `InitializePoolCtx`: [0]creator [1]pos_nft_mint [2]pos_nft_acc [3]payer [4]config [5]pool_authority **[6]pool** [7]position **[8]token_a_mint [9]token_b_mint** … | 6 | 8/9 |
-/// | Pump Create | Create event `Program data` (mint+curve) preferred; ix accounts mint@0 curve@2 as fallback | 2 | 0 |
-///
-/// **Mainnet getTransaction scan note (2026-08-10):** AMM v4 Initialize2 is rare
-/// (0 hits in 500 recent successful program txs — almost all swaps). Layout therefore
-/// rests on the official `initialize2()` helper, not a fresh dump. CPMM/CLMM/DAMM creates
-/// are also sparse vs swaps on free RPC; source `#[derive(Accounts)]` order is the
-/// authoritative account index list for Anchor programs.
-fn resolve_accounts_for_program(
-    prog: &Pubkey,
     keys: &[Pubkey],
     acc_idxs: &[u8],
     data: &[u8],
@@ -410,6 +394,23 @@ fn resolve_accounts_for_program(
     let _ = data;
 
     if p == "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P" {
+        if acc_idxs.len() < 3 {
+            return None;
+        }
+        let mint = get(0)?;
+        let pool = get(2)?;
+        return Some((mint, pool));
+    }
+
+    // Raydium AMM v4 Initialize2 — accounts from `initialize2()` helper (raydium-amm).
+    // [0]token [1]ata [2]system [3]rent [4]pool [5]authority [6]open_orders
+    // [7]lp_mint [8]coin_mint [9]pc_mint ...
+    if p == "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8" {
+        if acc_idxs.len() < 10 {
+            return None;
+        }
+        let pool = get(4)?;
+        let coin = get(8)?;
         if acc_idxs.len() < 3 {
             return None;
         }
