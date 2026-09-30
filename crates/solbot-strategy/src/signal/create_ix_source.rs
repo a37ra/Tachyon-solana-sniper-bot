@@ -472,34 +472,37 @@ fn resolve_accounts_for_program(
 
 /// Fetch pool/curve account bytes into the signal so risk-gate can use `from_ws_update`
 /// (1 RTT for mint) instead of full multi-account fetch.
-    }
-
-    // Meteora DLMM InitializeLbPair — common layout (lb_pair, …, mint_x, mint_y):
-    // Index 0 = lb_pair; mint_x/mint_y often at 2/3 or 3/4 depending on optional bitmap.
-    // Prefer keys that look like mints vs system programs; still require getTransaction path.
-    if p == "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo" {
-        if acc_idxs.len() < 4 {
-            return None;
-        }
-        let pool = get(0)?;
-        // Try standard order mint_x@2 mint_y@3; fall back to 3/4.
-        let m0 = get(2).or_else(|| get(3))?;
-        let m1 = get(3).or_else(|| get(4))?;
-        if m0 == pool {
-            return None;
-        }
-        return Some((prefer_non_wsol(m0, m1), pool));
-    }
-
-    // No silent generic heuristic — better miss than invent a blue-chip mint.
-    None
-}
-
-/// Fetch pool/curve account bytes into the signal so risk-gate can use `from_ws_update`
-/// (1 RTT for mint) instead of full multi-account fetch. LogsSubscribe itself has no
-/// account payload — this is the intentional recovery of that latency path.
 async fn attach_pool_account(rpc: &RpcClient, signal: &mut Signal) {
     let Ok(pool_pk) = Pubkey::from_str(&signal.pool_address) else {
+        return;
+    };
+    for (i, wait_ms) in [0_u64, 80, 200, 400].iter().enumerate() {
+        if *wait_ms > 0 {
+            sleep(Duration::from_millis(*wait_ms)).await;
+        }
+        match rpc.get_account(&pool_pk).await {
+            Ok(acc) => {
+                signal.raw_pool_account_data = Some(acc.data);
+                signal.raw_pool_account_owner = Some(acc.owner.to_string());
+                if i > 0 {
+                    info!(
+                        pool = %signal.pool_address,
+                        attempt = i,
+                        "pool account attached after retry"
+                    );
+                }
+                return;
+            }
+            Err(_) => {
+                debug!(
+                    pool = %signal.pool_address,
+                    attempt = i,
+                    "pool account not yet available for attach"
+                );
+            }
+        }
+    }
+    warn!(
         return;
     };
     // Fresh creates: short retries (curve may lag processed indexer by tens–hundreds ms).
