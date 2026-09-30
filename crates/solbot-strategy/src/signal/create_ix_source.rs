@@ -595,34 +595,36 @@ mod tests {
             "Program log: Instruction: Buy".into(),
         ];
         let parsed = parse_log_lines(&logs, 1, "x");
-            1,
-            &seen
-        )
-        .is_none());
+        assert!(
+            parsed
+                .iter()
+                .filter(|p| p.instruction_type.is_create_event())
+                .count()
+                == 0
+        );
     }
 
     #[test]
-    fn finalize_rejects_usdc() {
-        let seen = SeenPools::with_warmup_secs(0);
-        assert!(finalize_signal(
-            "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v".into(),
-            Pubkey::new_unique().to_string(),
-            "prog".into(),
-            1,
-            &seen
-        )
-        .is_none());
-    }
-
-    #[test]
-    fn finalize_accepts_unique_mint() {
-        let seen = SeenPools::with_warmup_secs(0);
-        let mint = Pubkey::new_unique().to_string();
-        let pool = Pubkey::new_unique().to_string();
-        let s = finalize_signal(mint.clone(), pool, "prog".into(), 1, &seen).unwrap();
-        assert_eq!(s.mint, mint);
-        assert_eq!(s.signal_source, "helius_logs_create_ix");
-    }
+    fn create_log_resolved_path_matches_finalize() {
+        use base64::Engine;
+        let mint = Pubkey::new_unique();
+        let curve = Pubkey::new_unique();
+        let user = Pubkey::new_unique();
+        let mut body = Vec::new();
+        for s in ["N", "S", "U"] {
+            body.extend_from_slice(&(s.len() as u32).to_le_bytes());
+            body.extend_from_slice(s.as_bytes());
+        }
+        body.extend_from_slice(mint.as_ref());
+        body.extend_from_slice(curve.as_ref());
+        body.extend_from_slice(user.as_ref());
+        let mut full = vec![1u8; 8];
+        full.extend_from_slice(&body);
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&full);
+        let pump = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P";
+        let logs = [
+            format!("Program {pump} invoke [1]"),
+            "Program log: Instruction: Create".into(),
 
     #[test]
     fn swap_logs_do_not_finalize_via_create_filter() {
