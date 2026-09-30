@@ -411,23 +411,6 @@ fn resolve_accounts_for_program(
         }
         let pool = get(4)?;
         let coin = get(8)?;
-        if acc_idxs.len() < 3 {
-            return None;
-        }
-        let mint = get(0)?;
-        let pool = get(2)?;
-        return Some((mint, pool));
-    }
-
-    // Raydium AMM v4 Initialize2 — accounts from `initialize2()` helper (raydium-amm).
-    // [0]token [1]ata [2]system [3]rent [4]pool [5]authority [6]open_orders
-    // [7]lp_mint [8]coin_mint [9]pc_mint ...
-    if p == "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8" {
-        if acc_idxs.len() < 10 {
-            return None;
-        }
-        let pool = get(4)?;
-        let coin = get(8)?;
         let pc = get(9)?;
         return Some((prefer_non_wsol(coin, pc), pool));
     }
@@ -439,6 +422,26 @@ fn resolve_accounts_for_program(
         if acc_idxs.len() < 6 {
             return None;
         }
+        let pool = get(3)?;
+        let m0 = get(4)?;
+        let m1 = get(5)?;
+        return Some((prefer_non_wsol(m0, m1), pool));
+    }
+
+    // Raydium CLMM CreatePool:
+    // [0]pool_creator [1]amm_config [2]pool_state [3]token_mint_0 [4]token_mint_1 ...
+    if p == "CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK" {
+        if acc_idxs.len() < 5 {
+            return None;
+        }
+        let pool = get(2)?;
+        let m0 = get(3)?;
+        let m1 = get(4)?;
+        return Some((prefer_non_wsol(m0, m1), pool));
+    }
+
+    // Meteora DAMM v2 InitializePoolCtx:
+    // [0]creator [1]position_nft_mint [2]position_nft_account [3]payer [4]config
         let pool = get(3)?;
         let m0 = get(4)?;
         let m1 = get(5)?;
