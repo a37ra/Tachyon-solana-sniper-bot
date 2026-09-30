@@ -503,34 +503,36 @@ async fn attach_pool_account(rpc: &RpcClient, signal: &mut Signal) {
         }
     }
     warn!(
-        return;
-    };
-    // Fresh creates: short retries (curve may lag processed indexer by tens–hundreds ms).
-    for (i, wait_ms) in [0_u64, 80, 200, 400].iter().enumerate() {
-        if *wait_ms > 0 {
-            sleep(Duration::from_millis(*wait_ms)).await;
-        }
-        match rpc.get_account(&pool_pk).await {
-            Ok(acc) => {
-                signal.raw_pool_account_data = Some(acc.data);
-                signal.raw_pool_account_owner = Some(acc.owner.to_string());
-                if i > 0 {
-                    info!(
-                        pool = %signal.pool_address,
-                        attempt = i,
-                        "pool account attached after retry"
-                    );
-                }
-                return;
-            }
-            Err(_) => {
-                debug!(
-                    pool = %signal.pool_address,
-                    attempt = i,
-                    "pool account not yet available for attach"
-                );
-            }
-        }
+        pool = %signal.pool_address,
+        mint = %signal.mint,
+        "could not attach raw_pool_account_data — risk-gate will multi-fetch"
+    );
+}
+
+fn finalize_signal(
+    mint: String,
+    pool_address: String,
+    dex_program: String,
+    slot: u64,
+    seen: &SeenPools,
+) -> Option<Signal> {
+    let mint_pk = Pubkey::from_str(&mint).ok()?;
+    if !is_plausible_spl_mint(&mint_pk) {
+        return None;
+    }
+    const BLOCKED: &[&str] = &[
+        "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", // USDC
+        "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB", // USDT
+        "So11111111111111111111111111111111111111112",  // wSOL
+        "mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So",   // mSOL
+        "JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN",   // JUP
+        "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263", // BONK
+    ];
+    if BLOCKED.contains(&mint.as_str()) {
+        return None;
+    }
+    if !seen.try_claim(&pool_address) {
+        return None;
     }
     warn!(
         pool = %signal.pool_address,
