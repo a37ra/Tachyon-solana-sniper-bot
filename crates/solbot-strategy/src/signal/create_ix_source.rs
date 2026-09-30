@@ -442,26 +442,6 @@ fn resolve_accounts_for_program(
 
     // Meteora DAMM v2 InitializePoolCtx:
     // [0]creator [1]position_nft_mint [2]position_nft_account [3]payer [4]config
-        let pool = get(3)?;
-        let m0 = get(4)?;
-        let m1 = get(5)?;
-        return Some((prefer_non_wsol(m0, m1), pool));
-    }
-
-    // Raydium CLMM CreatePool:
-    // [0]pool_creator [1]amm_config [2]pool_state [3]token_mint_0 [4]token_mint_1 ...
-    if p == "CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK" {
-        if acc_idxs.len() < 5 {
-            return None;
-        }
-        let pool = get(2)?;
-        let m0 = get(3)?;
-        let m1 = get(4)?;
-        return Some((prefer_non_wsol(m0, m1), pool));
-    }
-
-    // Meteora DAMM v2 InitializePoolCtx:
-    // [0]creator [1]position_nft_mint [2]position_nft_account [3]payer [4]config
     // [5]pool_authority [6]pool [7]position [8]token_a_mint [9]token_b_mint ...
     if p == "cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG" {
         if acc_idxs.len() < 10 {
@@ -471,6 +451,27 @@ fn resolve_accounts_for_program(
         let m0 = get(8)?;
         let m1 = get(9)?;
         return Some((prefer_non_wsol(m0, m1), pool));
+    }
+
+    // Meteora DLMM InitializeLbPair — common layout (lb_pair, …, mint_x, mint_y):
+    if p == "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo" {
+        if acc_idxs.len() < 4 {
+            return None;
+        }
+        let pool = get(0)?;
+        let m0 = get(2).or_else(|| get(3))?;
+        let m1 = get(3).or_else(|| get(4))?;
+        if m0 == pool {
+            return None;
+        }
+        return Some((prefer_non_wsol(m0, m1), pool));
+    }
+
+    None
+}
+
+/// Fetch pool/curve account bytes into the signal so risk-gate can use `from_ws_update`
+/// (1 RTT for mint) instead of full multi-account fetch.
     }
 
     // Meteora DLMM InitializeLbPair — common layout (lb_pair, …, mint_x, mint_y):
