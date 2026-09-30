@@ -564,35 +564,37 @@ mod tests {
         .is_none());
     }
 
-        return None;
-    }
-    if !seen.try_claim(&pool_address) {
-        return None;
-    }
-    Some(Signal {
-        mint,
-        pool_address,
-        dex_program,
-        signal_source: "helius_logs_create_ix".into(),
-        slot,
-        received_at: chrono::Utc::now().timestamp_millis() as u64,
-        raw_pool_account_data: None,
-        raw_pool_account_owner: None,
-    })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::signal::logs_parser::{parse_log_lines, InstructionType};
-
     #[test]
-    fn finalize_rejects_system_mint() {
+    fn finalize_rejects_usdc() {
         let seen = SeenPools::with_warmup_secs(0);
         assert!(finalize_signal(
-            SYSTEM_PROGRAM.into(),
+            "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v".into(),
             Pubkey::new_unique().to_string(),
             "prog".into(),
+            1,
+            &seen
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn finalize_accepts_unique_mint() {
+        let seen = SeenPools::with_warmup_secs(0);
+        let mint = Pubkey::new_unique().to_string();
+        let pool = Pubkey::new_unique().to_string();
+        let s = finalize_signal(mint.clone(), pool, "prog".into(), 1, &seen).unwrap();
+        assert_eq!(s.mint, mint);
+        assert_eq!(s.signal_source, "helius_logs_create_ix");
+    }
+
+    #[test]
+    fn swap_logs_do_not_finalize_via_create_filter() {
+        let pump = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P";
+        let logs = [
+            format!("Program {pump} invoke [1]"),
+            "Program log: Instruction: Buy".into(),
+        ];
+        let parsed = parse_log_lines(&logs, 1, "x");
             1,
             &seen
         )
