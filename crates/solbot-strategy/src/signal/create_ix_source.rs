@@ -534,34 +534,36 @@ fn finalize_signal(
     if !seen.try_claim(&pool_address) {
         return None;
     }
-    warn!(
-        pool = %signal.pool_address,
-        mint = %signal.mint,
-        "could not attach raw_pool_account_data — risk-gate will multi-fetch"
-    );
+    Some(Signal {
+        mint,
+        pool_address,
+        dex_program,
+        signal_source: "helius_logs_create_ix".into(),
+        slot,
+        received_at: chrono::Utc::now().timestamp_millis() as u64,
+        raw_pool_account_data: None,
+        raw_pool_account_owner: None,
+    })
 }
 
-fn finalize_signal(
-    mint: String,
-    pool_address: String,
-    dex_program: String,
-    slot: u64,
-    seen: &SeenPools,
-) -> Option<Signal> {
-    let mint_pk = Pubkey::from_str(&mint).ok()?;
-    if !is_plausible_spl_mint(&mint_pk) {
-        return None;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::signal::logs_parser::{parse_log_lines, InstructionType};
+
+    #[test]
+    fn finalize_rejects_system_mint() {
+        let seen = SeenPools::with_warmup_secs(0);
+        assert!(finalize_signal(
+            SYSTEM_PROGRAM.into(),
+            Pubkey::new_unique().to_string(),
+            "prog".into(),
+            1,
+            &seen
+        )
+        .is_none());
     }
-    // Known blue-chips must never pass even if somehow present in a create tx.
-    const BLOCKED: &[&str] = &[
-        "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", // USDC
-        "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB", // USDT
-        "So11111111111111111111111111111111111111112",  // wSOL
-        "mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So",   // mSOL
-        "JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN",   // JUP
-        "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263", // BONK
-    ];
-    if BLOCKED.contains(&mint.as_str()) {
+
         return None;
     }
     if !seen.try_claim(&pool_address) {
