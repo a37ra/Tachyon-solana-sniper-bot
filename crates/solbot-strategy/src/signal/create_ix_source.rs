@@ -656,34 +656,37 @@ mod tests {
 
     #[test]
     fn raydium_amm_v4_account_layout_initialize2() {
-        body.extend_from_slice(mint.as_ref());
-        body.extend_from_slice(curve.as_ref());
-        body.extend_from_slice(user.as_ref());
-        let mut full = vec![1u8; 8];
-        full.extend_from_slice(&body);
-        let b64 = base64::engine::general_purpose::STANDARD.encode(&full);
-        let pump = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P";
-        let logs = [
-            format!("Program {pump} invoke [1]"),
-            "Program log: Instruction: Create".into(),
-            format!("Program data: {b64}"),
-        ];
-        let parsed = parse_log_lines(&logs, 42, "sig");
-        let c = parsed
-            .iter()
-            .find(|p| p.instruction_type == InstructionType::InitializePool)
-            .expect("create");
-        assert!(c.resolved_from_log_data);
-        let seen = SeenPools::with_warmup_secs(0);
-        let s = finalize_signal(
-            c.mint.unwrap().to_string(),
-            c.pool_address.to_string(),
-            pump.into(),
-            42,
-            &seen,
-        )
-        .unwrap();
-        assert_eq!(s.mint, mint.to_string());
+        let prog = Pubkey::from_str("675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8").unwrap();
+        let mut keys: Vec<Pubkey> = (0..21).map(|_| Pubkey::new_unique()).collect();
+        keys[8] = Pubkey::new_unique(); // coin mint
+        keys[9] = Pubkey::from_str(NATIVE_MINT).unwrap(); // pc = WSOL
+        let pool = keys[4];
+        let coin = keys[8];
+        let acc_idxs: Vec<u8> = (0..21).map(|i| i as u8).collect();
+        let (mint, pool_s) =
+            resolve_accounts_for_program(&prog, &keys, &acc_idxs, &[1]).unwrap();
+        assert_eq!(pool_s, pool.to_string());
+        assert_eq!(mint, coin.to_string(), "must pick non-WSOL coin mint");
+    }
+
+    #[test]
+    fn cpmm_initialize_account_layout() {
+        let prog = Pubkey::from_str("CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C").unwrap();
+        let mut keys: Vec<Pubkey> = (0..10).map(|_| Pubkey::new_unique()).collect();
+        keys[5] = Pubkey::from_str(NATIVE_MINT).unwrap();
+        let acc_idxs: Vec<u8> = (0..10).map(|i| i as u8).collect();
+        let (mint, pool) = resolve_accounts_for_program(&prog, &keys, &acc_idxs, &[0; 8]).unwrap();
+        assert_eq!(pool, keys[3].to_string());
+        assert_eq!(mint, keys[4].to_string());
+    }
+
+    #[test]
+    fn clmm_create_pool_account_layout() {
+        let prog = Pubkey::from_str("CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK").unwrap();
+        let keys: Vec<Pubkey> = (0..8).map(|_| Pubkey::new_unique()).collect();
+        let acc_idxs: Vec<u8> = (0..8).map(|i| i as u8).collect();
+        let (mint, pool) = resolve_accounts_for_program(&prog, &keys, &acc_idxs, &[0; 8]).unwrap();
+        assert_eq!(pool, keys[2].to_string());
         assert_eq!(s.pool_address, curve.to_string());
     }
 
