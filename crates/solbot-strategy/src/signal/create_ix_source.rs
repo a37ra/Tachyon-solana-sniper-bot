@@ -625,35 +625,37 @@ mod tests {
         let logs = [
             format!("Program {pump} invoke [1]"),
             "Program log: Instruction: Create".into(),
-
-    #[test]
-    fn swap_logs_do_not_finalize_via_create_filter() {
-        let pump = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P";
-        let logs = [
-            format!("Program {pump} invoke [1]"),
-            "Program log: Instruction: Buy".into(),
+            format!("Program data: {b64}"),
         ];
-        let parsed = parse_log_lines(&logs, 1, "x");
-        assert!(
-            parsed
-                .iter()
-                .filter(|p| p.instruction_type.is_create_event())
-                .count()
-                == 0
-        );
+        let parsed = parse_log_lines(&logs, 42, "sig");
+        let c = parsed
+            .iter()
+            .find(|p| p.instruction_type == InstructionType::InitializePool)
+            .expect("create");
+        assert!(c.resolved_from_log_data);
+        let seen = SeenPools::with_warmup_secs(0);
+        let s = finalize_signal(
+            c.mint.unwrap().to_string(),
+            c.pool_address.to_string(),
+            pump.into(),
+            42,
+            &seen,
+        )
+        .unwrap();
+        assert_eq!(s.mint, mint.to_string());
+        assert_eq!(s.pool_address, curve.to_string());
     }
 
     #[test]
-    fn create_log_resolved_path_matches_finalize() {
-        use base64::Engine;
-        let mint = Pubkey::new_unique();
-        let curve = Pubkey::new_unique();
-        let user = Pubkey::new_unique();
-        let mut body = Vec::new();
-        for s in ["N", "S", "U"] {
-            body.extend_from_slice(&(s.len() as u32).to_le_bytes());
-            body.extend_from_slice(s.as_bytes());
-        }
+    fn raydium_amm_create_disc_gate() {
+        let pid = Pubkey::from_str("675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8").unwrap();
+        assert!(looks_like_create_ix(&pid, &[1, 0, 0])); // Initialize2
+        assert!(!looks_like_create_ix(&pid, &[0])); // deprecated Initialize
+        assert!(!looks_like_create_ix(&pid, &[9])); // SwapBaseIn
+    }
+
+    #[test]
+    fn raydium_amm_v4_account_layout_initialize2() {
         body.extend_from_slice(mint.as_ref());
         body.extend_from_slice(curve.as_ref());
         body.extend_from_slice(user.as_ref());
