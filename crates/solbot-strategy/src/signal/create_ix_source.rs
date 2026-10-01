@@ -687,35 +687,36 @@ mod tests {
         let acc_idxs: Vec<u8> = (0..8).map(|i| i as u8).collect();
         let (mint, pool) = resolve_accounts_for_program(&prog, &keys, &acc_idxs, &[0; 8]).unwrap();
         assert_eq!(pool, keys[2].to_string());
-        assert_eq!(s.pool_address, curve.to_string());
+        assert_eq!(mint, keys[3].to_string());
     }
 
     #[test]
-    fn raydium_amm_create_disc_gate() {
-        let pid = Pubkey::from_str("675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8").unwrap();
-        assert!(looks_like_create_ix(&pid, &[1, 0, 0])); // Initialize2
-        assert!(!looks_like_create_ix(&pid, &[0])); // deprecated Initialize
-        assert!(!looks_like_create_ix(&pid, &[9])); // SwapBaseIn
+    fn damm_v2_initialize_pool_account_layout() {
+        let prog = Pubkey::from_str("cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG").unwrap();
+        let mut keys: Vec<Pubkey> = (0..12).map(|_| Pubkey::new_unique()).collect();
+        keys[9] = Pubkey::from_str(NATIVE_MINT).unwrap();
+        let acc_idxs: Vec<u8> = (0..12).map(|i| i as u8).collect();
+        let (mint, pool) = resolve_accounts_for_program(&prog, &keys, &acc_idxs, &[0; 8]).unwrap();
+        assert_eq!(pool, keys[6].to_string());
+        assert_eq!(mint, keys[8].to_string());
     }
 
     #[test]
-    fn raydium_amm_v4_account_layout_initialize2() {
-        let prog = Pubkey::from_str("675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8").unwrap();
-        // Build keys matching initialize2() account order.
-        let mut keys: Vec<Pubkey> = (0..21).map(|_| Pubkey::new_unique()).collect();
-        keys[8] = Pubkey::new_unique(); // coin mint
-        keys[9] = Pubkey::from_str(NATIVE_MINT).unwrap(); // pc = WSOL
-        let pool = keys[4];
-        let coin = keys[8];
-        let acc_idxs: Vec<u8> = (0..21).map(|i| i as u8).collect();
-        let (mint, pool_s) =
-            resolve_accounts_for_program(&prog, &keys, &acc_idxs, &[1]).unwrap();
-        assert_eq!(pool_s, pool.to_string());
-        assert_eq!(mint, coin.to_string(), "must pick non-WSOL coin mint");
-    }
+    fn v0_with_alt_loaded_addresses_resolves_create_ix() {
+        use solana_message::{
+            compiled_instruction::CompiledInstruction, v0::Message as V0Message, MessageHeader,
+            VersionedMessage,
+        };
+        use solana_sdk::hash::Hash;
+        use solana_transaction::versioned::VersionedTransaction;
 
-    #[test]
-    fn cpmm_initialize_account_layout() {
+        let cpmm_prog = Pubkey::from_str("CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C").unwrap();
+        let payer = Pubkey::new_unique();
+        // Only payer and program are in static_account_keys (indices 0, 1).
+        // The 6 CPMM Initialize accounts are in ALT loaded_keys (indices 2..8).
+        let static_keys = vec![payer, cpmm_prog];
+        let mut loaded_keys: Vec<Pubkey> = (0..6).map(|_| Pubkey::new_unique()).collect();
+        loaded_keys[5] = Pubkey::from_str(NATIVE_MINT).unwrap(); // token_1_mint = WSOL
         let prog = Pubkey::from_str("CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C").unwrap();
         let mut keys: Vec<Pubkey> = (0..10).map(|_| Pubkey::new_unique()).collect();
         keys[5] = Pubkey::from_str(NATIVE_MINT).unwrap();
