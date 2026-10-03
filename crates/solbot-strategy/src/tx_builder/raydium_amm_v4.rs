@@ -172,9 +172,11 @@ impl RaydiumAmmV4PoolState {
     /// Return the coin and pc vault addresses to query for reserve balances.
     pub fn active_vaults(&self) -> (Pubkey, Pubkey) {
         if self.serum_coin_vault != Pubkey::default() && self.serum_pc_vault != Pubkey::default() {
-    /// Calculate expected output for a buy (SOL → Token).
-    /// Uses constant product formula: x * y = k
-    /// amount_out = (reserve_out * amount_in * (10000 - fee)) / (reserve_in * 10000 + amount_in * (10000 - fee))
+            (self.serum_coin_vault, self.serum_pc_vault)
+        } else {
+            (self.pool_coin_token_account, self.pool_pc_token_account)
+        }
+    }
     pub fn calculate_buy_output(&self, sol_amount: u64) -> u64 {
         if self.coin_vault_balance == 0 || self.pc_vault_balance == 0 {
             return 0;
