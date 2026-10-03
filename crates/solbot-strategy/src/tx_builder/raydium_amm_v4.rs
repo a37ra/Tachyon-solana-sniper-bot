@@ -189,9 +189,11 @@ impl RaydiumAmmV4PoolState {
     /// Uses constant product formula: x * y = k
     /// amount_out = (reserve_out * amount_in * (10000 - fee)) / (reserve_in * 10000 + amount_in * (10000 - fee))
     pub fn calculate_buy_output(&self, sol_amount: u64) -> u64 {
-        let reserve_in = self.pc_vault_balance;
-        let reserve_out = self.coin_vault_balance;
+        if self.coin_vault_balance == 0 || self.pc_vault_balance == 0 {
+            return 0;
+        }
 
+        const WSOL: &str = "So11111111111111111111111111111111111111112";
         self.calculate_output(sol_amount, reserve_in, reserve_out)
     }
 
