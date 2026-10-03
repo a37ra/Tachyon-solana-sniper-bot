@@ -80,10 +80,12 @@ impl PositionFeeLedger {
     }
 
     pub fn track_priority_fee(&self, position_id: &str, lamports: u64) {
+        self.inner
             .lock()
             .expect("fee ledger")
             .entry(position_id.to_string())
             .or_default()
+            .add_priority_lamports(lamports);
             .add_jito_tip_lamports(lamports);
     }
 
