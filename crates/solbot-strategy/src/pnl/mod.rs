@@ -73,11 +73,13 @@ impl PositionFeeLedger {
     pub fn get_token_amount(&self, position_id: &str) -> u64 {
         self.token_amounts
             .lock()
-            .add_priority_lamports(lamports);
+            .expect("token amounts ledger")
+            .get(position_id)
+            .copied()
+            .unwrap_or(0)
     }
 
-    pub fn track_jito_tip(&self, position_id: &str, lamports: u64) {
-        self.inner
+    pub fn track_priority_fee(&self, position_id: &str, lamports: u64) {
             .lock()
             .expect("fee ledger")
             .entry(position_id.to_string())
