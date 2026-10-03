@@ -61,11 +61,12 @@ pub struct PositionFeeLedger {
 impl PositionFeeLedger {
     pub fn new() -> Self {
         Self::default()
-        Self::default()
     }
 
-    pub fn track_priority_fee(&self, position_id: &str, lamports: u64) {
-        self.inner
+    pub fn set_token_amount(&self, position_id: &str, amount_raw: u64) {
+        self.token_amounts
+            .lock()
+            .expect("token amounts ledger")
             .lock()
             .expect("fee ledger")
             .entry(position_id.to_string())
