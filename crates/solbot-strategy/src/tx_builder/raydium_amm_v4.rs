@@ -211,9 +211,11 @@ impl RaydiumAmmV4PoolState {
         }
 
         const WSOL: &str = "So11111111111111111111111111111111111111112";
-        // reserve_in = coin_vault_balance, reserve_out = pc_vault_balance
-        let reserve_in = self.coin_vault_balance;
-        let reserve_out = self.pc_vault_balance;
+        let (reserve_in, reserve_out) = if self.coin_mint.to_string() == WSOL {
+            (self.pc_vault_balance, self.coin_vault_balance)
+        } else {
+            (self.coin_vault_balance, self.pc_vault_balance)
+        };
 
         self.calculate_output(token_amount, reserve_in, reserve_out)
     }
