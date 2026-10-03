@@ -167,10 +167,11 @@ impl RaydiumAmmV4PoolState {
             self.amm_id = amm_id;
         }
         self
-            Pubkey::find_program_address(&[AMM_AUTHORITY_SEED], &RAYDIUM_AMM_V4_PROGRAM);
-        Ok(authority)
     }
 
+    /// Return the coin and pc vault addresses to query for reserve balances.
+    pub fn active_vaults(&self) -> (Pubkey, Pubkey) {
+        if self.serum_coin_vault != Pubkey::default() && self.serum_pc_vault != Pubkey::default() {
     /// Calculate expected output for a buy (SOL → Token).
     /// Uses constant product formula: x * y = k
     /// amount_out = (reserve_out * amount_in * (10000 - fee)) / (reserve_in * 10000 + amount_in * (10000 - fee))
