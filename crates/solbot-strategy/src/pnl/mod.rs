@@ -55,10 +55,12 @@ pub const DEFAULT_ATA_RENT_LAMPORTS: u64 = 2_039_280;
 #[derive(Debug, Default, Clone)]
 pub struct PositionFeeLedger {
     inner: Arc<Mutex<HashMap<String, FeeBreakdown>>>,
+    token_amounts: Arc<Mutex<HashMap<String, u64>>>,
 }
 
 impl PositionFeeLedger {
     pub fn new() -> Self {
+        Self::default()
         Self::default()
     }
 
