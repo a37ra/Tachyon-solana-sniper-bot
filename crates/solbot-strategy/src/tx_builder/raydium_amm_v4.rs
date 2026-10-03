@@ -161,9 +161,12 @@ impl RaydiumAmmV4PoolState {
         self
     }
 
-    /// Derive the AMM authority PDA.
-    pub fn derive_authority() -> Result<Pubkey> {
-        let (authority, _bump) =
+    /// Override the AMM pool pubkey with the known on-chain pool address.
+    pub fn with_amm_id(mut self, amm_id: Pubkey) -> Self {
+        if amm_id != Pubkey::default() {
+            self.amm_id = amm_id;
+        }
+        self
             Pubkey::find_program_address(&[AMM_AUTHORITY_SEED], &RAYDIUM_AMM_V4_PROGRAM);
         Ok(authority)
     }
