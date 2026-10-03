@@ -205,10 +205,12 @@ impl RaydiumAmmV4PoolState {
 
     /// Calculate expected output for a sell (Token → SOL).
     /// Uses constant product formula: x * y = k
+    pub fn calculate_sell_output(&self, token_amount: u64) -> u64 {
+        if self.coin_vault_balance == 0 || self.pc_vault_balance == 0 {
             return 0;
         }
 
-        // For sell: Token is input (coin), SOL is output (pc)
+        const WSOL: &str = "So11111111111111111111111111111111111111112";
         // reserve_in = coin_vault_balance, reserve_out = pc_vault_balance
         let reserve_in = self.coin_vault_balance;
         let reserve_out = self.pc_vault_balance;
