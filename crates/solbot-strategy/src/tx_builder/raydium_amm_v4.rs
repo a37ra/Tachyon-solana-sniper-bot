@@ -183,9 +183,12 @@ impl RaydiumAmmV4PoolState {
         let (authority, _bump) =
             Pubkey::find_program_address(&[AMM_AUTHORITY_SEED], &RAYDIUM_AMM_V4_PROGRAM);
         Ok(authority)
+    }
 
-        // For buy: SOL is input (pc), Token is output (coin)
-        // reserve_in = pc_vault_balance, reserve_out = coin_vault_balance
+    /// Calculate expected output for a buy (SOL → Token).
+    /// Uses constant product formula: x * y = k
+    /// amount_out = (reserve_out * amount_in * (10000 - fee)) / (reserve_in * 10000 + amount_in * (10000 - fee))
+    pub fn calculate_buy_output(&self, sol_amount: u64) -> u64 {
         let reserve_in = self.pc_vault_balance;
         let reserve_out = self.coin_vault_balance;
 
