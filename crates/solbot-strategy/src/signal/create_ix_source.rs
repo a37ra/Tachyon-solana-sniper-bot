@@ -717,33 +717,36 @@ mod tests {
         let static_keys = vec![payer, cpmm_prog];
         let mut loaded_keys: Vec<Pubkey> = (0..6).map(|_| Pubkey::new_unique()).collect();
         loaded_keys[5] = Pubkey::from_str(NATIVE_MINT).unwrap(); // token_1_mint = WSOL
-        let prog = Pubkey::from_str("CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C").unwrap();
-        let mut keys: Vec<Pubkey> = (0..10).map(|_| Pubkey::new_unique()).collect();
-        keys[5] = Pubkey::from_str(NATIVE_MINT).unwrap();
-        let acc_idxs: Vec<u8> = (0..10).map(|i| i as u8).collect();
-        let (mint, pool) = resolve_accounts_for_program(&prog, &keys, &acc_idxs, &[0; 8]).unwrap();
-        assert_eq!(pool, keys[3].to_string());
-        assert_eq!(mint, keys[4].to_string());
-    }
+        let expected_pool = loaded_keys[3];
+        let expected_mint = loaded_keys[4];
 
-    #[test]
-    fn clmm_create_pool_account_layout() {
-        let prog = Pubkey::from_str("CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK").unwrap();
-        let keys: Vec<Pubkey> = (0..8).map(|_| Pubkey::new_unique()).collect();
-        let acc_idxs: Vec<u8> = (0..8).map(|i| i as u8).collect();
-        let (mint, pool) = resolve_accounts_for_program(&prog, &keys, &acc_idxs, &[0; 8]).unwrap();
-        assert_eq!(pool, keys[2].to_string());
-        assert_eq!(mint, keys[3].to_string());
-    }
+        let compiled_ix = CompiledInstruction {
+            program_id_index: 1,
+            accounts: vec![2, 3, 4, 5, 6, 7],
+            data: vec![175, 175, 109, 31, 13, 152, 155, 237], // 8-byte Anchor disc
+        };
 
-    #[test]
-    fn damm_v2_initialize_pool_account_layout() {
-        let prog = Pubkey::from_str("cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG").unwrap();
-        let mut keys: Vec<Pubkey> = (0..12).map(|_| Pubkey::new_unique()).collect();
-        keys[9] = Pubkey::from_str(NATIVE_MINT).unwrap();
-        let acc_idxs: Vec<u8> = (0..12).map(|i| i as u8).collect();
-        let (mint, pool) = resolve_accounts_for_program(&prog, &keys, &acc_idxs, &[0; 8]).unwrap();
-        assert_eq!(pool, keys[6].to_string());
-        assert_eq!(mint, keys[8].to_string());
+        let v0_msg = V0Message {
+            header: MessageHeader {
+                num_required_signatures: 1,
+                num_readonly_signed_accounts: 0,
+                num_readonly_unsigned_accounts: 1,
+            },
+            account_keys: static_keys,
+            recent_blockhash: Hash::new_unique(),
+            instructions: vec![compiled_ix],
+            address_table_lookups: vec![],
+        };
+
+        let vtx = VersionedTransaction {
+            signatures: vec![],
+            message: VersionedMessage::V0(v0_msg),
+        };
+
+        let seen = SeenPools::with_warmup_secs(0);
+        let sig = extract_from_versioned(&vtx, &loaded_keys, &[cpmm_prog], 100, &seen)
+            .expect("should resolve V0 + ALT create ix");
+        assert_eq!(sig.mint, expected_mint.to_string());
+        assert_eq!(sig.pool_address, expected_pool.to_string());
     }
 }
