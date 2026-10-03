@@ -86,11 +86,12 @@ impl PositionFeeLedger {
             .entry(position_id.to_string())
             .or_default()
             .add_priority_lamports(lamports);
-            .add_jito_tip_lamports(lamports);
     }
 
-    pub fn track_ata_rent(&self, position_id: &str, lamports: u64) {
+    pub fn track_jito_tip(&self, position_id: &str, lamports: u64) {
         self.inner
+            .lock()
+            .expect("fee ledger")
             .lock()
             .expect("fee ledger")
             .entry(position_id.to_string())
