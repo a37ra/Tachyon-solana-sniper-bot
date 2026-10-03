@@ -67,10 +67,12 @@ impl PositionFeeLedger {
         self.token_amounts
             .lock()
             .expect("token amounts ledger")
+            .insert(position_id.to_string(), amount_raw);
+    }
+
+    pub fn get_token_amount(&self, position_id: &str) -> u64 {
+        self.token_amounts
             .lock()
-            .expect("fee ledger")
-            .entry(position_id.to_string())
-            .or_default()
             .add_priority_lamports(lamports);
     }
 
