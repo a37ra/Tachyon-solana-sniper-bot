@@ -98,10 +98,12 @@ impl PositionFeeLedger {
     }
 
     pub fn track_ata_rent(&self, position_id: &str, lamports: u64) {
+        self.inner
+            .lock()
+            .expect("fee ledger")
+            .entry(position_id.to_string())
+            .or_default()
             .add_ata_rent_lamports(lamports);
-    }
-
-    pub fn track_ata_refund(&self, position_id: &str, lamports: u64) {
         self.inner
             .lock()
             .expect("fee ledger")
