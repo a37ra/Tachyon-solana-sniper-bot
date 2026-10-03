@@ -177,10 +177,12 @@ impl RaydiumAmmV4PoolState {
             (self.pool_coin_token_account, self.pool_pc_token_account)
         }
     }
-    pub fn calculate_buy_output(&self, sol_amount: u64) -> u64 {
-        if self.coin_vault_balance == 0 || self.pc_vault_balance == 0 {
-            return 0;
-        }
+
+    /// Derive the AMM authority PDA.
+    pub fn derive_authority() -> Result<Pubkey> {
+        let (authority, _bump) =
+            Pubkey::find_program_address(&[AMM_AUTHORITY_SEED], &RAYDIUM_AMM_V4_PROGRAM);
+        Ok(authority)
 
         // For buy: SOL is input (pc), Token is output (coin)
         // reserve_in = pc_vault_balance, reserve_out = coin_vault_balance
