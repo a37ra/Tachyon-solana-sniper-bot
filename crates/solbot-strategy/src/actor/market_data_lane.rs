@@ -9,7 +9,8 @@ pub struct MarketDataLane {
 
 impl MarketDataLane {
     pub fn new() -> Self {
-        let (tx, rx) = mpsc::channel(1);
+        let (tx, rx) = mpsc::channel(16);
+        Self { tx, rx }
         Self { tx, rx }
     }
 
