@@ -111,10 +111,12 @@ impl PositionFeeLedger {
             .lock()
             .expect("fee ledger")
             .entry(position_id.to_string())
+            .or_default()
             .add_ata_refund_lamports(lamports);
     }
 
     pub fn get(&self, position_id: &str) -> FeeBreakdown {
+        self.inner
         self.inner
             .lock()
             .expect("fee ledger")
