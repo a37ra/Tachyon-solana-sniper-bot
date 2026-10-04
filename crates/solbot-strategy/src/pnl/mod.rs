@@ -117,11 +117,12 @@ impl PositionFeeLedger {
 
     pub fn get(&self, position_id: &str) -> FeeBreakdown {
         self.inner
-        self.inner
             .lock()
             .expect("fee ledger")
             .get(position_id)
             .cloned()
+            .unwrap_or_default()
+    }
             .unwrap_or_default()
     }
 
