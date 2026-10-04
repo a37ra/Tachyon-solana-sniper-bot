@@ -123,10 +123,12 @@ impl PositionFeeLedger {
             .cloned()
             .unwrap_or_default()
     }
-            .unwrap_or_default()
-    }
 
     pub fn take(&self, position_id: &str) -> FeeBreakdown {
+        self.token_amounts
+            .lock()
+            .expect("token amounts ledger")
+            .remove(position_id);
         self.inner
             .lock()
             .expect("fee ledger")
