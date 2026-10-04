@@ -18,3 +18,9 @@ pub struct WindowBuyEvent {
     pub in_creation_bundle: bool,
     /// Root funder wallet (<= 2 hops of first incoming SOL transfer).
     pub root_funder: Option<String>,
+    /// Age of wallet's first transaction in minutes (`None` if unknown).
+    pub wallet_age_minutes: Option<f64>,
+}
+
+/// Raw inputs for the Alpha Layer evaluation of a newly launched token.
+#[derive(Debug, Clone, Default)]
