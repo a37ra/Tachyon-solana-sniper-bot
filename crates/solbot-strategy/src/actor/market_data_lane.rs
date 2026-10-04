@@ -13,7 +13,8 @@ impl MarketDataLane {
         Self { tx, rx }
     }
 
-        Self { tx, rx }
+    pub fn sender(&self) -> mpsc::Sender<MarketDataEvent> {
+        self.tx.clone()
     }
 
     pub fn send(&mut self, event: MarketDataEvent) {
