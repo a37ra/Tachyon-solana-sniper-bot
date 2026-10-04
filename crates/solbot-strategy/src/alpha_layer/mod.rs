@@ -11,3 +11,10 @@ use std::collections::{HashMap, HashSet};
 
 /// Observed buy event in the `alpha_window_ms` window after pool creation.
 #[derive(Debug, Clone)]
+pub struct WindowBuyEvent {
+    pub buyer_wallet: String,
+    pub token_amount: u64,
+    pub slot: u64,
+    pub in_creation_bundle: bool,
+    /// Root funder wallet (<= 2 hops of first incoming SOL transfer).
+    pub root_funder: Option<String>,
