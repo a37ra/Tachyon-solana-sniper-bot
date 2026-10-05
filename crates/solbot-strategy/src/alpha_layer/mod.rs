@@ -24,3 +24,10 @@ pub struct WindowBuyEvent {
 
 /// Raw inputs for the Alpha Layer evaluation of a newly launched token.
 #[derive(Debug, Clone, Default)]
+pub struct AlphaSignalInputs {
+    pub pool_creation_slot: u64,
+    pub total_supply: u64,
+    pub dev_wallet_tokens_bought: u64,
+    pub top10_non_lp_tokens: u64,
+    pub window_buys: Vec<WindowBuyEvent>,
+    /// Developer history `(n_dumps, n_launches)`.
