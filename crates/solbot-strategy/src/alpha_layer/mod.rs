@@ -37,3 +37,10 @@ pub struct AlphaSignalInputs {
 /// Computed normalized metrics from `AlphaSignalInputs`.
 #[derive(Debug, Clone)]
 pub struct AlphaMetrics {
+    pub dev_buy_pct: f64,
+    pub bundler_pct: f64,
+    pub funder_cluster_pct: f64,
+    pub fresh_wallet_ratio: f64,
+    /// `None` when unique buyers `N < min_buyers_for_concentration_check` (default 25).
+    pub concentration_multiplier: Option<f64>,
+    /// `None` when `n_launches == 0`.
