@@ -31,3 +31,9 @@ pub struct AlphaSignalInputs {
     pub top10_non_lp_tokens: u64,
     pub window_buys: Vec<WindowBuyEvent>,
     /// Developer history `(n_dumps, n_launches)`.
+    pub dev_history: Option<(u32, u32)>,
+}
+
+/// Computed normalized metrics from `AlphaSignalInputs`.
+#[derive(Debug, Clone)]
+pub struct AlphaMetrics {
