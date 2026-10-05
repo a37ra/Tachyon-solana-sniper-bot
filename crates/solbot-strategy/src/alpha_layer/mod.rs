@@ -44,3 +44,9 @@ pub struct AlphaMetrics {
     /// `None` when unique buyers `N < min_buyers_for_concentration_check` (default 25).
     pub concentration_multiplier: Option<f64>,
     /// `None` when `n_launches == 0`.
+    pub dev_history_score: Option<f64>,
+}
+
+/// Configuration for the Alpha Layer (§8.6 defaults).
+#[derive(Debug, Clone)]
+pub struct AlphaConfig {
