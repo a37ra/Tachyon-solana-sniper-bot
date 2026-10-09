@@ -63,3 +63,10 @@ pub struct AlphaConfig {
     pub wallet_age_fresh_threshold_min: f64,
     pub weights: [f64; 5],
     pub q_probe_default: f64,
+    pub delta_drift_estimate: f64,
+    pub effective_loss_pct: f64,
+    pub neutral_prior: f64,
+    pub skip_probe_if_clean_and_below_p_star: bool,
+}
+
+impl Default for AlphaConfig {
