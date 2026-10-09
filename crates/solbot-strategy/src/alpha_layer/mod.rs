@@ -50,3 +50,10 @@ pub struct AlphaMetrics {
 /// Configuration for the Alpha Layer (§8.6 defaults).
 #[derive(Debug, Clone)]
 pub struct AlphaConfig {
+    pub alpha_window_ms: u64,
+    pub probe_window_sec: u64,
+    pub min_buyers_for_concentration_check: usize,
+    pub concentration_multiplier_max: f64,
+    pub dev_history_block_threshold: f64,
+    pub dev_history_caution_low: f64,
+    pub label_cliff_window_sec: u64,
