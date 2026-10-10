@@ -325,3 +325,10 @@ pub fn evaluate_alpha_gate(
         + w3 * norm_cluster
         + w4 * norm_cm
         + w5 * dev_term)
+        .clamp(0.0, 1.0);
+
+    // 3. Size derate
+    let floor = config.alpha_size_floor(tier);
+    let size_multiplier = (1.0 - alpha_risk_score).clamp(floor, 1.0);
+
+    // 4. Probe-scale EV breakeven
