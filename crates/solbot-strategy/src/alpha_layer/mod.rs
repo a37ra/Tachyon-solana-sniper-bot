@@ -338,3 +338,10 @@ pub fn evaluate_alpha_gate(
 
     let probe_mode = if is_clean && residual_p < p_star && config.skip_probe_if_clean_and_below_p_star
     {
+        ProbeMode::DirectFull
+    } else {
+        ProbeMode::ProbeScale {
+            q_probe: config.q_probe_default,
+        }
+    };
+
