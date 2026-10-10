@@ -70,3 +70,10 @@ pub struct AlphaConfig {
 }
 
 impl Default for AlphaConfig {
+    fn default() -> Self {
+        Self {
+            alpha_window_ms: 4000,
+            probe_window_sec: 3,
+            min_buyers_for_concentration_check: 25,
+            concentration_multiplier_max: 3.0,
+            dev_history_block_threshold: 0.50,
