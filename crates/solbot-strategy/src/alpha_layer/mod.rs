@@ -358,3 +358,9 @@ pub fn evaluate_alpha_gate(
 pub fn compute_breakeven_p_star(delta_drift: f64, effective_loss_l: f64) -> f64 {
     let denom = effective_loss_l + delta_drift;
     if denom <= 0.0 {
+        0.0
+    } else {
+        (delta_drift / denom).clamp(0.0, 1.0)
+    }
+}
+
