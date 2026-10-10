@@ -332,3 +332,9 @@ pub fn evaluate_alpha_gate(
     let size_multiplier = (1.0 - alpha_risk_score).clamp(floor, 1.0);
 
     // 4. Probe-scale EV breakeven
+    let p_star = compute_breakeven_p_star(config.delta_drift_estimate, config.effective_loss_pct);
+    let is_clean = alpha_risk_score <= config.dev_history_caution_low;
+    let residual_p = metrics.dev_history_score.unwrap_or(alpha_risk_score);
+
+    let probe_mode = if is_clean && residual_p < p_star && config.skip_probe_if_clean_and_below_p_star
+    {
