@@ -345,3 +345,9 @@ pub fn evaluate_alpha_gate(
         }
     };
 
+    AlphaVerdict::Accept {
+        alpha_risk_score,
+        size_multiplier,
+        probe_mode,
+        p_star,
+    }
