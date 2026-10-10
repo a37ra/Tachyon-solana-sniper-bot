@@ -351,3 +351,10 @@ pub fn evaluate_alpha_gate(
         probe_mode,
         p_star,
     }
+}
+
+/// Breakeven dump probability `p* = delta / (L + delta)` (§4).
+#[inline]
+pub fn compute_breakeven_p_star(delta_drift: f64, effective_loss_l: f64) -> f64 {
+    let denom = effective_loss_l + delta_drift;
+    if denom <= 0.0 {
