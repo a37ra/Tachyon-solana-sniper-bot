@@ -364,3 +364,10 @@ pub fn compute_breakeven_p_star(delta_drift: f64, effective_loss_l: f64) -> f64 
     }
 }
 
+/// Difference in EV: `EV_probe - EV_full = (1 - q) * S * [ p * L - (1 - p) * delta ]` (§4).
+pub fn compute_probe_ev_advantage(
+    target_size_sol: f64,
+    q_probe: f64,
+    residual_dump_prob_p: f64,
+    delta_drift: f64,
+    effective_loss_l: f64,
