@@ -384,3 +384,10 @@ mod tests {
     #[test]
     fn test_wilson_lower_bound_known_values() {
         assert_eq!(wilson_lower_dump_prob(0, 0), None);
+        // 0 dumps out of 10 launches -> lower bound ~0.0
+        let p0 = wilson_lower_dump_prob(0, 10).unwrap();
+        assert!(p0 < 1e-6);
+
+        // 8 dumps out of 10 launches -> lower bound > 0.49
+        let p8 = wilson_lower_dump_prob(8, 10).unwrap();
+        assert!(p8 > 0.49 && p8 < 0.80, "got {p8}");
