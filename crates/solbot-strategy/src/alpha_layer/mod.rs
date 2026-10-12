@@ -391,3 +391,9 @@ mod tests {
         // 8 dumps out of 10 launches -> lower bound > 0.49
         let p8 = wilson_lower_dump_prob(8, 10).unwrap();
         assert!(p8 > 0.49 && p8 < 0.80, "got {p8}");
+    }
+
+    #[test]
+    fn test_breakeven_p_star_example_from_docs() {
+        // Docs §4: L=0.65, delta=0.05 -> p* = 0.05 / (0.65 + 0.05) = 0.05 / 0.70 = 0.07142857
+        let p_star = compute_breakeven_p_star(0.05, 0.65);
