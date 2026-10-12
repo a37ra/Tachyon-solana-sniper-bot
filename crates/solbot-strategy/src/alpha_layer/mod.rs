@@ -371,3 +371,10 @@ pub fn compute_probe_ev_advantage(
     residual_dump_prob_p: f64,
     delta_drift: f64,
     effective_loss_l: f64,
+) -> f64 {
+    let q = q_probe.clamp(0.0, 1.0);
+    let p = residual_dump_prob_p.clamp(0.0, 1.0);
+    (1.0 - q) * target_size_sol * (p * effective_loss_l - (1.0 - p) * delta_drift)
+}
+
+#[cfg(test)]
