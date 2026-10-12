@@ -378,3 +378,9 @@ pub fn compute_probe_ev_advantage(
 }
 
 #[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_wilson_lower_bound_known_values() {
+        assert_eq!(wilson_lower_dump_prob(0, 0), None);
