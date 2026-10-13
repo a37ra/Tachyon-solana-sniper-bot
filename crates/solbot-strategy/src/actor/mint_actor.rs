@@ -610,22 +610,26 @@ pub async fn reconcile_post_buy_balance(
     let wallet_str = wallet.to_string();
     let mint_str = mint.to_string();
     let wallet_pk = *wallet;
-            fail_or_placeholder!("Failed to fetch pool account in Live mode");
-        };
-        let Ok(mut pool_state) =
-            raydium_amm_v4_builder::RaydiumAmmV4PoolState::from_account_data(&data)
-        else {
-            fail_or_placeholder!("Failed to parse Raydium AMM v4 pool state in Live mode");
-        };
-        let vault_balances = fetch_vault_balances(
-            rpc_url.clone(),
-            pool_state.serum_coin_vault,
-            pool_state.serum_pc_vault,
-            "Raydium AMM v4",
-        )
-        .await?;
-        pool_state = pool_state.with_vault_balances(vault_balances.0, vault_balances.1);
+    let mint_pk = *mint;
 
+    let reconciled = tokio::task::spawn_blocking(move || -> Option<u64> {
+        let rpc = RpcClient::new(rpc_url_owned);
+
+        // 1. Try transaction receipt pre/postTokenBalances delta
+        if let Ok(sig) = solana_sdk::signature::Signature::from_str(&sig_owned) {
+            let cfg = solana_rpc_client_api::config::RpcTransactionConfig {
+                encoding: Some(solana_transaction_status::UiTransactionEncoding::Base64),
+                commitment: Some(solana_sdk::commitment_config::CommitmentConfig::confirmed()),
+                max_supported_transaction_version: Some(0),
+            };
+            if let Ok(tx_With_meta) = rpc.get_transaction_with_config(&sig, cfg) {
+                if let Some(meta) = tx_With_meta.transaction.meta {
+                    use solana_transaction_status::option_serializer::OptionSerializer;
+                    let pre_amt: u64 = match meta.pre_token_balances {
+                        OptionSerializer::Some(ref list) => list
+                            .iter()
+                            .filter(|b| {
+                                b.mint == mint_str
         let expected_out = match direction {
             SwapDirection::Buy => pool_state.calculate_buy_output(amount_in_lamports),
             SwapDirection::Sell => pool_state.calculate_sell_output(amount_in_lamports),
