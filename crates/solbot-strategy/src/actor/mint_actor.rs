@@ -530,22 +530,26 @@ pub async fn fetch_pool_spot_price_sol(
     pool_pubkey: &Pubkey,
     mint_pubkey: &Pubkey,
     pool_data: &[u8],
-    macro_rules! fetch_account_data {
-        ($pk:expr) => {{
-            if let Some(ref d) = preloaded_pool_data {
-                Some(d.clone())
-            } else {
-                let rpc_url = rpc_url.clone();
-                let pk = $pk;
-                tokio::task::spawn_blocking(move || {
-                    let rpc = RpcClient::new(rpc_url);
-                    rpc.get_account(&pk).map(|a| a.data)
-                })
-                .await
-                .ok()
-                .and_then(|r| r.ok())
-            }
-        }};
+) -> Option<f64> {
+    if let Some(px) = compute_pool_spot_price_sol(dex_program_id, pool_pubkey, mint_pubkey, pool_data) {
+        return Some(px);
+    }
+
+    let probe_lamports: u64 = 10_000_000; // 0.01 SOL
+
+    if dex_program_id == raydium_amm_v4_builder::RAYDIUM_AMM_V4_PROGRAM.to_string() {
+        let state = raydium_amm_v4_builder::RaydiumAmmV4PoolState::from_account_data(pool_data).ok()?;
+        let (vault_a, vault_b) = state.active_vaults();
+        let accs = rpc.get_multiple_accounts(&[vault_a, vault_b]).await.ok()?;
+        let bal_a = accs.get(0)?.as_ref().and_then(|a| parse_spl_token_account_balance(&a.data))?;
+        let bal_b = accs.get(1)?.as_ref().and_then(|a| parse_spl_token_account_balance(&a.data))?;
+        let state = state.with_vault_balances(bal_a, bal_b);
+        let out_tokens = state.calculate_buy_output(probe_lamports);
+        if out_tokens > 0 {
+            return Some(0.01 / (out_tokens as f64 / 1_000_000.0));
+        }
+    } else if dex_program_id == raydium_cpmm_builder::RAYDIUM_CPMM_PROGRAM.to_string() {
+        let state = raydium_cpmm_builder::CpmmPoolState::from_account_data(pool_data).ok()?;
     }
 
     // Unified handling for "account not found" / "parse failed" - error in Live, warning + placeholder in Paper
