@@ -550,22 +550,26 @@ pub async fn fetch_pool_spot_price_sol(
         }
     } else if dex_program_id == raydium_cpmm_builder::RAYDIUM_CPMM_PROGRAM.to_string() {
         let state = raydium_cpmm_builder::CpmmPoolState::from_account_data(pool_data).ok()?;
-    }
-
-    // Unified handling for "account not found" / "parse failed" - error in Live, warning + placeholder in Paper
-    macro_rules! fail_or_placeholder {
-        ($msg:literal) => {{
-            if trading_mode == TradingMode::Live {
-                tracing::error!($msg);
-                bail!($msg);
-            }
-            tracing::warn!(concat!($msg, ", using placeholder (Paper mode)"));
-            return Ok(create_placeholder_swap_instructions());
-        }};
-    }
-
-    if dex_program_id == pump_fun_builder::PUMP_FUN_PROGRAM.to_string() {
-        let Some(data) = fetch_account_data!(pool_pubkey) else {
+        let accs = rpc
+            .get_multiple_accounts(&[state.token_0_vault, state.token_1_vault])
+            .await
+            .ok()?;
+        let bal_0 = accs.get(0)?.as_ref().and_then(|a| parse_spl_token_account_balance(&a.data))?;
+        let bal_1 = accs.get(1)?.as_ref().and_then(|a| parse_spl_token_account_balance(&a.data))?;
+        let state = state.with_vault_balances(bal_0, bal_1);
+        let out_tokens = state.calculate_buy_output(probe_lamports);
+        if out_tokens > 0 {
+            return Some(0.01 / (out_tokens as f64 / 1_000_000.0));
+        }
+    } else if dex_program_id == DLMM_MAINNET
+        || dex_program_id == DLMM_LEGACY
+        || dex_program_id == meteora_dlmm_builder::METEORA_DLMM_PROGRAM.to_string()
+    {
+        let state = meteora_dlmm_builder::DlmmPoolState::from_account_data(pool_data, pool_pubkey).ok()?;
+        let accs = rpc
+            .get_multiple_accounts(&[state.reserve_x, state.reserve_y])
+            .await
+            .ok()?;
             fail_or_placeholder!("Failed to fetch pool account in Live mode");
         };
         let Ok(curve) = pump_fun_builder::PumpFunBondingCurve::from_account_data(
