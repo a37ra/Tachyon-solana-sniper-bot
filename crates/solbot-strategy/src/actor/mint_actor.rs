@@ -490,22 +490,26 @@ pub fn ensure_nonzero_output(expected_out: u64, dex_name: &str, direction: &str)
 
 /// Fetch pool state for the specified DEX and build swap instructions for any direction (buy/sell).
 /// This unified function replaces duplicated code in execute_buy_pipeline and execute_exit_pipeline.
-async fn fetch_and_build_dex_swap(
-    rpc_url: &Option<String>,
-    trading_mode: TradingMode,
+/// Parse raw SPL Token / Token-2022 account data to extract `amount` (bytes 64..72).
+pub fn parse_spl_token_account_balance(data: &[u8]) -> Option<u64> {
+    if data.len() < 72 {
+        return None;
+    }
+    let bytes: [u8; 8] = data[64..72].try_into().ok()?;
+    Some(u64::from_le_bytes(bytes))
+}
+
+/// Compute current spot price in SOL per token (assuming 1 SOL = 1e9 lamports, 1 token = 1e6 raw units)
+/// from on-chain pool / bonding-curve account bytes when reserves are inline (e.g. Pump.fun).
+pub fn compute_pool_spot_price_sol(
     dex_program_id: &str,
-    wallet: Pubkey,
-    mint_pubkey: Pubkey,
-    pool_pubkey: Pubkey,
-    dex_program_pubkey: Pubkey,
-    amount_in_lamports: u64,
-    direction: SwapDirection,
-    slippage_bps: u32,
-    preloaded_pool_data: Option<Vec<u8>>,
-) -> Result<tx_builder::SwapInstructions> {
-    let dir_label = match direction {
-        SwapDirection::Buy => "buy",
-        SwapDirection::Sell => "sell",
+    pool_pubkey: &Pubkey,
+    mint_pubkey: &Pubkey,
+    data: &[u8],
+) -> Option<f64> {
+    if dex_program_id == pump_fun_builder::PUMP_FUN_PROGRAM.to_string() {
+        let curve = pump_fun_builder::PumpFunBondingCurve::from_account_data(
+            data,
     };
 
     let rpc_url = match rpc_url.clone() {
