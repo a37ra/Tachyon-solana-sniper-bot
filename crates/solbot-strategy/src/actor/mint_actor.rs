@@ -570,22 +570,26 @@ pub async fn fetch_pool_spot_price_sol(
             .get_multiple_accounts(&[state.reserve_x, state.reserve_y])
             .await
             .ok()?;
-            fail_or_placeholder!("Failed to fetch pool account in Live mode");
-        };
-        let Ok(curve) = pump_fun_builder::PumpFunBondingCurve::from_account_data(
-            &data,
-            &pool_pubkey,
-            &mint_pubkey,
-        ) else {
-            fail_or_placeholder!("Failed to parse Pump.fun bonding curve in Live mode");
-        };
-
-        let expected_out = match direction {
-            SwapDirection::Buy => curve.calculate_buy_output(amount_in_lamports),
-            SwapDirection::Sell => curve.calculate_sell_output(amount_in_lamports),
-        };
-        let minimum_amount_out = apply_slippage(expected_out, slippage_bps);
-        let swap_params = SwapParams {
+        let bal_x = accs.get(0)?.as_ref().and_then(|a| parse_spl_token_account_balance(&a.data))?;
+        let bal_y = accs.get(1)?.as_ref().and_then(|a| parse_spl_token_account_balance(&a.data))?;
+        let state = state.with_vault_balances(bal_x, bal_y);
+        let out_tokens = state.calculate_buy_output(probe_lamports);
+        if out_tokens > 0 {
+            return Some(0.01 / (out_tokens as f64 / 1_000_000.0));
+        }
+    } else if dex_program_id == DAMM_V2
+        || dex_program_id == meteora_damm_v2_builder::METEORA_DAMM_V2_PROGRAM.to_string()
+    {
+        let state = meteora_damm_v2_builder::DammV2PoolState::from_account_data(pool_data, pool_pubkey).ok()?;
+        let accs = rpc
+            .get_multiple_accounts(&[state.token_a_vault, state.token_b_vault])
+            .await
+            .ok()?;
+        let bal_a = accs.get(0)?.as_ref().and_then(|a| parse_spl_token_account_balance(&a.data))?;
+        let bal_b = accs.get(1)?.as_ref().and_then(|a| parse_spl_token_account_balance(&a.data))?;
+        let state = state.with_vault_balances(bal_a, bal_b);
+        let out_tokens = state.calculate_buy_output(probe_lamports);
+        if out_tokens > 0 {
             mint: mint_pubkey,
             pool_address: pool_pubkey,
             dex_program_id: dex_program_pubkey,
