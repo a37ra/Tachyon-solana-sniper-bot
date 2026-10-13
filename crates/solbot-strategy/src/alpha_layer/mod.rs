@@ -430,3 +430,9 @@ mod tests {
         let inputs = AlphaSignalInputs::default();
         let metrics = compute_alpha_metrics(&inputs, &cfg);
         // Default empty inputs -> neutral_prior = 0.35 * w5(0.2) = 0.07 risk score
+        match evaluate_alpha_gate(&metrics, CapitalTier::Small, &cfg) {
+            AlphaVerdict::Accept {
+                alpha_risk_score,
+                size_multiplier,
+                ..
+            } => {
