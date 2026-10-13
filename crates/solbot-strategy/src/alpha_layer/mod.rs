@@ -423,3 +423,10 @@ mod tests {
             AlphaVerdict::Reject { .. }
         ));
     }
+
+    #[test]
+    fn test_soft_score_and_size_derate() {
+        let cfg = AlphaConfig::default();
+        let inputs = AlphaSignalInputs::default();
+        let metrics = compute_alpha_metrics(&inputs, &cfg);
+        // Default empty inputs -> neutral_prior = 0.35 * w5(0.2) = 0.07 risk score
