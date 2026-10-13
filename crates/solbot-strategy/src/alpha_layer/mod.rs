@@ -404,3 +404,9 @@ mod tests {
     fn test_hard_block_on_bundler_and_dev_history() {
         let cfg = AlphaConfig::default();
         let mut metrics = AlphaMetrics {
+            dev_buy_pct: 0.05,
+            bundler_pct: 0.75, // > 0.70 Micro cap
+            funder_cluster_pct: 0.10,
+            fresh_wallet_ratio: 0.20,
+            concentration_multiplier: None,
+            dev_history_score: None,
