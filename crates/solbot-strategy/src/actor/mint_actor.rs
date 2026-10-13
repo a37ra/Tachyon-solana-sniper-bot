@@ -590,21 +590,26 @@ pub async fn fetch_pool_spot_price_sol(
         let state = state.with_vault_balances(bal_a, bal_b);
         let out_tokens = state.calculate_buy_output(probe_lamports);
         if out_tokens > 0 {
-            mint: mint_pubkey,
-            pool_address: pool_pubkey,
-            dex_program_id: dex_program_pubkey,
-            wallet,
-            direction,
-            amount_in: amount_in_lamports,
-            minimum_amount_out,
-            slippage_bps,
-        };
-        return pump_fun_builder::build_swap(&swap_params, &curve)
-            .map_err(|e| anyhow!("Tx builder error: {}", e));
+            return Some(0.01 / (out_tokens as f64 / 1_000_000.0));
+        }
     }
 
-    if dex_program_id == raydium_amm_v4_builder::RAYDIUM_AMM_V4_PROGRAM.to_string() {
-        let Some(data) = fetch_account_data!(pool_pubkey) else {
+    None
+}
+
+/// Reconcile actual post-trade token balance from on-chain confirmed transaction or wallet ATA.
+pub async fn reconcile_post_buy_balance(
+    rpc_url: &str,
+    signature_str: &str,
+    wallet: &Pubkey,
+    mint: &Pubkey,
+    fallback_tokens: u64,
+) -> u64 {
+    let rpc_url_owned = rpc_url.to_string();
+    let sig_owned = signature_str.to_string();
+    let wallet_str = wallet.to_string();
+    let mint_str = mint.to_string();
+    let wallet_pk = *wallet;
             fail_or_placeholder!("Failed to fetch pool account in Live mode");
         };
         let Ok(mut pool_state) =
