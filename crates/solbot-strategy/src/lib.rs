@@ -1,4 +1,5 @@
 pub mod actor;
+pub mod alpha_layer;
 pub mod circuit_breaker;
 pub mod exit;
 pub mod observability;
