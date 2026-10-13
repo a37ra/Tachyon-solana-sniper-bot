@@ -410,3 +410,10 @@ mod tests {
             fresh_wallet_ratio: 0.20,
             concentration_multiplier: None,
             dev_history_score: None,
+        };
+        assert!(matches!(
+            evaluate_alpha_gate(&metrics, CapitalTier::Micro, &cfg),
+            AlphaVerdict::Reject { .. }
+        ));
+
+        metrics.bundler_pct = 0.10;
