@@ -397,3 +397,10 @@ mod tests {
     fn test_breakeven_p_star_example_from_docs() {
         // Docs §4: L=0.65, delta=0.05 -> p* = 0.05 / (0.65 + 0.05) = 0.05 / 0.70 = 0.07142857
         let p_star = compute_breakeven_p_star(0.05, 0.65);
+        assert!((p_star - (0.05 / 0.70)).abs() < 1e-6, "got {p_star}");
+    }
+
+    #[test]
+    fn test_hard_block_on_bundler_and_dev_history() {
+        let cfg = AlphaConfig::default();
+        let mut metrics = AlphaMetrics {
