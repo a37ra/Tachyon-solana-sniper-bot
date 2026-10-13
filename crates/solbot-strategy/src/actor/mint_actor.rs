@@ -510,21 +510,26 @@ pub fn compute_pool_spot_price_sol(
     if dex_program_id == pump_fun_builder::PUMP_FUN_PROGRAM.to_string() {
         let curve = pump_fun_builder::PumpFunBondingCurve::from_account_data(
             data,
-    };
-
-    let rpc_url = match rpc_url.clone() {
-        Some(url) => url,
-        None => {
-            if trading_mode == TradingMode::Live {
-                tracing::error!("No RPC client in Live mode");
-                bail!("No RPC client in Live mode");
-            }
-            tracing::warn!("No RPC client, using placeholder swap instructions (Paper mode)");
-            return Ok(create_placeholder_swap_instructions());
+            pool_pubkey,
+            mint_pubkey,
+        )
+        .ok()?;
+        let out_tokens = curve.calculate_buy_output(10_000_000); // 0.01 SOL probe
+        if out_tokens > 0 {
+            return Some(0.01 / (out_tokens as f64 / 1_000_000.0));
         }
-    };
+    }
+    None
+}
 
-    // Prefer WS/Geyser raw pool bytes (0 RTT); else RPC get_account.
+/// Fetch live spot price in SOL per token across all supported DEXes (Pump.fun, Raydium AMM v4,
+/// Raydium CPMM, Meteora DLMM, Meteora DAMM v2) using a single batch RPC vault lookup when needed.
+pub async fn fetch_pool_spot_price_sol(
+    rpc: &solana_rpc_client::nonblocking::rpc_client::RpcClient,
+    dex_program_id: &str,
+    pool_pubkey: &Pubkey,
+    mint_pubkey: &Pubkey,
+    pool_data: &[u8],
     macro_rules! fetch_account_data {
         ($pk:expr) => {{
             if let Some(ref d) = preloaded_pool_data {
