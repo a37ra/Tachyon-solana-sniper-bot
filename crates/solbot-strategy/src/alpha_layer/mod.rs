@@ -417,3 +417,9 @@ mod tests {
         ));
 
         metrics.bundler_pct = 0.10;
+        metrics.dev_history_score = Some(0.60); // > 0.50 block threshold
+        assert!(matches!(
+            evaluate_alpha_gate(&metrics, CapitalTier::Micro, &cfg),
+            AlphaVerdict::Reject { .. }
+        ));
+    }
