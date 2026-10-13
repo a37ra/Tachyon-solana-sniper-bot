@@ -630,22 +630,26 @@ pub async fn reconcile_post_buy_balance(
                             .iter()
                             .filter(|b| {
                                 b.mint == mint_str
-        let expected_out = match direction {
-            SwapDirection::Buy => pool_state.calculate_buy_output(amount_in_lamports),
-            SwapDirection::Sell => pool_state.calculate_sell_output(amount_in_lamports),
-        };
-        ensure_nonzero_output(expected_out, "Raydium AMM v4", dir_label)?;
-        let minimum_amount_out = apply_slippage(expected_out, slippage_bps);
-        let swap_params = SwapParams {
-            mint: mint_pubkey,
-            pool_address: pool_pubkey,
-            dex_program_id: dex_program_pubkey,
-            wallet,
-            direction,
-            amount_in: amount_in_lamports,
-            minimum_amount_out,
-            slippage_bps,
-        };
+                                    && matches!(&b.owner, OptionSerializer::Some(o) if o == &wallet_str)
+                            })
+                            .filter_map(|b| b.ui_token_amount.amount.parse::<u64>().ok())
+                            .sum(),
+                        _ => 0,
+                    };
+                    let post_amt: u64 = match meta.post_token_balances {
+                        OptionSerializer::Some(ref list) => list
+                            .iter()
+                            .filter(|b| {
+                                b.mint == mint_str
+                                    && matches!(&b.owner, OptionSerializer::Some(o) if o == &wallet_str)
+                            })
+                            .filter_map(|b| b.ui_token_amount.amount.parse::<u64>().ok())
+                            .sum(),
+                        _ => 0,
+                    };
+                    if post_amt > pre_amt {
+                        return Some(post_amt - pre_amt);
+                    }
         return raydium_amm_v4_builder::build_swap(&swap_params, &pool_state)
             .map_err(|e| anyhow!("Tx builder error: {}", e));
     }
