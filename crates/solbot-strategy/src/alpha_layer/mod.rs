@@ -436,3 +436,10 @@ mod tests {
                 size_multiplier,
                 ..
             } => {
+                assert!((alpha_risk_score - 0.07).abs() < 1e-6);
+                assert!((size_multiplier - 0.93).abs() < 1e-6);
+            }
+            other => panic!("expected Accept, got {other:?}"),
+        }
+    }
+}
