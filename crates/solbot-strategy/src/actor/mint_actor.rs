@@ -689,22 +689,26 @@ async fn fetch_and_build_dex_swap(
     trading_mode: TradingMode,
     dex_program_id: &str,
     wallet: Pubkey,
-            wallet,
-            direction,
-            amount_in: amount_in_lamports,
-            minimum_amount_out,
-            slippage_bps,
-        };
-        return raydium_cpmm_builder::build_swap(&swap_params, &pool_state)
-            .map_err(|e| anyhow!("Tx builder error: {}", e));
-    }
+    mint_pubkey: Pubkey,
+    pool_pubkey: Pubkey,
+    dex_program_pubkey: Pubkey,
+    amount_in_lamports: u64,
+    direction: SwapDirection,
+    slippage_bps: u32,
+    preloaded_pool_data: Option<Vec<u8>>,
+) -> Result<(tx_builder::SwapInstructions, u64)> {
+    let dir_label = match direction {
+        SwapDirection::Buy => "buy",
+        SwapDirection::Sell => "sell",
+    };
 
-    if dex_program_id == DLMM_MAINNET
-        || dex_program_id == DLMM_LEGACY
-        || dex_program_id == meteora_dlmm_builder::METEORA_DLMM_PROGRAM.to_string()
-    {
-        let Some(data) = fetch_account_data!(pool_pubkey) else {
-            fail_or_placeholder!("Failed to fetch pool account in Live mode");
+    let rpc_url = match rpc_url.clone() {
+        Some(url) => url,
+        None => {
+            if trading_mode == TradingMode::Live {
+                tracing::error!("No RPC client in Live mode");
+                bail!("No RPC client in Live mode");
+            }
         };
         let Ok(mut pool_state) =
             meteora_dlmm_builder::DlmmPoolState::from_account_data(&data, &pool_pubkey)
