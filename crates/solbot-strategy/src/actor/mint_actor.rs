@@ -669,21 +669,26 @@ pub async fn reconcile_post_buy_balance(
             &tx_builder::ata::TOKEN_2022_PROGRAM_ID,
         );
         if let Ok(bal) = rpc.get_token_account_balance(&t22_ata) {
-            "Raydium CPMM",
-        )
-        .await?;
-        pool_state = pool_state.with_vault_balances(vault_balances.0, vault_balances.1);
+            if let Ok(raw) = bal.amount.parse::<u64>() {
+                if raw > 0 {
+                    return Some(raw);
+                }
+            }
+        }
+        None
+    })
+    .await
+    .ok()
+    .flatten();
 
-        let expected_out = match direction {
-            SwapDirection::Buy => pool_state.calculate_buy_output(amount_in_lamports),
-            SwapDirection::Sell => pool_state.calculate_sell_output(amount_in_lamports),
-        };
-        ensure_nonzero_output(expected_out, "Raydium CPMM", dir_label)?;
-        let minimum_amount_out = apply_slippage(expected_out, slippage_bps);
-        let swap_params = SwapParams {
-            mint: mint_pubkey,
-            pool_address: pool_pubkey,
-            dex_program_id: dex_program_pubkey,
+    reconciled.unwrap_or(fallback_tokens)
+}
+
+async fn fetch_and_build_dex_swap(
+    rpc_url: &Option<String>,
+    trading_mode: TradingMode,
+    dex_program_id: &str,
+    wallet: Pubkey,
             wallet,
             direction,
             amount_in: amount_in_lamports,
