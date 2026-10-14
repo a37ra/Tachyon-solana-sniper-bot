@@ -749,21 +749,26 @@ async fn fetch_and_build_dex_swap(
         let Some(data) = fetch_account_data!(pool_pubkey) else {
             fail_or_placeholder!("Failed to fetch pool account in Live mode");
         };
-            .map_err(|e| anyhow!("Tx builder error: {}", e));
-    }
+        let Ok(curve) = pump_fun_builder::PumpFunBondingCurve::from_account_data(
+            &data,
+            &pool_pubkey,
+            &mint_pubkey,
+        ) else {
+            fail_or_placeholder!("Failed to parse Pump.fun bonding curve in Live mode");
+        };
 
-    if dex_program_id == raydium_clmm_builder::RAYDIUM_CLMM_PROGRAM.to_string() {
-        let Some(data) = fetch_account_data!(pool_pubkey) else {
-            fail_or_placeholder!("Failed to fetch pool account in Live mode");
+        let expected_out = match direction {
+            SwapDirection::Buy => curve.calculate_buy_output(amount_in_lamports),
+            SwapDirection::Sell => curve.calculate_sell_output(amount_in_lamports),
         };
-        let Ok(pool_state) = raydium_clmm_builder::ClmmPoolState::from_account_data(&data) else {
-            fail_or_placeholder!("Failed to parse Raydium CLMM pool state in Live mode");
-        };
+        let minimum_amount_out = apply_slippage(expected_out, slippage_bps);
         let swap_params = SwapParams {
             mint: mint_pubkey,
             pool_address: pool_pubkey,
             dex_program_id: dex_program_pubkey,
             wallet,
+            direction,
+            amount_in: amount_in_lamports,
             direction,
             amount_in: amount_in_lamports,
             minimum_amount_out: 1,
