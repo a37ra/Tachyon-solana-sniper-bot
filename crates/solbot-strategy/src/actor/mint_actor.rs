@@ -709,22 +709,26 @@ async fn fetch_and_build_dex_swap(
                 tracing::error!("No RPC client in Live mode");
                 bail!("No RPC client in Live mode");
             }
-        };
-        let Ok(mut pool_state) =
-            meteora_dlmm_builder::DlmmPoolState::from_account_data(&data, &pool_pubkey)
-        else {
-            fail_or_placeholder!("Failed to parse Meteora DLMM pool state in Live mode");
-        };
-        let vault_balances = fetch_vault_balances(
-            rpc_url.clone(),
-            pool_state.reserve_x,
-            pool_state.reserve_y,
-            "Meteora DLMM",
-        )
-        .await?;
-        pool_state = pool_state.with_vault_balances(vault_balances.0, vault_balances.1);
+            tracing::warn!("No RPC client, using placeholder swap instructions (Paper mode)");
+            return Ok((create_placeholder_swap_instructions(), 0));
+        }
+    };
 
-        let expected_out = match direction {
+    // Prefer WS/Geyser raw pool bytes (0 RTT); else RPC get_account.
+    macro_rules! fetch_account_data {
+        ($pk:expr) => {{
+            if let Some(ref d) = preloaded_pool_data {
+                Some(d.clone())
+            } else {
+                let rpc_url = rpc_url.clone();
+                let pk = $pk;
+                tokio::task::spawn_blocking(move || {
+                    let rpc = RpcClient::new(rpc_url);
+                    rpc.get_account(&pk).map(|a| a.data)
+                })
+                .await
+                .ok()
+                .and_then(|r| r.ok())
             SwapDirection::Buy => pool_state.calculate_buy_output(amount_in_lamports),
             SwapDirection::Sell => pool_state.calculate_sell_output(amount_in_lamports),
         };
