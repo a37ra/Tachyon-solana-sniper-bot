@@ -729,22 +729,26 @@ async fn fetch_and_build_dex_swap(
                 .await
                 .ok()
                 .and_then(|r| r.ok())
-            SwapDirection::Buy => pool_state.calculate_buy_output(amount_in_lamports),
-            SwapDirection::Sell => pool_state.calculate_sell_output(amount_in_lamports),
+            }
+        }};
+    }
+
+    // Unified handling for "account not found" / "parse failed" - error in Live, warning + placeholder in Paper
+    macro_rules! fail_or_placeholder {
+        ($msg:literal) => {{
+            if trading_mode == TradingMode::Live {
+                tracing::error!($msg);
+                bail!($msg);
+            }
+            tracing::warn!(concat!($msg, ", using placeholder (Paper mode)"));
+            return Ok((create_placeholder_swap_instructions(), 0));
+        }};
+    }
+
+    if dex_program_id == pump_fun_builder::PUMP_FUN_PROGRAM.to_string() {
+        let Some(data) = fetch_account_data!(pool_pubkey) else {
+            fail_or_placeholder!("Failed to fetch pool account in Live mode");
         };
-        ensure_nonzero_output(expected_out, "Meteora DLMM", dir_label)?;
-        let minimum_amount_out = apply_slippage(expected_out, slippage_bps);
-        let swap_params = SwapParams {
-            mint: mint_pubkey,
-            pool_address: pool_pubkey,
-            dex_program_id: dex_program_pubkey,
-            wallet,
-            direction,
-            amount_in: amount_in_lamports,
-            minimum_amount_out,
-            slippage_bps,
-        };
-        return meteora_dlmm_builder::build_swap(&swap_params, &pool_state)
             .map_err(|e| anyhow!("Tx builder error: {}", e));
     }
 
