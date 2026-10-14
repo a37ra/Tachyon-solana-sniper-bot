@@ -650,22 +650,25 @@ pub async fn reconcile_post_buy_balance(
                     if post_amt > pre_amt {
                         return Some(post_amt - pre_amt);
                     }
-        return raydium_amm_v4_builder::build_swap(&swap_params, &pool_state)
-            .map_err(|e| anyhow!("Tx builder error: {}", e));
-    }
+                }
+            }
+        }
 
-    if dex_program_id == raydium_cpmm_builder::RAYDIUM_CPMM_PROGRAM.to_string() {
-        let Some(data) = fetch_account_data!(pool_pubkey) else {
-            fail_or_placeholder!("Failed to fetch pool account in Live mode");
-        };
-        let Ok(mut pool_state) = raydium_cpmm_builder::CpmmPoolState::from_account_data(&data)
-        else {
-            fail_or_placeholder!("Failed to parse Raydium CPMM pool state in Live mode");
-        };
-        let vault_balances = fetch_vault_balances(
-            rpc_url.clone(),
-            pool_state.token_0_vault,
-            pool_state.token_1_vault,
+        // 2. Fallback: query SPL Token ATA or Token-2022 ATA balance directly
+        let spl_ata = tx_builder::ata::derive_ata(&wallet_pk, &mint_pk);
+        if let Ok(bal) = rpc.get_token_account_balance(&spl_ata) {
+            if let Ok(raw) = bal.amount.parse::<u64>() {
+                if raw > 0 {
+                    return Some(raw);
+                }
+            }
+        }
+        let t22_ata = tx_builder::ata::derive_ata_with_program(
+            &wallet_pk,
+            &mint_pk,
+            &tx_builder::ata::TOKEN_2022_PROGRAM_ID,
+        );
+        if let Ok(bal) = rpc.get_token_account_balance(&t22_ata) {
             "Raydium CPMM",
         )
         .await?;
