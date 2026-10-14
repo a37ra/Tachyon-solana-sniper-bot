@@ -769,22 +769,26 @@ async fn fetch_and_build_dex_swap(
             wallet,
             direction,
             amount_in: amount_in_lamports,
-            direction,
-            amount_in: amount_in_lamports,
-            minimum_amount_out: 1,
+            minimum_amount_out,
             slippage_bps,
         };
-        return raydium_clmm_builder::build_swap(&swap_params, &pool_state, &pool_pubkey, None)
+        return pump_fun_builder::build_swap(&swap_params, &curve)
+            .map(|ixs| (ixs, expected_out))
             .map_err(|e| anyhow!("Tx builder error: {}", e));
     }
 
-    if dex_program_id == DAMM_V2
-        || dex_program_id == meteora_damm_v2_builder::METEORA_DAMM_V2_PROGRAM.to_string()
-    {
+    if dex_program_id == raydium_amm_v4_builder::RAYDIUM_AMM_V4_PROGRAM.to_string() {
         let Some(data) = fetch_account_data!(pool_pubkey) else {
             fail_or_placeholder!("Failed to fetch pool account in Live mode");
         };
         let Ok(mut pool_state) =
+            raydium_amm_v4_builder::RaydiumAmmV4PoolState::from_account_data(&data)
+        else {
+            fail_or_placeholder!("Failed to parse Raydium AMM v4 pool state in Live mode");
+        };
+        pool_state = pool_state.with_amm_id(pool_pubkey);
+        let (vault_a, vault_b) = pool_state.active_vaults();
+        let vault_balances = fetch_vault_balances(
             meteora_damm_v2_builder::DammV2PoolState::from_account_data(&data, &pool_pubkey)
         else {
             fail_or_placeholder!("Failed to parse DAMM v2 pool state in Live mode");
