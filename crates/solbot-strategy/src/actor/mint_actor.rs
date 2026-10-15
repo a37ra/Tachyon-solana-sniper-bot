@@ -789,22 +789,26 @@ async fn fetch_and_build_dex_swap(
         pool_state = pool_state.with_amm_id(pool_pubkey);
         let (vault_a, vault_b) = pool_state.active_vaults();
         let vault_balances = fetch_vault_balances(
-            meteora_damm_v2_builder::DammV2PoolState::from_account_data(&data, &pool_pubkey)
-        else {
-            fail_or_placeholder!("Failed to parse DAMM v2 pool state in Live mode");
-        };
-        let vault_balances = fetch_vault_balances(
             rpc_url.clone(),
-            pool_state.token_a_vault,
-            pool_state.token_b_vault,
-            "Meteora DAMM v2",
+            vault_a,
+            vault_b,
+            "Raydium AMM v4",
         )
         .await?;
         pool_state = pool_state.with_vault_balances(vault_balances.0, vault_balances.1);
+
         let expected_out = match direction {
             SwapDirection::Buy => pool_state.calculate_buy_output(amount_in_lamports),
             SwapDirection::Sell => pool_state.calculate_sell_output(amount_in_lamports),
         };
+        ensure_nonzero_output(expected_out, "Raydium AMM v4", dir_label)?;
+        let minimum_amount_out = apply_slippage(expected_out, slippage_bps);
+        let swap_params = SwapParams {
+            mint: mint_pubkey,
+            pool_address: pool_pubkey,
+            dex_program_id: dex_program_pubkey,
+            wallet,
+            direction,
         ensure_nonzero_output(expected_out, "Meteora DAMM v2", dir_label)?;
         let minimum_amount_out = apply_slippage(expected_out, slippage_bps);
         let swap_params = SwapParams {
