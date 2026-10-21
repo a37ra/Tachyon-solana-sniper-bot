@@ -849,22 +849,26 @@ async fn fetch_and_build_dex_swap(
             direction,
             amount_in: amount_in_lamports,
             minimum_amount_out,
-    trading_mode: TradingMode,
-) -> Result<Hash> {
-    if let Some(rpc_url) = rpc_url {
-        let rpc_url_clone = rpc_url.clone();
-        let result = tokio::task::spawn_blocking(move || {
-            let rpc = RpcClient::new(rpc_url_clone);
-            rpc.get_latest_blockhash()
-        })
-        .await
-        .map_err(|e| anyhow!("Recent blockhash fetch task failed: {}", e))??;
+            slippage_bps,
+        };
+        return raydium_cpmm_builder::build_swap(&swap_params, &pool_state)
+            .map(|ixs| (ixs, expected_out))
+            .map_err(|e| anyhow!("Tx builder error: {}", e));
+    }
 
-        Ok(result)
-    } else if trading_mode == TradingMode::Live {
-        Err(anyhow!(
-            "Missing RPC URL in Live mode while fetching recent blockhash"
-        ))
+    if dex_program_id == DLMM_MAINNET
+        || dex_program_id == DLMM_LEGACY
+        || dex_program_id == meteora_dlmm_builder::METEORA_DLMM_PROGRAM.to_string()
+    {
+        let Some(data) = fetch_account_data!(pool_pubkey) else {
+            fail_or_placeholder!("Failed to fetch pool account in Live mode");
+        };
+        let Ok(mut pool_state) =
+            meteora_dlmm_builder::DlmmPoolState::from_account_data(&data, &pool_pubkey)
+        else {
+            fail_or_placeholder!("Failed to parse Meteora DLMM pool state in Live mode");
+        };
+        let vault_balances = fetch_vault_balances(
     } else {
         Ok(Hash::new_unique())
     }
