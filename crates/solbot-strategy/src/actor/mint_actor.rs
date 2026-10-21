@@ -829,21 +829,26 @@ async fn fetch_and_build_dex_swap(
         let vault_balances = fetch_vault_balances(
             rpc_url.clone(),
             pool_state.token_0_vault,
-    if trading_mode == TradingMode::Live {
-        tracing::error!("Unsupported DEX {} in Live mode", dex_program_id);
-        bail!("Unsupported DEX {} in Live mode", dex_program_id);
-    }
-    tracing::warn!(
-        "Unsupported DEX {}, using placeholder (Paper mode)",
-        dex_program_id
-    );
-    Ok(create_placeholder_swap_instructions())
-}
+            pool_state.token_1_vault,
+            "Raydium CPMM",
+        )
+        .await?;
+        pool_state = pool_state.with_vault_balances(vault_balances.0, vault_balances.1);
 
-/// Fetch recent blockhash, or use random placeholder if RPC is not set.
-/// This unified function replaces duplicated code in buy and exit pipelines.
-async fn fetch_recent_blockhash(
-    rpc_url: &Option<String>,
+        let expected_out = match direction {
+            SwapDirection::Buy => pool_state.calculate_buy_output(amount_in_lamports),
+            SwapDirection::Sell => pool_state.calculate_sell_output(amount_in_lamports),
+        };
+        ensure_nonzero_output(expected_out, "Raydium CPMM", dir_label)?;
+        let minimum_amount_out = apply_slippage(expected_out, slippage_bps);
+        let swap_params = SwapParams {
+            mint: mint_pubkey,
+            pool_address: pool_pubkey,
+            dex_program_id: dex_program_pubkey,
+            wallet,
+            direction,
+            amount_in: amount_in_lamports,
+            minimum_amount_out,
     trading_mode: TradingMode,
 ) -> Result<Hash> {
     if let Some(rpc_url) = rpc_url {
