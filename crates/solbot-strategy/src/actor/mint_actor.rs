@@ -809,22 +809,26 @@ async fn fetch_and_build_dex_swap(
             dex_program_id: dex_program_pubkey,
             wallet,
             direction,
-        ensure_nonzero_output(expected_out, "Meteora DAMM v2", dir_label)?;
-        let minimum_amount_out = apply_slippage(expected_out, slippage_bps);
-        let swap_params = SwapParams {
-            mint: mint_pubkey,
-            pool_address: pool_pubkey,
-            dex_program_id: dex_program_pubkey,
-            wallet,
-            direction,
             amount_in: amount_in_lamports,
             minimum_amount_out,
             slippage_bps,
         };
-        return meteora_damm_v2_builder::build_swap(&swap_params, &pool_state)
+        return raydium_amm_v4_builder::build_swap(&swap_params, &pool_state)
+            .map(|ixs| (ixs, expected_out))
             .map_err(|e| anyhow!("Tx builder error: {}", e));
     }
 
+    if dex_program_id == raydium_cpmm_builder::RAYDIUM_CPMM_PROGRAM.to_string() {
+        let Some(data) = fetch_account_data!(pool_pubkey) else {
+            fail_or_placeholder!("Failed to fetch pool account in Live mode");
+        };
+        let Ok(mut pool_state) = raydium_cpmm_builder::CpmmPoolState::from_account_data(&data)
+        else {
+            fail_or_placeholder!("Failed to parse Raydium CPMM pool state in Live mode");
+        };
+        let vault_balances = fetch_vault_balances(
+            rpc_url.clone(),
+            pool_state.token_0_vault,
     if trading_mode == TradingMode::Live {
         tracing::error!("Unsupported DEX {} in Live mode", dex_program_id);
         bail!("Unsupported DEX {} in Live mode", dex_program_id);
