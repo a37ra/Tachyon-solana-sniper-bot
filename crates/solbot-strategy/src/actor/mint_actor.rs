@@ -969,21 +969,25 @@ async fn fetch_and_build_dex_swap(
         dex_program_id
     );
     Ok((create_placeholder_swap_instructions(), 0))
-    assert_signal_still_fresh(ctx, "buy_pipeline_entry")?;
+}
 
-    // Step 1: Risk gate checks with timeout controlled by RiskGateConfig
-    let signal = Signal {
-        mint: ctx.mint.clone(),
-        pool_address: ctx.pool_address.clone(),
-        dex_program: ctx.dex_program_id.clone(),
-        signal_source: "actor".to_string(),
-        slot: ctx.last_signal_slot,
-        received_at: if ctx.last_signal_received_at > 0 {
-            ctx.last_signal_received_at
-        } else {
-            chrono::Utc::now().timestamp_millis() as u64
-        },
-        raw_pool_account_data: ctx.raw_pool_account_data.clone(),
+/// Fetch recent blockhash, or use random placeholder if RPC is not set.
+/// This unified function replaces duplicated code in buy and exit pipelines.
+async fn fetch_recent_blockhash(
+    rpc_url: &Option<String>,
+    trading_mode: TradingMode,
+) -> Result<Hash> {
+    if let Some(rpc_url) = rpc_url {
+        let rpc_url_clone = rpc_url.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            let rpc = RpcClient::new(rpc_url_clone);
+            rpc.get_latest_blockhash()
+        })
+        .await
+        .map_err(|e| anyhow!("Recent blockhash fetch task failed: {}", e))??;
+
+        Ok(result)
+    } else if trading_mode == TradingMode::Live {
         raw_pool_account_owner: ctx.raw_pool_account_owner.clone(),
     };
 
