@@ -949,22 +949,26 @@ async fn fetch_and_build_dex_swap(
             mint: mint_pubkey,
             pool_address: pool_pubkey,
             dex_program_id: dex_program_pubkey,
-        .in_scope(|| MetricsRegistry::global().record_alpha_gate(0.0));
-
-    // Check DEX readiness for Live mode
-    check_dex_readiness(&ctx.dex_program_id, &ctx.dex_readiness, ctx.trading_mode)?;
-
-    // Fail-closed: ensure critical components are present in Live mode
-    if ctx.trading_mode == TradingMode::Live {
-        if ctx.signer_client.is_none() {
-            bail!("No signer_client configured in Live mode — refusing to trade");
-        }
-        if ctx.router.is_none() {
-            bail!("No router configured in Live mode — refusing to trade");
-        }
+            wallet,
+            direction,
+            amount_in: amount_in_lamports,
+            minimum_amount_out,
+            slippage_bps,
+        };
+        return meteora_damm_v2_builder::build_swap(&swap_params, &pool_state)
+            .map(|ixs| (ixs, expected_out))
+            .map_err(|e| anyhow!("Tx builder error: {}", e));
     }
 
-    // Freshness at pipeline entry (queue wait + prior processing).
+    if trading_mode == TradingMode::Live {
+        tracing::error!("Unsupported DEX {} in Live mode", dex_program_id);
+        bail!("Unsupported DEX {} in Live mode", dex_program_id);
+    }
+    tracing::warn!(
+        "Unsupported DEX {}, using placeholder (Paper mode)",
+        dex_program_id
+    );
+    Ok((create_placeholder_swap_instructions(), 0))
     assert_signal_still_fresh(ctx, "buy_pipeline_entry")?;
 
     // Step 1: Risk gate checks with timeout controlled by RiskGateConfig
