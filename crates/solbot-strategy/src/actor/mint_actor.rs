@@ -909,21 +909,26 @@ async fn fetch_and_build_dex_swap(
             mint: mint_pubkey,
             pool_address: pool_pubkey,
             dex_program_id: dex_program_pubkey,
-        phase,
-        age_ms,
-        max_age_ms,
-        "Signal freshness OK"
-    );
-    Ok(())
-}
+            wallet,
+            direction,
+            amount_in: amount_in_lamports,
+            minimum_amount_out: 1,
+            slippage_bps,
+        };
+        return raydium_clmm_builder::build_swap(&swap_params, &pool_state, &pool_pubkey, None)
+            .map(|ixs| (ixs, 1))
+            .map_err(|e| anyhow!("Tx builder error: {}", e));
+    }
 
-/// Run `submit` only if pre-submit freshness passes. Used by buy pipeline and tests.
-pub fn submit_if_fresh<F, T>(ctx: &ActorContext, submit: F) -> Result<T>
-where
-    F: FnOnce() -> Result<T>,
-{
-    assert_signal_still_fresh(ctx, "pre_submit_buy")?;
-    submit()
+    if dex_program_id == DAMM_V2
+        || dex_program_id == meteora_damm_v2_builder::METEORA_DAMM_V2_PROGRAM.to_string()
+    {
+        let Some(data) = fetch_account_data!(pool_pubkey) else {
+            fail_or_placeholder!("Failed to fetch pool account in Live mode");
+        };
+        let Ok(mut pool_state) =
+            meteora_damm_v2_builder::DammV2PoolState::from_account_data(&data, &pool_pubkey)
+        else {
 }
 
 /// Execute the buy pipeline: Risk Gate → Sizing → Tx Builder → Signer → Router.
