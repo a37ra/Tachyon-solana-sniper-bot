@@ -988,22 +988,26 @@ async fn fetch_recent_blockhash(
 
         Ok(result)
     } else if trading_mode == TradingMode::Live {
-        raw_pool_account_owner: ctx.raw_pool_account_owner.clone(),
-    };
-
-    // Step 0.5: Smart Money pre-buy check (TZ §2.5) — before risk_gate.
-    // Determines entry policy (tag_only / soft_boost / hard_gate).
-    // Never weakens risk_gate hard checks.
-    let smart_money_hit = if let Some(ref repo) = ctx.smart_money_hits_repo {
-        repo.has_hit_for_mint(&ctx.mint).await.unwrap_or(false)
+        Err(anyhow!(
+            "Missing RPC URL in Live mode while fetching recent blockhash"
+        ))
     } else {
-        false
-    };
+        Ok(Hash::new_unique())
+    }
+}
 
-    let closed_positions_sample = if let Some(ref repo) = ctx.positions_repo {
-        repo.count_closed_positions().await.unwrap_or(0) as u32
-    } else {
-        0
+/// Reject buy if the originating signal is older than max_signal_age_ms.
+///
+/// Age is recomputed from wall-clock at **each** call (`chrono::Utc::now`), so the
+/// pre-submit check is not a replay of the entry check — it catches time spent in
+/// risk-gate / sizing / sign. Intentional: with public 4s budgets + max_age 500ms
+/// the bot will structurally reject buys (prefer no trade over stale execution).
+pub fn assert_signal_still_fresh(ctx: &ActorContext, phase: &str) -> Result<()> {
+    let max_age_ms = ctx.risk_gate_config.max_signal_age_ms;
+    if max_age_ms == 0 || ctx.last_signal_received_at == 0 {
+        return Ok(());
+    }
+    let now_ms = chrono::Utc::now().timestamp_millis() as u64;
     };
 
     let entry_decision = smart_money::apply_entry_policy(
