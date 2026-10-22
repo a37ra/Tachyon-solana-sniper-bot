@@ -1028,22 +1028,26 @@ pub fn assert_signal_still_fresh(ctx: &ActorContext, phase: &str) -> Result<()> 
         max_age_ms,
         "Signal freshness OK"
     );
-                    %reason,
-                    "Smart money hard_gate blocked entry"
-                );
-                return Err(anyhow!("Smart money hard_gate: {}", reason));
-            }
-            1.0 // unreachable but safe
-        }
-    };
+    Ok(())
+}
 
-    let risk_gate_span = tracing::info_span!("risk_gate", mint = %ctx.mint);
-    let risk_start = std::time::Instant::now();
-    let risk_result = risk_gate::run_pre_buy_checks_with_timeout(&signal, &ctx.risk_gate_config)
-        .instrument(risk_gate_span)
-        .await;
-    let risk_latency_ms = risk_start.elapsed().as_secs_f64() * 1000.0;
-    tracing::info!(risk_latency_ms = format!("{:.2}", risk_latency_ms), "◀ Risk gate completed");
+/// Run `submit` only if pre-submit freshness passes. Used by buy pipeline and tests.
+pub fn submit_if_fresh<F, T>(ctx: &ActorContext, submit: F) -> Result<T>
+where
+    F: FnOnce() -> Result<T>,
+{
+    assert_signal_still_fresh(ctx, "pre_submit_buy")?;
+    submit()
+}
+
+/// Execute the buy pipeline: Risk Gate → Sizing → Tx Builder → Signer → Router.
+pub async fn execute_buy_pipeline(
+    ctx: &mut ActorContext,
+    entry_price_sol: f64,
+) -> Result<Position> {
+    let pipeline_start = std::time::Instant::now();
+    tracing::info!(mint = %ctx.mint, "▶ Buy pipeline started");
+    tracing::info!("Starting buy pipeline for mint {}", ctx.mint);
 
     match risk_result {
         risk_gate::RiskGateVerdict::Accept => {
