@@ -869,22 +869,26 @@ async fn fetch_and_build_dex_swap(
             fail_or_placeholder!("Failed to parse Meteora DLMM pool state in Live mode");
         };
         let vault_balances = fetch_vault_balances(
-    } else {
-        Ok(Hash::new_unique())
-    }
-}
+            rpc_url.clone(),
+            pool_state.reserve_x,
+            pool_state.reserve_y,
+            "Meteora DLMM",
+        )
+        .await?;
+        pool_state = pool_state.with_vault_balances(vault_balances.0, vault_balances.1);
 
-/// Reject buy if the originating signal is older than max_signal_age_ms.
-///
-/// Age is recomputed from wall-clock at **each** call (`chrono::Utc::now`), so the
-/// pre-submit check is not a replay of the entry check — it catches time spent in
-/// risk-gate / sizing / sign. Intentional: with public 4s budgets + max_age 500ms
-/// the bot will structurally reject buys (prefer no trade over stale execution).
-pub fn assert_signal_still_fresh(ctx: &ActorContext, phase: &str) -> Result<()> {
-    let max_age_ms = ctx.risk_gate_config.max_signal_age_ms;
-    if max_age_ms == 0 || ctx.last_signal_received_at == 0 {
-        return Ok(());
-    }
+        let expected_out = match direction {
+            SwapDirection::Buy => pool_state.calculate_buy_output(amount_in_lamports),
+            SwapDirection::Sell => pool_state.calculate_sell_output(amount_in_lamports),
+        };
+        ensure_nonzero_output(expected_out, "Meteora DLMM", dir_label)?;
+        let minimum_amount_out = apply_slippage(expected_out, slippage_bps);
+        let swap_params = SwapParams {
+            mint: mint_pubkey,
+            pool_address: pool_pubkey,
+            dex_program_id: dex_program_pubkey,
+            wallet,
+            direction,
     let now_ms = chrono::Utc::now().timestamp_millis() as u64;
     if now_ms < ctx.last_signal_received_at {
         return Ok(());
