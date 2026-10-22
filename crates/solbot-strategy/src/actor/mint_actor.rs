@@ -889,22 +889,26 @@ async fn fetch_and_build_dex_swap(
             dex_program_id: dex_program_pubkey,
             wallet,
             direction,
-    let now_ms = chrono::Utc::now().timestamp_millis() as u64;
-    if now_ms < ctx.last_signal_received_at {
-        return Ok(());
+            amount_in: amount_in_lamports,
+            minimum_amount_out,
+            slippage_bps,
+        };
+        return meteora_dlmm_builder::build_swap(&swap_params, &pool_state)
+            .map(|ixs| (ixs, expected_out))
+            .map_err(|e| anyhow!("Tx builder error: {}", e));
     }
-    let age_ms = now_ms - ctx.last_signal_received_at;
-    if age_ms > max_age_ms {
-        bail!(
-            "Stale signal at {} for mint {}: age_ms={} > max_signal_age_ms={} — aborting buy",
-            phase,
-            ctx.mint,
-            age_ms,
-            max_age_ms
-        );
-    }
-    tracing::debug!(
-        mint = %ctx.mint,
+
+    if dex_program_id == raydium_clmm_builder::RAYDIUM_CLMM_PROGRAM.to_string() {
+        let Some(data) = fetch_account_data!(pool_pubkey) else {
+            fail_or_placeholder!("Failed to fetch pool account in Live mode");
+        };
+        let Ok(pool_state) = raydium_clmm_builder::ClmmPoolState::from_account_data(&data) else {
+            fail_or_placeholder!("Failed to parse Raydium CLMM pool state in Live mode");
+        };
+        let swap_params = SwapParams {
+            mint: mint_pubkey,
+            pool_address: pool_pubkey,
+            dex_program_id: dex_program_pubkey,
         phase,
         age_ms,
         max_age_ms,
