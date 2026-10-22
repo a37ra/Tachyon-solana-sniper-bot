@@ -929,22 +929,26 @@ async fn fetch_and_build_dex_swap(
         let Ok(mut pool_state) =
             meteora_damm_v2_builder::DammV2PoolState::from_account_data(&data, &pool_pubkey)
         else {
-}
-
-/// Execute the buy pipeline: Risk Gate → Sizing → Tx Builder → Signer → Router.
-pub async fn execute_buy_pipeline(
-    ctx: &mut ActorContext,
-    entry_price_sol: f64,
-) -> Result<Position> {
-    let pipeline_start = std::time::Instant::now();
-    tracing::info!(mint = %ctx.mint, "▶ Buy pipeline started");
-    tracing::info!("Starting buy pipeline for mint {}", ctx.mint);
-    
-    tracing::info_span!("signal_received", mint = %ctx.mint)
-        .in_scope(|| MetricsRegistry::global().record_signal_received());
-
-    // Reserved Alpha Layer gate span & metric (Stage 14 placeholder)
-    tracing::info_span!("alpha_gate", mint = %ctx.mint)
+            fail_or_placeholder!("Failed to parse DAMM v2 pool state in Live mode");
+        };
+        let vault_balances = fetch_vault_balances(
+            rpc_url.clone(),
+            pool_state.token_a_vault,
+            pool_state.token_b_vault,
+            "Meteora DAMM v2",
+        )
+        .await?;
+        pool_state = pool_state.with_vault_balances(vault_balances.0, vault_balances.1);
+        let expected_out = match direction {
+            SwapDirection::Buy => pool_state.calculate_buy_output(amount_in_lamports),
+            SwapDirection::Sell => pool_state.calculate_sell_output(amount_in_lamports),
+        };
+        ensure_nonzero_output(expected_out, "Meteora DAMM v2", dir_label)?;
+        let minimum_amount_out = apply_slippage(expected_out, slippage_bps);
+        let swap_params = SwapParams {
+            mint: mint_pubkey,
+            pool_address: pool_pubkey,
+            dex_program_id: dex_program_pubkey,
         .in_scope(|| MetricsRegistry::global().record_alpha_gate(0.0));
 
     // Check DEX readiness for Live mode
