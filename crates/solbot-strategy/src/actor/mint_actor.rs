@@ -1008,22 +1008,26 @@ pub fn assert_signal_still_fresh(ctx: &ActorContext, phase: &str) -> Result<()> 
         return Ok(());
     }
     let now_ms = chrono::Utc::now().timestamp_millis() as u64;
-    };
-
-    let entry_decision = smart_money::apply_entry_policy(
-        ctx.smart_money_mode,
-        smart_money_hit,
-        closed_positions_sample,
+    if now_ms < ctx.last_signal_received_at {
+        return Ok(());
+    }
+    let age_ms = now_ms - ctx.last_signal_received_at;
+    if age_ms > max_age_ms {
+        bail!(
+            "Stale signal at {} for mint {}: age_ms={} > max_signal_age_ms={} — aborting buy",
+            phase,
+            ctx.mint,
+            age_ms,
+            max_age_ms
+        );
+    }
+    tracing::debug!(
+        mint = %ctx.mint,
+        phase,
+        age_ms,
+        max_age_ms,
+        "Signal freshness OK"
     );
-
-    // Apply smart_money entry decision
-    let sm_size_multiplier = match smart_money::apply_size_multiplier(1.0, &entry_decision) {
-        Some(mult) => mult,
-        None => {
-            // EntryDecision::Block — hard_gate blocks entry
-            if let smart_money::EntryDecision::Block { reason } = &entry_decision {
-                tracing::warn!(
-                    mint = %ctx.mint,
                     %reason,
                     "Smart money hard_gate blocked entry"
                 );
