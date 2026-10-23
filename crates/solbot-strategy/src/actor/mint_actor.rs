@@ -1048,21 +1048,26 @@ pub async fn execute_buy_pipeline(
     let pipeline_start = std::time::Instant::now();
     tracing::info!(mint = %ctx.mint, "▶ Buy pipeline started");
     tracing::info!("Starting buy pipeline for mint {}", ctx.mint);
+    
+    tracing::info_span!("signal_received", mint = %ctx.mint)
+        .in_scope(|| MetricsRegistry::global().record_signal_received());
 
-    match risk_result {
-        risk_gate::RiskGateVerdict::Accept => {
-            MetricsRegistry::global().record_risk_gate(true, risk_latency_ms);
-            tracing::info!(risk_latency_ms = format!("{:.2}", risk_latency_ms), "Risk gate PASSED for mint {}", ctx.mint);
-        }
-        risk_gate::RiskGateVerdict::Reject { reason } => {
-            MetricsRegistry::global().record_risk_gate(false, risk_latency_ms);
-            tracing::warn!(risk_latency_ms = format!("{:.2}", risk_latency_ms), "Risk gate REJECTED for mint {}: {}", ctx.mint, reason);
-            return Err(anyhow!("Risk gate rejection: {}", reason));
-        }
-    }
-
-    // Step 2: Position sizing (with smart_money size multiplier applied)
-    let base_position_size_sol = sizing::compute_position_size(
+    // Alpha Layer composite gate (TZ §8)
+    let alpha_size_multiplier = tracing::info_span!("alpha_gate", mint = %ctx.mint).in_scope(|| {
+        let alpha_start = std::time::Instant::now();
+        let alpha_cfg = crate::alpha_layer::AlphaConfig::default();
+        let alpha_inputs = crate::alpha_layer::AlphaSignalInputs {
+            pool_creation_slot: ctx.last_signal_slot,
+            ..Default::default()
+        };
+        let alpha_metrics = crate::alpha_layer::compute_alpha_metrics(&alpha_inputs, &alpha_cfg);
+        let verdict = crate::alpha_layer::evaluate_alpha_gate(&alpha_metrics, ctx.tier, &alpha_cfg);
+        let alpha_latency_ms = alpha_start.elapsed().as_secs_f64() * 1000.0;
+        MetricsRegistry::global().record_alpha_gate(alpha_latency_ms);
+        match verdict {
+            crate::alpha_layer::AlphaVerdict::Accept { size_multiplier, .. } => Ok(size_multiplier),
+            crate::alpha_layer::AlphaVerdict::Reject { reason } => {
+                Err(anyhow!("Alpha gate rejection: {}", reason))
         ctx.capital_sol,
         ctx.tier,
         &ctx.tier_params,
