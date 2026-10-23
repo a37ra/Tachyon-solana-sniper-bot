@@ -1088,22 +1088,26 @@ pub async fn execute_buy_pipeline(
     // Freshness at pipeline entry (queue wait + prior processing).
     assert_signal_still_fresh(ctx, "buy_pipeline_entry")?;
 
-    let mint_pubkey = Pubkey::from_str(&ctx.mint).unwrap_or_else(|_| Pubkey::new_unique());
-    let pool_pubkey = Pubkey::from_str(&ctx.pool_address).unwrap_or_else(|_| Pubkey::new_unique());
-    let dex_program_pubkey =
-        Pubkey::from_str(&ctx.dex_program_id).unwrap_or_else(|_| Pubkey::new_unique());
+    // Step 1: Risk gate checks with timeout controlled by RiskGateConfig
+    let signal = Signal {
+        mint: ctx.mint.clone(),
+        pool_address: ctx.pool_address.clone(),
+        dex_program: ctx.dex_program_id.clone(),
+        signal_source: "actor".to_string(),
+        slot: ctx.last_signal_slot,
+        received_at: if ctx.last_signal_received_at > 0 {
+            ctx.last_signal_received_at
+        } else {
+            chrono::Utc::now().timestamp_millis() as u64
+        },
+        raw_pool_account_data: ctx.raw_pool_account_data.clone(),
+        raw_pool_account_owner: ctx.raw_pool_account_owner.clone(),
+    };
 
-    let swap_instructions = fetch_and_build_dex_swap(
-        &ctx.rpc_url,
-        ctx.trading_mode,
-        &ctx.dex_program_id,
-        ctx.wallet,
-        mint_pubkey,
-        pool_pubkey,
-        dex_program_pubkey,
-        amount_in_lamports,
-        SwapDirection::Buy,
-        ctx.tier_params.sizing.slippage_hard_cap_bps,
+    // Step 0.5: Smart Money pre-buy check (TZ §2.5) — before risk_gate.
+    // Determines entry policy (tag_only / soft_boost / hard_gate).
+    // Never weakens risk_gate hard checks.
+    let smart_money_hit = if let Some(ref repo) = ctx.smart_money_hits_repo {
         ctx.raw_pool_account_data.clone(),
     )
     .await?;
