@@ -1108,22 +1108,26 @@ pub async fn execute_buy_pipeline(
     // Determines entry policy (tag_only / soft_boost / hard_gate).
     // Never weakens risk_gate hard checks.
     let smart_money_hit = if let Some(ref repo) = ctx.smart_money_hits_repo {
-        ctx.raw_pool_account_data.clone(),
-    )
-    .await?;
+        repo.has_hit_for_mint(&ctx.mint).await.unwrap_or(false)
+    } else {
+        false
+    };
 
-    // Get recent blockhash
-    let blockhash = fetch_recent_blockhash(&ctx.rpc_url, ctx.trading_mode).await?;
+    let closed_positions_sample = if let Some(ref repo) = ctx.positions_repo {
+        repo.count_closed_positions().await.unwrap_or(0) as u32
+    } else {
+        0
+    };
 
-    // Build complete unsigned transaction
-    tracing::info!("▶ Building unsigned transaction");
-    let (unsigned_tx, unsigned_tx_base64) = build_unsigned_transaction(
-        swap_instructions,
-        200_000,
-        ctx.tier_params.emergency_exit.priority_fee_baseline as u64,
-        &ctx.wallet,
-        blockhash,
-    )?;
+    let entry_decision = smart_money::apply_entry_policy(
+        ctx.smart_money_mode,
+        smart_money_hit,
+        closed_positions_sample,
+    );
+
+    // Apply smart_money entry decision
+    let sm_size_multiplier = match smart_money::apply_size_multiplier(1.0, &entry_decision) {
+        Some(mult) => mult,
     tracing::info_span!("tx_built", mint = %ctx.mint)
         .in_scope(|| MetricsRegistry::global().record_tx_built());
     tracing::info!("◀ Transaction built");
