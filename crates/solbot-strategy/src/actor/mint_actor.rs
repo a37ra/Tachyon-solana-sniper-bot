@@ -1068,22 +1068,26 @@ pub async fn execute_buy_pipeline(
             crate::alpha_layer::AlphaVerdict::Accept { size_multiplier, .. } => Ok(size_multiplier),
             crate::alpha_layer::AlphaVerdict::Reject { reason } => {
                 Err(anyhow!("Alpha gate rejection: {}", reason))
-        ctx.capital_sol,
-        ctx.tier,
-        &ctx.tier_params,
-        ctx.trade_stats.as_ref(),
-    );
-    let position_size_sol = base_position_size_sol * sm_size_multiplier;
+            }
+        }
+    })?;
 
-    tracing::info!(
-        base_size = base_position_size_sol,
-        sm_multiplier = sm_size_multiplier,
-        final_size = position_size_sol,
-        "Computed position size (SOL)"
-    );
-    let amount_in_lamports = (position_size_sol * 1_000_000_000.0) as u64;
+    // Check DEX readiness for Live mode
+    check_dex_readiness(&ctx.dex_program_id, &ctx.dex_readiness, ctx.trading_mode)?;
 
-    // Step 3: Build unsigned swap transaction
+    // Fail-closed: ensure critical components are present in Live mode
+    if ctx.trading_mode == TradingMode::Live {
+        if ctx.signer_client.is_none() {
+            bail!("No signer_client configured in Live mode — refusing to trade");
+        }
+        if ctx.router.is_none() {
+            bail!("No router configured in Live mode — refusing to trade");
+        }
+    }
+
+    // Freshness at pipeline entry (queue wait + prior processing).
+    assert_signal_still_fresh(ctx, "buy_pipeline_entry")?;
+
     let mint_pubkey = Pubkey::from_str(&ctx.mint).unwrap_or_else(|_| Pubkey::new_unique());
     let pool_pubkey = Pubkey::from_str(&ctx.pool_address).unwrap_or_else(|_| Pubkey::new_unique());
     let dex_program_pubkey =
