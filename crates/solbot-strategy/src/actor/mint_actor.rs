@@ -1407,22 +1407,26 @@ pub async fn execute_buy_pipeline(
     if let Some(ref repo) = ctx.positions_repo {
         if let Err(e) = repo.insert(&position).await {
             tracing::error!(
-    let buy_priority_fee_lamports = ctx.tier_params.emergency_exit.priority_fee_baseline as u64;
-    ctx.fee_ledger.track_priority_fee(&position.position_id, buy_priority_fee_lamports);
-    ctx.fee_ledger.track_ata_rent(&position.position_id, pnl::DEFAULT_ATA_RENT_LAMPORTS);
-    tracing::debug!(
-        position_id = %position.position_id,
-        priority_fee_lamports = buy_priority_fee_lamports,
-        ata_rent_lamports = pnl::DEFAULT_ATA_RENT_LAMPORTS,
-        "Buy fee tracked in ledger"
-    );
+                "Failed to persist new position {} to DB: {}",
+                position.position_id,
+                e
+            );
+        }
+    }
 
-    ctx.active_position = Some(position.clone());
-    tracing::info!(
-        "Position created and stored in context: {}",
-        position.position_id
-    );
+    // Transition from Opening to Open using PositionLifecycle
+    let tx_signature = confirmed_buy_signature;
 
+    if let Some(ref lifecycle) = ctx.position_lifecycle {
+        match lifecycle
+            .transition(&position, PositionStatus::Open, tx_signature)
+            .await
+        {
+            Ok(transition) => {
+                position.status = PositionStatus::Open;
+                tracing::info!("Position lifecycle transition successful: {:?}", transition);
+
+                // Emit PositionOpened event to event bus
     Ok(position)
 }
 
