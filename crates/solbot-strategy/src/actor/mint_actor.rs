@@ -1288,21 +1288,25 @@ pub async fn execute_buy_pipeline(
                     let reason = resp
                         .rejection_reason
                         .unwrap_or_else(|| "Unknown".to_string());
-        trailing_active: false,
-        trailing_high_water_sol: None,
-        realized_pnl_net_sol: 0.0,
-        opened_at_utc: chrono::Utc::now().timestamp() as u64,
-        closed_at_utc: None,
-    };
+                    tracing::warn!("Signer client rejected buy intent: {}", reason);
+                    return Err(anyhow!("Signer rejection: {}", reason));
+                }
+            }
+            Err(e) => {
+                tracing::warn!("Signer client IPC error: {}", e);
+                if ctx.trading_mode == TradingMode::Live {
+                    return Err(anyhow!("Signer IPC error: {}", e));
+                }
+            }
+        }
+    }
 
-    if ctx.trading_mode == TradingMode::Paper {
-        crate::paper_trade_log::log_paper_buy(
-            &ctx.mint,
-            &ctx.pool_address,
-            &ctx.dex_program_id,
-            position_size_sol,
-            entry_price_sol,
-            &position.position_id,
+    // Step 5: Freshness gate immediately before broadcast, then Router submit.
+    // Age recomputed here (not cached from entry) — catches risk-gate/sign latency.
+    assert_signal_still_fresh(ctx, "pre_submit_buy")?;
+    let mut confirmed_buy_signature: Option<String> = None;
+    if ctx.trading_mode == TradingMode::Live {
+        if let Some(ref mut router) = ctx.router {
         );
     }
 
