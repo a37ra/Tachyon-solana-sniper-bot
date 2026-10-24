@@ -1188,22 +1188,26 @@ pub async fn execute_buy_pipeline(
     let (mut swap_instructions, mut expected_tokens_out) = fetch_and_build_dex_swap(
         &ctx.rpc_url,
         ctx.trading_mode,
-                        tracing::error!("Signer accepted but no signed transaction returned");
-                        return Err(anyhow!(
-                            "Signer accepted but no signed transaction returned"
-                        ));
-                    }
-                } else {
-                    let reason = resp
-                        .rejection_reason
-                        .unwrap_or_else(|| "Unknown".to_string());
-                    tracing::warn!("Signer client rejected buy intent: {}", reason);
-                    return Err(anyhow!("Signer rejection: {}", reason));
-                }
-            }
-            Err(e) => {
-                tracing::warn!("Signer client IPC error: {}", e);
-                if ctx.trading_mode == TradingMode::Live {
+        &ctx.dex_program_id,
+        ctx.wallet,
+        mint_pubkey,
+        pool_pubkey,
+        dex_program_pubkey,
+        amount_in_lamports,
+        SwapDirection::Buy,
+        ctx.tier_params.sizing.slippage_hard_cap_bps,
+        ctx.raw_pool_account_data.clone(),
+    )
+    .await?;
+
+    // Append Jito tip instruction inside the transaction when Jito routing is enabled in Live mode
+    let mut buy_jito_tip_lamports = 0u64;
+    if ctx.trading_mode == TradingMode::Live {
+        if let Some(ref router) = ctx.router {
+            if router.config().enable_jito {
+                if let Some(ref jito_cfg) = router.config().jito_config {
+                    buy_jito_tip_lamports = jito_cfg.tip_config.base_lamports;
+                    if buy_jito_tip_lamports > 0 {
                     return Err(anyhow!("Signer IPC error: {}", e));
                 }
             }
