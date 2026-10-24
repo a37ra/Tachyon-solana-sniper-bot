@@ -1347,21 +1347,26 @@ pub async fn execute_buy_pipeline(
                     return Err(anyhow!("Router submission timeout"));
                 }
                 Err(e) => {
-                if let Some(ref tx) = ctx.lifecycle_event_tx {
-                    let event = PositionLifecycleEvent::PositionOpened {
-                        position_id: position.position_id.clone(),
-                        mint: position.mint.clone(),
-                        entry_price_sol: position.entry_price_sol,
-                        size_sol: position.size_sol,
-                    };
-                    let _ = tx.send(event).await;
+                    tracing::error!("Router error: {}", e);
+                    return Err(anyhow!("Router error: {}", e));
                 }
             }
-            Err(e) => {
-                tracing::error!("Failed to transition position from Opening to Open: {}", e);
-                return Err(anyhow!("Position lifecycle transition failed: {}", e));
-            }
+        } else {
+            // This should never happen due to check at pipeline start, but fail-closed
+            tracing::error!("Router is None in Live mode - this should have been caught earlier");
+            return Err(anyhow!("Router is None in Live mode"));
         }
+    } else {
+        tracing::info!("Paper trading mode - skipping live router transaction submission");
+    }
+
+    // Compute effective entry_price_sol if caller passed 0.0 (from NewPoolSignal)
+    let effective_entry_price_sol = if entry_price_sol > 0.0 {
+        entry_price_sol
+    } else if expected_tokens_out > 0 {
+        position_size_sol / (expected_tokens_out as f64 / 1_000_000.0)
+    } else if let Some(ref raw_data) = ctx.raw_pool_account_data {
+        compute_pool_spot_price_sol(&ctx.dex_program_id, &pool_pubkey, &mint_pubkey, raw_data)
     } else {
         // Fallback: direct transition without lifecycle validation (for testing)
         position.status = PositionStatus::Open;
