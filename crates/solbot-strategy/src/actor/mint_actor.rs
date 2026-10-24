@@ -1148,22 +1148,26 @@ pub async fn execute_buy_pipeline(
         .instrument(risk_gate_span)
         .await;
     let risk_latency_ms = risk_start.elapsed().as_secs_f64() * 1000.0;
-            ipc_seq: 0, // Auto-assigned by signer client
-            issued_at_unix_ms: chrono::Utc::now().timestamp_millis() as u64,
-            intent_type: IntentType::Buy,
-            unsigned_transaction_base64: unsigned_tx_base64,
-            program_id: "solbot-strategy".to_string(),
-            dex_program_id: ctx.dex_program_id.clone(),
-            max_size_lamports: amount_in_lamports,
-            hard_cap_bps: ctx.tier_params.sizing.slippage_hard_cap_bps,
-            destination_addresses: vec![ctx.pool_address.clone()],
-            mint: ctx.mint.clone(),
-            pool_address: ctx.pool_address.clone(),
-            position_id: None,
-            amount_or_pct: position_size_sol,
-        };
+    tracing::info!(risk_latency_ms = format!("{:.2}", risk_latency_ms), "◀ Risk gate completed");
 
-        match signer.sign_intent(req).await {
+    match risk_result {
+        risk_gate::RiskGateVerdict::Accept => {
+            MetricsRegistry::global().record_risk_gate(true, risk_latency_ms);
+            tracing::info!(risk_latency_ms = format!("{:.2}", risk_latency_ms), "Risk gate PASSED for mint {}", ctx.mint);
+        }
+        risk_gate::RiskGateVerdict::Reject { reason } => {
+            MetricsRegistry::global().record_risk_gate(false, risk_latency_ms);
+            tracing::warn!(risk_latency_ms = format!("{:.2}", risk_latency_ms), "Risk gate REJECTED for mint {}: {}", ctx.mint, reason);
+            return Err(anyhow!("Risk gate rejection: {}", reason));
+        }
+    }
+
+    // Step 2: Position sizing (with smart_money size multiplier applied)
+    let base_position_size_sol = sizing::compute_position_size(
+        ctx.capital_sol,
+        ctx.tier,
+        &ctx.tier_params,
+        ctx.trade_stats.as_ref(),
             Ok(resp) => {
                 if resp.status == VerdictStatus::Accepted {
                     if let Some(signed_base64) = resp.signed_transaction_base64 {
