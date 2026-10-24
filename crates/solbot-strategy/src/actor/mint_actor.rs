@@ -1467,22 +1467,26 @@ pub async fn execute_buy_pipeline(
         if let Err(e) = repo.update_position(&position).await {
             tracing::error!(
                 "Failed to update position {} to Open status: {}",
-        if ctx.router.is_none() {
-            bail!("No router configured in Live mode — refusing to exit position");
+                position.position_id,
+                e
+            );
         }
     }
 
-    // Step 1: Calculate sell fraction
-    let (sell_fraction, intent_type) = match &exit_action {
-        ExitAction::TakeProfit {
-            sell_fraction_of_remaining,
-            ..
-        } => (*sell_fraction_of_remaining, IntentType::Sell),
-        ExitAction::TrailingStop { .. } => (1.0, IntentType::Sell),
-        ExitAction::HardStopLoss => (1.0, IntentType::Emergency),
-        ExitAction::Emergency { .. } => (1.0, IntentType::Emergency),
-    };
-
+    // === Fee & token balance tracking for buy transaction (TZ §4.5) ===
+    if expected_tokens_out > 0 {
+        ctx.fee_ledger.set_token_amount(&position.position_id, expected_tokens_out);
+    }
+    let buy_priority_fee_lamports = ctx.tier_params.emergency_exit.priority_fee_baseline as u64;
+    ctx.fee_ledger.track_priority_fee(&position.position_id, buy_priority_fee_lamports);
+    if buy_jito_tip_lamports > 0 {
+        ctx.fee_ledger.track_jito_tip(&position.position_id, buy_jito_tip_lamports);
+    }
+    ctx.fee_ledger.track_ata_rent(&position.position_id, pnl::DEFAULT_ATA_RENT_LAMPORTS);
+    tracing::debug!(
+        position_id = %position.position_id,
+        priority_fee_lamports = buy_priority_fee_lamports,
+        ata_rent_lamports = pnl::DEFAULT_ATA_RENT_LAMPORTS,
     tracing::debug!(
         "Building sell transaction for {:.1}% of remaining position",
         sell_fraction * 100.0
