@@ -1447,22 +1447,26 @@ pub async fn execute_buy_pipeline(
         position.status = PositionStatus::Open;
         if let Some(ref trans_repo) = ctx.state_transitions_repo {
             let transition_id = uuid::Uuid::new_v4().to_string();
-    ctx: &mut ActorContext,
-    position: &Position,
-    exit_action: ExitAction,
-    current_price: f64,
-) -> Result<()> {
-    tracing::info!(
-        "Starting exit pipeline for position {}: {:?}",
-        position.position_id,
-        exit_action
-    );
-
-    // Fail-closed: ensure critical components are present in Live mode
-    if ctx.trading_mode == TradingMode::Live {
-        if ctx.signer_client.is_none() {
-            bail!("No signer_client configured in Live mode — refusing to exit position");
+            let now = chrono::Utc::now().timestamp() as u64;
+            let _ = trans_repo
+                .insert(
+                    &transition_id,
+                    &position.position_id,
+                    "opening",
+                    "open",
+                    "buy_confirmed",
+                    None,
+                    now,
+                )
+                .await;
         }
+    }
+
+    // Update position in DB with Open status
+    if let Some(ref repo) = ctx.positions_repo {
+        if let Err(e) = repo.update_position(&position).await {
+            tracing::error!(
+                "Failed to update position {} to Open status: {}",
         if ctx.router.is_none() {
             bail!("No router configured in Live mode — refusing to exit position");
         }
