@@ -1427,21 +1427,26 @@ pub async fn execute_buy_pipeline(
                 tracing::info!("Position lifecycle transition successful: {:?}", transition);
 
                 // Emit PositionOpened event to event bus
-    Ok(position)
-}
-
-/// Create placeholder swap instructions when real builder is unavailable.
-fn create_placeholder_swap_instructions() -> tx_builder::SwapInstructions {
-    tx_builder::SwapInstructions {
-        setup_instructions: vec![],
-        swap_instructions: vec![],
-        cleanup_instructions: vec![],
-        additional_signers: vec![],
-    }
-}
-
-/// Execute the exit pipeline: Exit Tx Builder → Signer → Router.
-pub async fn execute_exit_pipeline(
+                if let Some(ref tx) = ctx.lifecycle_event_tx {
+                    let event = PositionLifecycleEvent::PositionOpened {
+                        position_id: position.position_id.clone(),
+                        mint: position.mint.clone(),
+                        entry_price_sol: position.entry_price_sol,
+                        size_sol: position.size_sol,
+                    };
+                    let _ = tx.send(event).await;
+                }
+            }
+            Err(e) => {
+                tracing::error!("Failed to transition position from Opening to Open: {}", e);
+                return Err(anyhow!("Position lifecycle transition failed: {}", e));
+            }
+        }
+    } else {
+        // Fallback: direct transition without lifecycle validation (for testing)
+        position.status = PositionStatus::Open;
+        if let Some(ref trans_repo) = ctx.state_transitions_repo {
+            let transition_id = uuid::Uuid::new_v4().to_string();
     ctx: &mut ActorContext,
     position: &Position,
     exit_action: ExitAction,
