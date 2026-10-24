@@ -1248,22 +1248,26 @@ pub async fn execute_buy_pipeline(
         let req = SignerIntentRequest {
             context_key: format!("buy-{}", ctx.mint),
             ipc_seq: 0, // Auto-assigned by signer client
-                }
-                Ok(SubmitResult::Timeout) => {
-                    tracing::warn!("Buy transaction submission timed out");
-                    return Err(anyhow!("Router submission timeout"));
-                }
-                Err(e) => {
-                    tracing::error!("Router error: {}", e);
-                    return Err(anyhow!("Router error: {}", e));
-                }
-            }
-        } else {
-            // This should never happen due to check at pipeline start, but fail-closed
-            tracing::error!("Router is None in Live mode - this should have been caught earlier");
-            return Err(anyhow!("Router is None in Live mode"));
-        }
-    } else {
+            issued_at_unix_ms: chrono::Utc::now().timestamp_millis() as u64,
+            intent_type: IntentType::Buy,
+            unsigned_transaction_base64: unsigned_tx_base64,
+            program_id: ctx.dex_program_id.clone(),
+            dex_program_id: ctx.dex_program_id.clone(),
+            max_size_lamports: amount_in_lamports,
+            hard_cap_bps: ctx.tier_params.sizing.slippage_hard_cap_bps,
+            destination_addresses: vec![ctx.pool_address.clone()],
+            mint: ctx.mint.clone(),
+            pool_address: ctx.pool_address.clone(),
+            position_id: None,
+            amount_or_pct: position_size_sol,
+        };
+
+        match signer.sign_intent(req).await {
+            Ok(resp) => {
+                if resp.status == VerdictStatus::Accepted {
+                    if let Some(signed_base64) = resp.signed_transaction_base64 {
+                        let decoded_bytes = BASE64.decode(&signed_base64).map_err(|e| {
+                            anyhow!("Failed to decode signed transaction base64: {}", e)
         tracing::info!("Paper trading mode - skipping live router transaction submission");
     }
 
