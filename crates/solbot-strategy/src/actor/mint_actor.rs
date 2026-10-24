@@ -1128,21 +1128,26 @@ pub async fn execute_buy_pipeline(
     // Apply smart_money entry decision
     let sm_size_multiplier = match smart_money::apply_size_multiplier(1.0, &entry_decision) {
         Some(mult) => mult,
-    tracing::info_span!("tx_built", mint = %ctx.mint)
-        .in_scope(|| MetricsRegistry::global().record_tx_built());
-    tracing::info!("◀ Transaction built");
+        None => {
+            // EntryDecision::Block — hard_gate blocks entry
+            if let smart_money::EntryDecision::Block { reason } = &entry_decision {
+                tracing::warn!(
+                    mint = %ctx.mint,
+                    %reason,
+                    "Smart money hard_gate blocked entry"
+                );
+                return Err(anyhow!("Smart money hard_gate: {}", reason));
+            }
+            1.0 // unreachable but safe
+        }
+    };
 
-    tracing::debug!(
-        "Built unsigned buy transaction: base64 len={}",
-        unsigned_tx_base64.len()
-    );
-
-    // Step 4: Request signature from Signer Client
-    let mut final_tx = unsigned_tx.clone();
-
-    if let Some(signer) = &ctx.signer_client {
-        let req = SignerIntentRequest {
-            context_key: format!("buy-{}", ctx.mint),
+    let risk_gate_span = tracing::info_span!("risk_gate", mint = %ctx.mint);
+    let risk_start = std::time::Instant::now();
+    let risk_result = risk_gate::run_pre_buy_checks_with_timeout(&signal, &ctx.risk_gate_config)
+        .instrument(risk_gate_span)
+        .await;
+    let risk_latency_ms = risk_start.elapsed().as_secs_f64() * 1000.0;
             ipc_seq: 0, // Auto-assigned by signer client
             issued_at_unix_ms: chrono::Utc::now().timestamp_millis() as u64,
             intent_type: IntentType::Buy,
