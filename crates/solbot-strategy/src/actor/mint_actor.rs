@@ -1208,21 +1208,26 @@ pub async fn execute_buy_pipeline(
                 if let Some(ref jito_cfg) = router.config().jito_config {
                     buy_jito_tip_lamports = jito_cfg.tip_config.base_lamports;
                     if buy_jito_tip_lamports > 0 {
-                    return Err(anyhow!("Signer IPC error: {}", e));
+                        let tip_ix = solana_sdk::system_instruction::transfer(
+                            &ctx.wallet,
+                            &jito_cfg.tip_config.tip_account,
+                            buy_jito_tip_lamports,
+                        );
+                        swap_instructions.cleanup_instructions.push(tip_ix);
+                    }
                 }
             }
         }
     }
 
-    // Step 5: Freshness gate immediately before broadcast, then Router submit.
-    // Age recomputed here (not cached from entry) — catches risk-gate/sign latency.
-    assert_signal_still_fresh(ctx, "pre_submit_buy")?;
-    if ctx.trading_mode == TradingMode::Live {
-        if let Some(ref mut router) = ctx.router {
-            let submit_start = std::time::Instant::now();
-            tracing::info!("Submitting live buy transaction to Router pipeline");
-            match router.submit_transaction(final_tx).await {
-                Ok(SubmitResult::Confirmed { signature, slot }) => {
+    // Get recent blockhash
+    let blockhash = fetch_recent_blockhash(&ctx.rpc_url, ctx.trading_mode).await?;
+
+    // Build complete unsigned transaction
+    tracing::info!("▶ Building unsigned transaction");
+    let (unsigned_tx, unsigned_tx_base64) = build_unsigned_transaction(
+        swap_instructions,
+        200_000,
                     let submit_latency_ms = submit_start.elapsed().as_secs_f64() * 1000.0;
                     tracing::info_span!("bundle_submitted", mint = %ctx.mint)
                         .in_scope(|| MetricsRegistry::global().record_bundle_submitted(submit_latency_ms));
