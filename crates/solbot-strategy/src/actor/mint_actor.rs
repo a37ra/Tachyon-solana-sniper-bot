@@ -1228,22 +1228,26 @@ pub async fn execute_buy_pipeline(
     let (unsigned_tx, unsigned_tx_base64) = build_unsigned_transaction(
         swap_instructions,
         200_000,
-                    let submit_latency_ms = submit_start.elapsed().as_secs_f64() * 1000.0;
-                    tracing::info_span!("bundle_submitted", mint = %ctx.mint)
-                        .in_scope(|| MetricsRegistry::global().record_bundle_submitted(submit_latency_ms));
-                    let e2e_latency_ms = pipeline_start.elapsed().as_secs_f64() * 1000.0;
-                    MetricsRegistry::global().record_end_to_end(e2e_latency_ms);
-                    tracing::info!(
-                        submit_latency_ms = format!("{:.2}", submit_latency_ms),
-                        e2e_latency_ms = format!("{:.2}", e2e_latency_ms),
-                        "Buy transaction confirmed on-chain: sig={}, slot={}",
-                        signature,
-                        slot
-                    );
-                }
-                Ok(SubmitResult::Failed { reason }) => {
-                    tracing::error!("Buy transaction failed in router: {}", reason);
-                    return Err(anyhow!("Router submission failed: {}", reason));
+        ctx.tier_params.emergency_exit.priority_fee_baseline as u64,
+        &ctx.wallet,
+        blockhash,
+    )?;
+    tracing::info_span!("tx_built", mint = %ctx.mint)
+        .in_scope(|| MetricsRegistry::global().record_tx_built());
+    tracing::info!("◀ Transaction built");
+
+    tracing::debug!(
+        "Built unsigned buy transaction: base64 len={}",
+        unsigned_tx_base64.len()
+    );
+
+    // Step 4: Request signature from Signer Client
+    let mut final_tx = unsigned_tx.clone();
+
+    if let Some(signer) = &ctx.signer_client {
+        let req = SignerIntentRequest {
+            context_key: format!("buy-{}", ctx.mint),
+            ipc_seq: 0, // Auto-assigned by signer client
                 }
                 Ok(SubmitResult::Timeout) => {
                     tracing::warn!("Buy transaction submission timed out");
