@@ -1507,21 +1507,26 @@ fn create_placeholder_swap_instructions() -> tx_builder::SwapInstructions {
         cleanup_instructions: vec![],
         additional_signers: vec![],
     }
-    if use_escalation {
-        tracing::info!(
-            "Using escalation state machine for exit action {:?}",
-            exit_action
-        );
+}
 
-        let priority_fee_baseline = ctx.tier_params.emergency_exit.priority_fee_baseline as u64;
-        let hard_cap_bps = ctx.tier_params.emergency_exit.emergency_slippage_bps;
-        let signer = ctx.signer_client.as_ref().unwrap().clone();
-        let router_arc = Arc::new(tokio::sync::Mutex::new(ctx.router.take().unwrap()));
-        let signed_tx_state: Arc<Mutex<Option<Transaction>>> = Arc::new(Mutex::new(None));
-        let signed_tx_state_for_sign = signed_tx_state.clone();
-        let signed_tx_state_for_submit = signed_tx_state.clone();
-        let position_size_sol = position.size_sol;
-        let signer_for_sign = signer;
+/// Execute the exit pipeline: Exit Tx Builder → Signer → Router.
+pub async fn execute_exit_pipeline(
+    ctx: &mut ActorContext,
+    position: &Position,
+    exit_action: ExitAction,
+    current_price: f64,
+) -> Result<()> {
+    tracing::info!(
+        "Starting exit pipeline for position {}: {:?}",
+        position.position_id,
+        exit_action
+    );
+
+    // Fail-closed: ensure critical components are present in Live mode
+    if ctx.trading_mode == TradingMode::Live {
+        if ctx.signer_client.is_none() {
+            bail!("No signer_client configured in Live mode — refusing to exit position");
+        }
         let pool_address = ctx.pool_address.clone();
         let dex_program_id = ctx.dex_program_id.clone();
         let mint = ctx.mint.clone();
