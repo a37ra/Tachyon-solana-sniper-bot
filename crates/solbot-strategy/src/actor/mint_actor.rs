@@ -1168,22 +1168,26 @@ pub async fn execute_buy_pipeline(
         ctx.tier,
         &ctx.tier_params,
         ctx.trade_stats.as_ref(),
-            Ok(resp) => {
-                if resp.status == VerdictStatus::Accepted {
-                    if let Some(signed_base64) = resp.signed_transaction_base64 {
-                        let decoded_bytes = BASE64.decode(&signed_base64).map_err(|e| {
-                            anyhow!("Failed to decode signed transaction base64: {}", e)
-                        })?;
-                        let decoded_tx = bincode::deserialize::<Transaction>(&decoded_bytes)
-                            .map_err(|e| {
-                                anyhow!("Failed to deserialize signed transaction: {}", e)
-                            })?;
-                        final_tx = decoded_tx;
-                        tracing::info_span!("signed", mint = %ctx.mint)
-                            .in_scope(|| MetricsRegistry::global().record_signed());
-                        tracing::info!("Signer client signed buy transaction successfully");
-                    } else {
-                        // Signer accepted but didn't return signed transaction
+    );
+    let position_size_sol = base_position_size_sol * sm_size_multiplier * alpha_size_multiplier.max(1.0);
+
+    tracing::info!(
+        base_size = base_position_size_sol,
+        sm_multiplier = sm_size_multiplier,
+        final_size = position_size_sol,
+        "Computed position size (SOL)"
+    );
+    let amount_in_lamports = (position_size_sol * 1_000_000_000.0) as u64;
+
+    // Step 3: Build unsigned swap transaction
+    let mint_pubkey = Pubkey::from_str(&ctx.mint).unwrap_or_else(|_| Pubkey::new_unique());
+    let pool_pubkey = Pubkey::from_str(&ctx.pool_address).unwrap_or_else(|_| Pubkey::new_unique());
+    let dex_program_pubkey =
+        Pubkey::from_str(&ctx.dex_program_id).unwrap_or_else(|_| Pubkey::new_unique());
+
+    let (mut swap_instructions, mut expected_tokens_out) = fetch_and_build_dex_swap(
+        &ctx.rpc_url,
+        ctx.trading_mode,
                         tracing::error!("Signer accepted but no signed transaction returned");
                         return Err(anyhow!(
                             "Signer accepted but no signed transaction returned"
