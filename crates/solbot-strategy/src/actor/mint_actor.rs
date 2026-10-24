@@ -1307,22 +1307,26 @@ pub async fn execute_buy_pipeline(
     let mut confirmed_buy_signature: Option<String> = None;
     if ctx.trading_mode == TradingMode::Live {
         if let Some(ref mut router) = ctx.router {
-        );
-    }
-
-    // Persist position with Opening status
-    if let Some(ref repo) = ctx.positions_repo {
-        if let Err(e) = repo.insert(&position).await {
-            tracing::error!(
-                "Failed to persist new position {} to DB: {}",
-                position.position_id,
-                e
-            );
-        }
-    }
-
-    // Transition from Opening to Open using PositionLifecycle
-    let tx_signature = if ctx.trading_mode == TradingMode::Live {
+            let submit_start = std::time::Instant::now();
+            tracing::info!("Submitting live buy transaction to Router pipeline");
+            match router.submit_transaction(final_tx).await {
+                Ok(SubmitResult::Confirmed { signature, slot }) => {
+                    let submit_latency_ms = submit_start.elapsed().as_secs_f64() * 1000.0;
+                    tracing::info_span!("bundle_submitted", mint = %ctx.mint)
+                        .in_scope(|| MetricsRegistry::global().record_bundle_submitted(submit_latency_ms));
+                    let e2e_latency_ms = pipeline_start.elapsed().as_secs_f64() * 1000.0;
+                    MetricsRegistry::global().record_end_to_end(e2e_latency_ms);
+                    tracing::info!(
+                        submit_latency_ms = format!("{:.2}", submit_latency_ms),
+                        e2e_latency_ms = format!("{:.2}", e2e_latency_ms),
+                        "Buy transaction confirmed on-chain: sig={}, slot={}",
+                        signature,
+                        slot
+                    );
+                    if let Some(ref rpc_url) = ctx.rpc_url {
+                        let reconciled = reconcile_post_buy_balance(
+                            rpc_url,
+                            &signature,
         // Extract signature from router result if available
         None // Will be filled when router returns signature
     } else {
