@@ -1268,22 +1268,26 @@ pub async fn execute_buy_pipeline(
                     if let Some(signed_base64) = resp.signed_transaction_base64 {
                         let decoded_bytes = BASE64.decode(&signed_base64).map_err(|e| {
                             anyhow!("Failed to decode signed transaction base64: {}", e)
-        tracing::info!("Paper trading mode - skipping live router transaction submission");
-    }
-
-    // Create position record with Opening status first
-    let mut position = Position {
-        position_id: format!("pos-{}-{}", ctx.mint, chrono::Utc::now().timestamp()),
-        mint: ctx.mint.clone(),
-        pool_address: ctx.pool_address.clone(),
-        dex_program_id: ctx.dex_program_id.clone(),
-        tier: ctx.tier,
-        status: PositionStatus::Opening,
-        entry_price_sol,
-        size_sol: position_size_sol,
-        size_pct_of_capital: position_size_sol / ctx.capital_sol,
-        remaining_token_pct: 1.0,
-        hard_sl_price_sol: entry_price_sol * 0.5,
+                        })?;
+                        let decoded_tx = bincode::deserialize::<Transaction>(&decoded_bytes)
+                            .map_err(|e| {
+                                anyhow!("Failed to deserialize signed transaction: {}", e)
+                            })?;
+                        final_tx = decoded_tx;
+                        tracing::info_span!("signed", mint = %ctx.mint)
+                            .in_scope(|| MetricsRegistry::global().record_signed());
+                        tracing::info!("Signer client signed buy transaction successfully");
+                    } else {
+                        // Signer accepted but didn't return signed transaction
+                        tracing::error!("Signer accepted but no signed transaction returned");
+                        return Err(anyhow!(
+                            "Signer accepted but no signed transaction returned"
+                        ));
+                    }
+                } else {
+                    let reason = resp
+                        .rejection_reason
+                        .unwrap_or_else(|| "Unknown".to_string());
         trailing_active: false,
         trailing_high_water_sol: None,
         realized_pnl_net_sol: 0.0,
