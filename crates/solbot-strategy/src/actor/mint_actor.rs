@@ -1367,22 +1367,26 @@ pub async fn execute_buy_pipeline(
         position_size_sol / (expected_tokens_out as f64 / 1_000_000.0)
     } else if let Some(ref raw_data) = ctx.raw_pool_account_data {
         compute_pool_spot_price_sol(&ctx.dex_program_id, &pool_pubkey, &mint_pubkey, raw_data)
+            .unwrap_or(0.001)
     } else {
-        // Fallback: direct transition without lifecycle validation (for testing)
-        position.status = PositionStatus::Open;
-        if let Some(ref trans_repo) = ctx.state_transitions_repo {
-            let transition_id = uuid::Uuid::new_v4().to_string();
-            let now = chrono::Utc::now().timestamp() as u64;
-            let _ = trans_repo
-                .insert(
-                    &transition_id,
-                    &position.position_id,
-                    "opening",
-                    "open",
-                    "buy_confirmed",
-                    None,
-                    now,
-                )
+        0.001
+    };
+
+    // Create position record with Opening status first
+    let mut position = Position {
+        position_id: format!("pos-{}-{}", ctx.mint, chrono::Utc::now().timestamp()),
+        mint: ctx.mint.clone(),
+        pool_address: ctx.pool_address.clone(),
+        dex_program_id: ctx.dex_program_id.clone(),
+        tier: ctx.tier,
+        status: PositionStatus::Opening,
+        entry_price_sol: effective_entry_price_sol,
+        size_sol: position_size_sol,
+        size_pct_of_capital: position_size_sol / ctx.capital_sol,
+        remaining_token_pct: 1.0,
+        hard_sl_price_sol: effective_entry_price_sol * 0.5,
+        trailing_active: false,
+        trailing_high_water_sol: None,
                 .await;
         }
     }
