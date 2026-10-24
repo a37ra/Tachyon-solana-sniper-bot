@@ -1487,22 +1487,26 @@ pub async fn execute_buy_pipeline(
         position_id = %position.position_id,
         priority_fee_lamports = buy_priority_fee_lamports,
         ata_rent_lamports = pnl::DEFAULT_ATA_RENT_LAMPORTS,
-    tracing::debug!(
-        "Building sell transaction for {:.1}% of remaining position",
-        sell_fraction * 100.0
+        "Buy fee tracked in ledger"
     );
 
-    // Build unsigned sell transaction parameters
-    let mint_pubkey = Pubkey::from_str(&ctx.mint).unwrap_or_else(|_| Pubkey::new_unique());
-    let pool_pubkey = Pubkey::from_str(&ctx.pool_address).unwrap_or_else(|_| Pubkey::new_unique());
-    let dex_program_pubkey =
-        Pubkey::from_str(&ctx.dex_program_id).unwrap_or_else(|_| Pubkey::new_unique());
-    let amount_in_lamports = (position.size_sol * sell_fraction * 1_000_000_000.0) as u64;
+    ctx.active_position = Some(position.clone());
+    tracing::info!(
+        "Position created and stored in context: {}",
+        position.position_id
+    );
 
-    let use_escalation = matches!(exit_action, ExitAction::HardStopLoss | ExitAction::Emergency { .. })
-        && ctx.trading_mode == TradingMode::Live;
-    let mut final_tx = None;
+    Ok(position)
+}
 
+/// Create placeholder swap instructions when real builder is unavailable.
+fn create_placeholder_swap_instructions() -> tx_builder::SwapInstructions {
+    tx_builder::SwapInstructions {
+        setup_instructions: vec![],
+        swap_instructions: vec![],
+        cleanup_instructions: vec![],
+        additional_signers: vec![],
+    }
     if use_escalation {
         tracing::info!(
             "Using escalation state machine for exit action {:?}",
