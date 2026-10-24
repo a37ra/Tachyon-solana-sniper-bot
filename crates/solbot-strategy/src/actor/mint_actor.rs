@@ -1387,22 +1387,26 @@ pub async fn execute_buy_pipeline(
         hard_sl_price_sol: effective_entry_price_sol * 0.5,
         trailing_active: false,
         trailing_high_water_sol: None,
-                .await;
-        }
+        realized_pnl_net_sol: 0.0,
+        opened_at_utc: chrono::Utc::now().timestamp() as u64,
+        closed_at_utc: None,
+    };
+
+    if ctx.trading_mode == TradingMode::Paper {
+        crate::paper_trade_log::log_paper_buy(
+            &ctx.mint,
+            &ctx.pool_address,
+            &ctx.dex_program_id,
+            position_size_sol,
+            entry_price_sol,
+            &position.position_id,
+        );
     }
 
-    // Update position in DB with Open status
+    // Persist position with Opening status
     if let Some(ref repo) = ctx.positions_repo {
-        if let Err(e) = repo.update_position(&position).await {
+        if let Err(e) = repo.insert(&position).await {
             tracing::error!(
-                "Failed to update position {} to Open status: {}",
-                position.position_id,
-                e
-            );
-        }
-    }
-
-    // === Fee tracking for buy transaction (TZ §4.5) ===
     let buy_priority_fee_lamports = ctx.tier_params.emergency_exit.priority_fee_baseline as u64;
     ctx.fee_ledger.track_priority_fee(&position.position_id, buy_priority_fee_lamports);
     ctx.fee_ledger.track_ata_rent(&position.position_id, pnl::DEFAULT_ATA_RENT_LAMPORTS);
