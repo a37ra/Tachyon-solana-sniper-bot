@@ -1327,22 +1327,26 @@ pub async fn execute_buy_pipeline(
                         let reconciled = reconcile_post_buy_balance(
                             rpc_url,
                             &signature,
-        // Extract signature from router result if available
-        None // Will be filled when router returns signature
-    } else {
-        None
-    };
-
-    if let Some(ref lifecycle) = ctx.position_lifecycle {
-        match lifecycle
-            .transition(&position, PositionStatus::Open, tx_signature)
-            .await
-        {
-            Ok(transition) => {
-                position.status = PositionStatus::Open;
-                tracing::info!("Position lifecycle transition successful: {:?}", transition);
-
-                // Emit PositionOpened event to event bus
+                            &ctx.wallet,
+                            &mint_pubkey,
+                            expected_tokens_out,
+                        )
+                        .await;
+                        if reconciled > 0 {
+                            expected_tokens_out = reconciled;
+                        }
+                    }
+                    confirmed_buy_signature = Some(signature);
+                }
+                Ok(SubmitResult::Failed { reason }) => {
+                    tracing::error!("Buy transaction failed in router: {}", reason);
+                    return Err(anyhow!("Router submission failed: {}", reason));
+                }
+                Ok(SubmitResult::Timeout) => {
+                    tracing::warn!("Buy transaction submission timed out");
+                    return Err(anyhow!("Router submission timeout"));
+                }
+                Err(e) => {
                 if let Some(ref tx) = ctx.lifecycle_event_tx {
                     let event = PositionLifecycleEvent::PositionOpened {
                         position_id: position.position_id.clone(),
