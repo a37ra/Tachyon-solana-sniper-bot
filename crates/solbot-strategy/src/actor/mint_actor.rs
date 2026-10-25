@@ -1527,22 +1527,26 @@ pub async fn execute_exit_pipeline(
         if ctx.signer_client.is_none() {
             bail!("No signer_client configured in Live mode — refusing to exit position");
         }
-        let pool_address = ctx.pool_address.clone();
-        let dex_program_id = ctx.dex_program_id.clone();
-        let mint = ctx.mint.clone();
-        let position_id = position.position_id.clone();
-        let wallet = ctx.wallet;
-        let rpc_url = ctx.rpc_url.clone();
-        let trading_mode = ctx.trading_mode;
-        let mint_pubkey_clone = mint_pubkey;
-        let pool_pubkey_clone = pool_pubkey;
-        let dex_program_pubkey_clone = dex_program_pubkey;
-        let amount_in_lamports_clone = amount_in_lamports;
+        if ctx.router.is_none() {
+            bail!("No router configured in Live mode — refusing to exit position");
+        }
+    }
 
-        let mut sign_fn: Box<
-            dyn for<'a> FnMut(
-                &'a EscalationState,
-            ) -> std::pin::Pin<
+    // Step 1: Calculate sell fraction
+    let (sell_fraction, intent_type) = match &exit_action {
+        ExitAction::TakeProfit {
+            sell_fraction_of_remaining,
+            ..
+        } => (*sell_fraction_of_remaining, IntentType::Sell),
+        ExitAction::TrailingStop { .. } => (1.0, IntentType::Sell),
+        ExitAction::HardStopLoss => (1.0, IntentType::Emergency),
+        ExitAction::Emergency { .. } => (1.0, IntentType::Emergency),
+    };
+
+    tracing::debug!(
+        "Building sell transaction for {:.1}% of remaining position",
+        sell_fraction * 100.0
+    );
                 Box<dyn std::future::Future<Output = Result<String>> + Send + 'a>,
             > + Send,
         > = Box::new(move |state: &EscalationState| {
