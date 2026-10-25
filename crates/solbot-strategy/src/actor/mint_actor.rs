@@ -1766,6 +1766,10 @@ pub async fn execute_exit_pipeline(
             ctx.mint.clone(),
             trigger,
             chrono::Utc::now().timestamp_millis().try_into().unwrap(),
+        );
+
+        let escalation_result = run_escalation(&mut escalation_state, sign_fn, submit_fn, persist_fn).await;
+        let router = Arc::try_unwrap(router_arc)
             .map_err(|_| anyhow!("Escalation router still has active references"))?
             .into_inner();
         ctx.router = Some(router);
@@ -1781,7 +1785,7 @@ pub async fn execute_exit_pipeline(
             signed_tx_state.lock().await.clone().expect("signed tx should exist after successful escalation"),
         );
     } else {
-        let swap_instructions = fetch_and_build_dex_swap(
+        let (swap_instructions, _) = fetch_and_build_dex_swap(
             &ctx.rpc_url,
             ctx.trading_mode,
             &ctx.dex_program_id,
