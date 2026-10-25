@@ -1686,22 +1686,26 @@ pub async fn execute_exit_pipeline(
                 *signed_tx_state.lock().await = Some(decoded_tx.clone());
                 tracing::info!("Signer client signed escalation transaction successfully");
                 Ok(signature)
-                };
+            })
+        });
 
-                let mut router = router_arc.lock().await;
-                let routing_stage = match state.current_stage {
-                    crate::exit::escalation::EscalationStage::Stage0Jito => RoutingStage::JitoBundle,
-                    crate::exit::escalation::EscalationStage::Stage1PublicRpc2x
-                    | crate::exit::escalation::EscalationStage::Stage2PublicRpc3xMaxSlippage => {
-                        RoutingStage::PublicRpc
-                    }
-                    crate::exit::escalation::EscalationStage::Stage3DurableNonceStuck => {
-                        RoutingStage::DurableNonce
-                    }
-                };
 
-                match router
-                    .submit_transaction_with_stage(routing_stage, transaction)
+        let router_arc_for_submit = router_arc.clone();
+
+        let mut submit_fn: Box<
+            dyn for<'a> FnMut(
+                &'a EscalationState,
+            ) -> std::pin::Pin<
+                Box<dyn std::future::Future<Output = Result<Option<(String, u64)>>> + Send + 'a>,
+            > + Send,
+        > = Box::new(move |state: &EscalationState| {
+            let signed_tx_state = signed_tx_state_for_submit.clone();
+            let router_arc = router_arc_for_submit.clone();
+            Box::pin(async move {
+                let transaction = {
+                    let guard = signed_tx_state.lock().await;
+                    guard
+                        .clone()
                     .await
                 {
                     Ok(SubmitResult::Confirmed { signature, slot }) => Ok(Some((signature, slot))),
