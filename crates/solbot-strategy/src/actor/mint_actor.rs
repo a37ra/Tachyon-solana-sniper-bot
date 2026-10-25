@@ -1746,6 +1746,15 @@ pub async fn execute_exit_pipeline(
             })
         });
 
+
+        let mut persist_fn: Box<
+            dyn for<'a> FnMut(
+                &'a EscalationState,
+            ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>>
+                + Send,
+        > = Box::new(move |_state: &EscalationState| Box::pin(async move { Ok(()) }));
+
+        let trigger = match exit_action {
             ExitAction::HardStopLoss => EscalationTrigger::HardStopLoss,
             ExitAction::Emergency { .. } => EscalationTrigger::HardStopLoss,
             _ => unreachable!(),
@@ -1757,10 +1766,6 @@ pub async fn execute_exit_pipeline(
             ctx.mint.clone(),
             trigger,
             chrono::Utc::now().timestamp_millis().try_into().unwrap(),
-        );
-
-        let escalation_result = run_escalation(&mut escalation_state, sign_fn, submit_fn, persist_fn).await;
-        let router = Arc::try_unwrap(router_arc)
             .map_err(|_| anyhow!("Escalation router still has active references"))?
             .into_inner();
         ctx.router = Some(router);
