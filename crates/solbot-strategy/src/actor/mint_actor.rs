@@ -1626,22 +1626,26 @@ pub async fn execute_exit_pipeline(
                     amount_in_lamports_clone,
                     SwapDirection::Sell,
                     slippage_bps,
+                    None,
+                )
+                .await?;
 
-                let resp = signer.sign_intent(req).await?;
-                if resp.status != VerdictStatus::Accepted {
-                    let reason = resp
-                        .rejection_reason
-                        .unwrap_or_else(|| "Unknown".to_string());
-                    return Err(anyhow!("Signer rejection on escalation exit: {}", reason));
-                }
+                let priority_fee =
+                    ((priority_fee_baseline as f64) * state.current_stage.priority_fee_multiplier())
+                        as u64;
+                let (unsigned_tx, unsigned_tx_base64) = build_unsigned_transaction(
+                    swap_instructions,
+                    200_000,
+                    priority_fee,
+                    &wallet,
+                    blockhash,
+                )?;
 
-                let signed_base64 = resp.signed_transaction_base64.ok_or_else(|| {
-                    anyhow!("Signer accepted but no signed transaction returned")
-                })?;
-                let decoded_bytes = BASE64
-                    .decode(&signed_base64)
-                    .map_err(|e| anyhow!("Failed to decode signed transaction base64: {}", e))?;
-                let decoded_tx = bincode::deserialize::<Transaction>(&decoded_bytes)
+                let req = SignerIntentRequest {
+                    context_key: format!("sell-{}-{}", mint, position_id),
+                    ipc_seq: 0,
+                    issued_at_unix_ms: chrono::Utc::now()
+                        .timestamp_millis()
                     .map_err(|e| anyhow!("Failed to deserialize signed transaction: {}", e))?;
                 let signature = decoded_tx
                     .signatures
