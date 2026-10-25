@@ -24,12 +24,14 @@ use solbot_strategy::startup::{self, hydration::HydrationOptions};
 use solbot_strategy::state::position_lifecycle::PositionLifecycle;
 use solbot_strategy::state::positions_repo::PositionsRepo;
 use solbot_strategy::state::smart_money_hits_repo::SmartMoneyHitsRepo;
+use solbot_strategy::state::state_transitions_repo::StateTransitionsRepo;
 use solbot_strategy::state::wallet_watchlist_repo::WalletWatchlistRepo;
-use solbot_strategy::observability;
 use sqlx::SqlitePool;
 use std::env;
+use std::path::Path;
+use std::str::FromStr;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
 #[tokio::main]
@@ -38,7 +40,9 @@ async fn main() -> anyhow::Result<()> {
 
     if let Ok(endpoint) = env::var("OTEL_EXPORTER_OTLP_ENDPOINT") {
         if !endpoint.trim().is_empty() {
-            if let Err(err) = solbot_common::otel::init::init_telemetry("solbot-strategy", &endpoint) {
+            if let Err(err) =
+                solbot_common::otel::init::init_telemetry("solbot-strategy", &endpoint)
+            {
                 tracing::warn!(endpoint, error = %err, "OpenTelemetry init failed; falling back to stdout logging");
             }
         } else {
