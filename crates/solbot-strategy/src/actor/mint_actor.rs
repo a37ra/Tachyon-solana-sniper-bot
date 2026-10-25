@@ -1646,22 +1646,26 @@ pub async fn execute_exit_pipeline(
                     ipc_seq: 0,
                     issued_at_unix_ms: chrono::Utc::now()
                         .timestamp_millis()
-                    .map_err(|e| anyhow!("Failed to deserialize signed transaction: {}", e))?;
-                let signature = decoded_tx
-                    .signatures
-                    .get(0)
-                    .ok_or_else(|| anyhow!("Signed transaction has no signature"))
-                    .map(|s| s.to_string())?;
+                        .try_into()
+                        .unwrap(),
+                    intent_type,
+                    unsigned_transaction_base64: unsigned_tx_base64,
+                    program_id: dex_program_id.clone(),
+                    dex_program_id: dex_program_id.clone(),
+                    max_size_lamports: (position_size_sol * 1_000_000_000.0) as u64,
+                    hard_cap_bps,
+                    destination_addresses: vec![pool_address.clone()],
+                    mint: mint.clone(),
+                    pool_address: pool_address.clone(),
+                    position_id: Some(position_id.clone()),
+                    amount_or_pct: sell_fraction,
+                };
 
-                *signed_tx_state.lock().await = Some(decoded_tx.clone());
-                tracing::info!("Signer client signed escalation transaction successfully");
-                Ok(signature)
-            })
-        });
-
-
-        let router_arc_for_submit = router_arc.clone();
-
+                let resp = signer.sign_intent(req).await?;
+                if resp.status != VerdictStatus::Accepted {
+                    let reason = resp
+                        .rejection_reason
+                        .unwrap_or_else(|| "Unknown".to_string());
         let mut submit_fn: Box<
             dyn for<'a> FnMut(
                 &'a EscalationState,
