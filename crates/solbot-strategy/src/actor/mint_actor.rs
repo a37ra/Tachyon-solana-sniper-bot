@@ -1666,21 +1666,26 @@ pub async fn execute_exit_pipeline(
                     let reason = resp
                         .rejection_reason
                         .unwrap_or_else(|| "Unknown".to_string());
-        let mut submit_fn: Box<
-            dyn for<'a> FnMut(
-                &'a EscalationState,
-            ) -> std::pin::Pin<
-                Box<dyn std::future::Future<Output = Result<Option<(String, u64)>>> + Send + 'a>,
-            > + Send,
-        > = Box::new(move |state: &EscalationState| {
-            let signed_tx_state = signed_tx_state_for_submit.clone();
-            let router_arc = router_arc_for_submit.clone();
-            Box::pin(async move {
-                let transaction = {
-                    let guard = signed_tx_state.lock().await;
-                    guard
-                        .clone()
-                        .ok_or_else(|| anyhow!("No signed transaction available for escalation"))?
+                    return Err(anyhow!("Signer rejection on escalation exit: {}", reason));
+                }
+
+                let signed_base64 = resp.signed_transaction_base64.ok_or_else(|| {
+                    anyhow!("Signer accepted but no signed transaction returned")
+                })?;
+                let decoded_bytes = BASE64
+                    .decode(&signed_base64)
+                    .map_err(|e| anyhow!("Failed to decode signed transaction base64: {}", e))?;
+                let decoded_tx = bincode::deserialize::<Transaction>(&decoded_bytes)
+                    .map_err(|e| anyhow!("Failed to deserialize signed transaction: {}", e))?;
+                let signature = decoded_tx
+                    .signatures
+                    .get(0)
+                    .ok_or_else(|| anyhow!("Signed transaction has no signature"))
+                    .map(|s| s.to_string())?;
+
+                *signed_tx_state.lock().await = Some(decoded_tx.clone());
+                tracing::info!("Signer client signed escalation transaction successfully");
+                Ok(signature)
                 };
 
                 let mut router = router_arc.lock().await;
