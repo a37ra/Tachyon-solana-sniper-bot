@@ -1587,21 +1587,26 @@ pub async fn execute_exit_pipeline(
         let position_id = position.position_id.clone();
         let wallet = ctx.wallet;
         let rpc_url = ctx.rpc_url.clone();
+        let trading_mode = ctx.trading_mode;
+        let mint_pubkey_clone = mint_pubkey;
+        let pool_pubkey_clone = pool_pubkey;
+        let dex_program_pubkey_clone = dex_program_pubkey;
+        let amount_in_lamports_clone = amount_in_lamports;
 
-                let priority_fee =
-                    ((priority_fee_baseline as f64) * state.current_stage.priority_fee_multiplier())
-                        as u64;
-                let (unsigned_tx, unsigned_tx_base64) = build_unsigned_transaction(
-                    swap_instructions,
-                    200_000,
-                    priority_fee,
-                    &wallet,
-                    blockhash,
-                )?;
-
-                let req = SignerIntentRequest {
-                    context_key: format!("sell-{}-{}", mint, position_id),
-                    ipc_seq: 0,
+        let mut sign_fn: Box<
+            dyn for<'a> FnMut(
+                &'a EscalationState,
+            ) -> std::pin::Pin<
+                Box<dyn std::future::Future<Output = Result<String>> + Send + 'a>,
+            > + Send,
+        > = Box::new(move |state: &EscalationState| {
+            let signed_tx_state = signed_tx_state_for_sign.clone();
+            let signer = signer_for_sign.clone();
+            let pool_address = pool_address.clone();
+            let dex_program_id = dex_program_id.clone();
+            let mint = mint.clone();
+            let position_id = position_id.clone();
+            let rpc_url = rpc_url.clone();
                     issued_at_unix_ms: chrono::Utc::now()
                         .timestamp_millis()
                         .try_into()
