@@ -1726,6 +1726,19 @@ pub async fn execute_exit_pipeline(
                     .await
                 {
                     Ok(SubmitResult::Confirmed { signature, slot }) => Ok(Some((signature, slot))),
+                    Ok(SubmitResult::Failed { reason }) => {
+                        tracing::warn!(
+                            "Escalation submit failed for stage {}: {}",
+                            state.current_stage,
+                            reason
+                        );
+                        Ok(None)
+                    }
+                    Ok(SubmitResult::Timeout) => {
+                        tracing::warn!(
+                            "Escalation submit timed out for stage {}",
+                            state.current_stage
+                        );
                         Ok(None)
                     }
                     Err(e) => Err(e),
@@ -1733,15 +1746,6 @@ pub async fn execute_exit_pipeline(
             })
         });
 
-
-        let mut persist_fn: Box<
-            dyn for<'a> FnMut(
-                &'a EscalationState,
-            ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>>
-                + Send,
-        > = Box::new(move |_state: &EscalationState| Box::pin(async move { Ok(()) }));
-
-        let trigger = match exit_action {
             ExitAction::HardStopLoss => EscalationTrigger::HardStopLoss,
             ExitAction::Emergency { .. } => EscalationTrigger::HardStopLoss,
             _ => unreachable!(),
