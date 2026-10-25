@@ -1547,22 +1547,26 @@ pub async fn execute_exit_pipeline(
         "Building sell transaction for {:.1}% of remaining position",
         sell_fraction * 100.0
     );
-                Box<dyn std::future::Future<Output = Result<String>> + Send + 'a>,
-            > + Send,
-        > = Box::new(move |state: &EscalationState| {
-            let signed_tx_state = signed_tx_state_for_sign.clone();
-            let signer = signer_for_sign.clone();
-            let pool_address = pool_address.clone();
-            let dex_program_id = dex_program_id.clone();
-            let mint = mint.clone();
-            let position_id = position_id.clone();
-            let rpc_url = rpc_url.clone();
-            Box::pin(async move {
-                tracing::info!(
-                    "Escalation signing for stage {}",
-                    state.current_stage
-                );
 
+    // Build unsigned sell transaction parameters
+    let mint_pubkey = Pubkey::from_str(&ctx.mint).unwrap_or_else(|_| Pubkey::new_unique());
+    let pool_pubkey = Pubkey::from_str(&ctx.pool_address).unwrap_or_else(|_| Pubkey::new_unique());
+    let dex_program_pubkey =
+        Pubkey::from_str(&ctx.dex_program_id).unwrap_or_else(|_| Pubkey::new_unique());
+    let tracked_tokens = ctx.fee_ledger.get_token_amount(&position.position_id);
+    let amount_in_lamports = if tracked_tokens > 0 {
+        ((tracked_tokens as f64) * position.remaining_token_pct.clamp(0.0, 1.0) * sell_fraction)
+            .round()
+            .max(1.0) as u64
+    } else {
+        (position.size_sol * sell_fraction * 1_000_000_000.0) as u64
+    };
+
+    let use_escalation = matches!(exit_action, ExitAction::HardStopLoss | ExitAction::Emergency { .. })
+        && ctx.trading_mode == TradingMode::Live;
+    let mut final_tx = None;
+
+    if use_escalation {
                 let slippage_bps = state.current_stage.slippage_bps();
                 let blockhash = fetch_recent_blockhash(&rpc_url, trading_mode).await?;
                 let swap_instructions = fetch_and_build_dex_swap(
