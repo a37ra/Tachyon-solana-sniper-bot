@@ -1607,22 +1607,25 @@ pub async fn execute_exit_pipeline(
             let mint = mint.clone();
             let position_id = position_id.clone();
             let rpc_url = rpc_url.clone();
-                    issued_at_unix_ms: chrono::Utc::now()
-                        .timestamp_millis()
-                        .try_into()
-                        .unwrap(),
-                    intent_type,
-                    unsigned_transaction_base64: unsigned_tx_base64,
-                    program_id: "solbot-strategy".to_string(),
-                    dex_program_id: dex_program_id.clone(),
-                    max_size_lamports: (position_size_sol * 1_000_000_000.0) as u64,
-                    hard_cap_bps,
-                    destination_addresses: vec![pool_address.clone()],
-                    mint: mint.clone(),
-                    pool_address: pool_address.clone(),
-                    position_id: Some(position_id.clone()),
-                    amount_or_pct: sell_fraction,
-                };
+            Box::pin(async move {
+                tracing::info!(
+                    "Escalation signing for stage {}",
+                    state.current_stage
+                );
+
+                let slippage_bps = state.current_stage.slippage_bps();
+                let blockhash = fetch_recent_blockhash(&rpc_url, trading_mode).await?;
+                let (swap_instructions, _) = fetch_and_build_dex_swap(
+                    &rpc_url,
+                    trading_mode,
+                    &dex_program_id,
+                    wallet,
+                    mint_pubkey_clone,
+                    pool_pubkey_clone,
+                    dex_program_pubkey_clone,
+                    amount_in_lamports_clone,
+                    SwapDirection::Sell,
+                    slippage_bps,
 
                 let resp = signer.sign_intent(req).await?;
                 if resp.status != VerdictStatus::Accepted {
