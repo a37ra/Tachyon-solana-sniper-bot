@@ -1567,22 +1567,26 @@ pub async fn execute_exit_pipeline(
     let mut final_tx = None;
 
     if use_escalation {
-                let slippage_bps = state.current_stage.slippage_bps();
-                let blockhash = fetch_recent_blockhash(&rpc_url, trading_mode).await?;
-                let swap_instructions = fetch_and_build_dex_swap(
-                    &rpc_url,
-                    trading_mode,
-                    &dex_program_id,
-                    wallet,
-                    mint_pubkey_clone,
-                    pool_pubkey_clone,
-                    dex_program_pubkey_clone,
-                    amount_in_lamports_clone,
-                    SwapDirection::Sell,
-                    slippage_bps,
-                    None,
-                )
-                .await?;
+        tracing::info!(
+            "Using escalation state machine for exit action {:?}",
+            exit_action
+        );
+
+        let priority_fee_baseline = ctx.tier_params.emergency_exit.priority_fee_baseline as u64;
+        let hard_cap_bps = ctx.tier_params.emergency_exit.emergency_slippage_bps;
+        let signer = ctx.signer_client.as_ref().unwrap().clone();
+        let router_arc = Arc::new(tokio::sync::Mutex::new(ctx.router.take().unwrap()));
+        let signed_tx_state: Arc<Mutex<Option<Transaction>>> = Arc::new(Mutex::new(None));
+        let signed_tx_state_for_sign = signed_tx_state.clone();
+        let signed_tx_state_for_submit = signed_tx_state.clone();
+        let position_size_sol = position.size_sol;
+        let signer_for_sign = signer;
+        let pool_address = ctx.pool_address.clone();
+        let dex_program_id = ctx.dex_program_id.clone();
+        let mint = ctx.mint.clone();
+        let position_id = position.position_id.clone();
+        let wallet = ctx.wallet;
+        let rpc_url = ctx.rpc_url.clone();
 
                 let priority_fee =
                     ((priority_fee_baseline as f64) * state.current_stage.priority_fee_multiplier())
