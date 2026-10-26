@@ -61,7 +61,11 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Default: logsSubscribe create-ix only (not programSubscribe account updates).
-    // Account-update path falsely treats first-seen old pools as "new".
+    if env::var("SIGNAL_SOURCE").is_err() {
+        env::set_var("SIGNAL_SOURCE", "helius_logs");
+    }
+
+    let is_paper = env::args().any(|a| a == "--paper")
     // Opt-in legacy: SIGNAL_SOURCE=helius_ws|both|helius_both
     if env::var("SIGNAL_SOURCE").is_err() {
         env::set_var("SIGNAL_SOURCE", "helius_logs");
