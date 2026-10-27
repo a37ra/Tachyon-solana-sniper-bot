@@ -89,9 +89,14 @@ async fn main() -> anyhow::Result<()> {
             None
         }
     };
+
+    if is_paper {
         println!("\n=======================================================");
         println!("🚀 SOLANA BOT — PAPER / DRY-RUN");
-        println!("   SIGNAL_SOURCE={}", env::var("SIGNAL_SOURCE").unwrap_or_default());
+        println!(
+            "   SIGNAL_SOURCE={}",
+            env::var("SIGNAL_SOURCE").unwrap_or_default()
+        );
         println!("   RPC={}", resolve_rpc_url());
         println!(
             "   Paper trade journal: {}",
@@ -103,7 +108,6 @@ async fn main() -> anyhow::Result<()> {
         tracing::info!("Starting solbot-strategy in LIVE trading mode");
     }
 
-    // Paper-only: loud log if honeypot sim is off (live refusal is only via assert_safe_for_live).
     if is_paper
         && env::var("SOLBOT_SKIP_SIMULATE_SELL")
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
