@@ -119,7 +119,10 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Spawn Prometheus /metrics HTTP endpoint (port 9090)
-    let metrics_port: u16 = env::var("METRICS_PORT").ok().and_then(|v| v.parse().ok()).unwrap_or(9090);
+    let metrics_port: u16 = env::var("METRICS_PORT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(9090);
     observability::spawn_metrics_server(metrics_port);
 
     let db_url = env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite:solbot.db".to_string());
@@ -129,6 +132,7 @@ async fn main() -> anyhow::Result<()> {
             tracing::warn!("SQLite DB connection error ( ephemerals/dev ): {}", e);
             None
         }
+    };
     };
 
     let positions_repo = sqlite_pool.as_ref().map(|p| Arc::new(PositionsRepo::new(p.clone())));
