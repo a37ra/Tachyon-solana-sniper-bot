@@ -66,17 +66,10 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let is_paper = env::args().any(|a| a == "--paper")
-    // Opt-in legacy: SIGNAL_SOURCE=helius_ws|both|helius_both
-    if env::var("SIGNAL_SOURCE").is_err() {
-        env::set_var("SIGNAL_SOURCE", "helius_logs");
-    }
-
-    let is_paper = env::args().any(|a| a == "--paper")
         || env::var("SOLBOT_PAPER_TRADING")
             .map(|v| v == "true" || v == "1")
             .unwrap_or(true);
 
-    // Public-RPC profile is OK for paper only. Do not silently enable it for live.
     if env::var("SOLBOT_PUBLIC_RPC").is_err() {
         env::set_var(
             "SOLBOT_PUBLIC_RPC",
@@ -84,7 +77,18 @@ async fn main() -> anyhow::Result<()> {
         );
     }
 
-    if is_paper {
+    // Load YAML configurations from config/ directory if present
+    let config_dir = env::var("SOLBOT_CONFIG_DIR").unwrap_or_else(|_| "config".to_string());
+    let loaded_configs = match load_all_configs(Path::new(&config_dir)) {
+        Ok(cfg) => {
+            tracing::info!(dir = %config_dir, "Loaded YAML configuration files successfully");
+            Some(Arc::new(cfg))
+        }
+        Err(e) => {
+            tracing::warn!(dir = %config_dir, error = %e, "Failed to load YAML configs; using built-in defaults");
+            None
+        }
+    };
         println!("\n=======================================================");
         println!("🚀 SOLANA BOT — PAPER / DRY-RUN");
         println!("   SIGNAL_SOURCE={}", env::var("SIGNAL_SOURCE").unwrap_or_default());
