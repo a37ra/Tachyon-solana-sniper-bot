@@ -355,24 +355,28 @@ async fn main() -> anyhow::Result<()> {
         tracing::info!("create-ix logsSubscribe source enabled");
     }
 
-        "Actor system ready (pipeline stats are GLOBAL, not per-listener)"
-    );
+    if signal_rxs.is_empty() {
+        anyhow::bail!(
+            "No signal sources: set SIGNAL_SOURCE=helius_ws|helius_logs|both (got '{signal_source}')"
+        );
+    }
 
-    tokio::signal::ctrl_c().await?;
-    tracing::info!("Received shutdown signal");
-    let final_stats = solbot_strategy::signal::pipeline_stats::snapshot();
-    tracing::info!(?final_stats, "PIPELINE STATS final");
-
-    Ok(())
-}
-
-async fn process_signals(
-    mut signal_rx: mpsc::Receiver<solbot_common::types::Signal>,
-    dedup_filter: DedupFilter,
-    actor_registry: ActorRegistry,
-    is_paper: bool,
-    wallet_pubkey: solana_sdk::pubkey::Pubkey,
-    router: Option<Arc<TransactionRouter>>,
+    for (rx, label) in signal_rxs {
+        let dedup = dedup_filter.clone();
+        let actors = actor_registry.clone();
+        let wallet = wallet_pubkey;
+        let router_c = router.clone();
+        let signer_c = signer_client.clone();
+        let rpc_c = live_rpc_url.clone();
+        let dex_r = dex_readiness.clone();
+        let actor_cfg = actor_config.clone();
+        let risk = shared_risk.clone();
+        let paper = is_paper;
+        let pos_repo = positions_repo.clone();
+        let trans_repo = state_transitions_repo.clone();
+        let pos_lifecycle = position_lifecycle.clone();
+        let lifecycle_tx = lifecycle_event_tx.clone();
+        let cb = circuit_breaker.clone();
     signer_client: Option<Arc<SignerClient>>,
     rpc_url: Option<String>,
     dex_readiness: DexReadinessConfig,
