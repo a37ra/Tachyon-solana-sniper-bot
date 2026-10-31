@@ -244,24 +244,28 @@ async fn main() -> anyhow::Result<()> {
         backfill_provider: backfill_provider.as_ref(),
     };
     let _hydration_report = startup::hydration::hydrate_system_state_with_opts(&hydration_opts).await?;
-    // logsSubscribe create-ix is the primary source. programSubscribe is opt-in only
-    // (helius_ws / both) — it cannot distinguish new pools from first-seen old ones.
-    let use_account_ws = matches!(
-        signal_source.as_str(),
-        "helius_ws" | "geyser_grpc" | "both" | "helius_both"
-    );
-    let use_create_ix = matches!(
-        signal_source.as_str(),
-        "helius_logs" | "create_ix" | "both" | "helius_both"
-    ) || env::var("SOLBOT_CREATE_IX")
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false)
-        || !use_account_ws;
 
-    let mut signal_rxs: Vec<(mpsc::Receiver<solbot_common::types::Signal>, &'static str)> =
-        Vec::new();
+    // Pump fee_recipient from on-chain Global — no hardcoded tip/fee addresses.
+    solbot_strategy::tx_builder::pump_fun::load_fee_recipient_from_global(shared_rpc.as_ref())
+        .await
+        .map_err(|e| {
+            anyhow::anyhow!("pump Global fee_recipient load failed (refusing start): {e}")
+        })?;
 
-    if use_account_ws {
+    // Spawn background MarketDataLane PriceTick feed for open positions so TP/SL/Trailing Stop trigger in runtime
+    if let Some(ref pos_repo) = positions_repo {
+        let pos_repo_tick = pos_repo.clone();
+        let actors_tick = actor_registry.clone();
+        let rpc_tick = shared_rpc.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_millis(1000));
+            loop {
+                interval.tick().await;
+                let Ok(open_positions) = pos_repo_tick.get_open_positions().await else {
+                    continue;
+                };
+                for pos in open_positions {
+                    let Some(handle) = actors_tick.get(&pos.mint) else {
         let raydium_listener = RaydiumListener::new();
         let meteora_listener = MeteoraListener::new();
         let pump_fun_listener = PumpFunListener::new();
