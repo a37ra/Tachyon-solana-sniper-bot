@@ -266,24 +266,28 @@ async fn main() -> anyhow::Result<()> {
                 };
                 for pos in open_positions {
                     let Some(handle) = actors_tick.get(&pos.mint) else {
-        let raydium_listener = RaydiumListener::new();
-        let meteora_listener = MeteoraListener::new();
-        let pump_fun_listener = PumpFunListener::new();
-        signal_rxs.push((
-            raydium_listener.subscribe_to_pool_creation().await?,
-            "raydium_ws",
-        ));
-        signal_rxs.push((
-            meteora_listener.subscribe_to_pool_creation().await?,
-            "meteora_ws",
-        ));
-        signal_rxs.push((
-            pump_fun_listener.subscribe_to_bonding_curve().await?,
-            "pump_fun_ws",
-        ));
-    }
-
-    if use_create_ix {
+                        continue;
+                    };
+                    let Ok(pool_pk) = solana_pubkey::Pubkey::from_str(&pos.pool_address) else {
+                        continue;
+                    };
+                    let Ok(mint_pk) = solana_pubkey::Pubkey::from_str(&pos.mint) else {
+                        continue;
+                    };
+                    if let Ok(account) = rpc_tick.get_account(&pool_pk).await {
+                        if let Some(price_sol) = mint_actor::fetch_pool_spot_price_sol(
+                            rpc_tick.as_ref(),
+                            &pos.dex_program_id,
+                            &pool_pk,
+                            &mint_pk,
+                            &account.data,
+                        )
+                        .await
+                        {
+                            let ts = chrono::Utc::now().timestamp_millis() as u64;
+                            let _ = handle
+                                .market_data_tx
+                                .try_send(MarketDataEvent::PriceTick {
         use solana_pubkey::Pubkey;
         use std::str::FromStr;
         let programs = vec![
