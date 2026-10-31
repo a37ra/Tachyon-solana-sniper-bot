@@ -310,24 +310,28 @@ async fn main() -> anyhow::Result<()> {
     let use_create_ix = matches!(
         signal_source.as_str(),
         "helius_logs" | "create_ix" | "both" | "helius_both"
+    ) || env::var("SOLBOT_CREATE_IX")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+        || !use_account_ws;
 
-    if signal_rxs.is_empty() {
-        anyhow::bail!(
-            "No signal sources: set SIGNAL_SOURCE=helius_ws|helius_logs|both (got '{signal_source}')"
-        );
-    }
+    let mut signal_rxs: Vec<(mpsc::Receiver<solbot_common::types::Signal>, &'static str)> =
+        Vec::new();
 
-    for (rx, label) in signal_rxs {
-        let dedup = dedup_filter.clone();
-        let actors = actor_registry.clone();
-        let wallet = wallet_pubkey;
-        let router_c = router.clone();
-        let signer_c = signer_client.clone();
-        let rpc_c = live_rpc_url.clone();
-        let dex_r = dex_readiness.clone();
-        let actor_cfg = actor_config.clone();
-        let risk = shared_risk.clone();
-        let paper = is_paper;
+    if use_account_ws {
+        let raydium_listener = RaydiumListener::new();
+        let meteora_listener = MeteoraListener::new();
+        let pump_fun_listener = PumpFunListener::new();
+        signal_rxs.push((
+            raydium_listener.subscribe_to_pool_creation().await?,
+            "raydium_ws",
+        ));
+        signal_rxs.push((
+            meteora_listener.subscribe_to_pool_creation().await?,
+            "meteora_ws",
+        ));
+        signal_rxs.push((
+            pump_fun_listener.subscribe_to_bonding_curve().await?,
         let pos_repo = positions_repo.clone();
         let sm_hits_repo = smart_money_hits_repo.clone();
         let wl_cache = watchlist_cache.clone();
