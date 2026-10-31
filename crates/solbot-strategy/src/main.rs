@@ -133,24 +133,28 @@ async fn main() -> anyhow::Result<()> {
             None
         }
     };
-    };
 
-    let positions_repo = sqlite_pool.as_ref().map(|p| Arc::new(PositionsRepo::new(p.clone())));
-    let smart_money_hits_repo = sqlite_pool.as_ref().map(|p| Arc::new(SmartMoneyHitsRepo::new(p.clone())));
-    let wallet_watchlist_repo = sqlite_pool.as_ref().map(|p| Arc::new(WalletWatchlistRepo::new(p.clone())));
+    let positions_repo = sqlite_pool
+        .as_ref()
+        .map(|p| Arc::new(PositionsRepo::new(p.clone())));
+    let state_transitions_repo = sqlite_pool
+        .as_ref()
+        .map(|p| Arc::new(StateTransitionsRepo::new(p.clone())));
+    let position_lifecycle = sqlite_pool
+        .as_ref()
+        .map(|p| Arc::new(PositionLifecycle::new(p.clone())));
+    let smart_money_hits_repo = sqlite_pool
+        .as_ref()
+        .map(|p| Arc::new(SmartMoneyHitsRepo::new(p.clone())));
+    let wallet_watchlist_repo = sqlite_pool
+        .as_ref()
+        .map(|p| Arc::new(WalletWatchlistRepo::new(p.clone())));
+    let circuit_breaker = Arc::new(CircuitBreaker::new());
 
-    let watchlist_cache = Arc::new(WatchlistCache::new());
-    if let Some(ref repo) = wallet_watchlist_repo {
-        if let Ok(n) = watchlist_cache.reload_from_repo(repo).await {
-            tracing::info!(count = n, "Smart money watchlist cache hydrated from DB");
-        }
-    }
-
-    let actor_config = ActorConfig::default();
-    let actor_registry = ActorRegistry::new();
-
-    let rpc_url = resolve_rpc_url();
-    let shared_rpc = Arc::new(
+    // Lifecycle event bus -> logs & persists notifications
+    let (lifecycle_event_tx, mut lifecycle_event_rx) = mpsc::channel::<PositionLifecycleEvent>(256);
+    tokio::spawn(async move {
+        while let Some(event) = lifecycle_event_rx.recv().await {
         solana_rpc_client::nonblocking::rpc_client::RpcClient::new_with_commitment(
             rpc_url.clone(),
             solana_sdk::commitment_config::CommitmentConfig::processed(),
