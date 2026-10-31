@@ -222,6 +222,18 @@ async fn main() -> anyhow::Result<()> {
             None,
             None,
             Some(rpc_url.clone()),
+            default_dex_readiness,
+        )
+    };
+
+    let backfill_provider = sqlite_pool.as_ref().map(|p| {
+        solbot_strategy::signal::geyser_client::ExtendedHistoryProvider::new(
+            blocking_rpc.clone(),
+            Arc::new(p.clone()),
+        )
+    });
+
+    // Stage 7: Full System Hydration (TZ §2.4)
     let hydration_opts = HydrationOptions {
         is_live: !is_paper,
         signer_client: signer_client.as_deref(),
@@ -231,16 +243,7 @@ async fn main() -> anyhow::Result<()> {
         wallet_pubkey: Some(wallet_pubkey),
         backfill_provider: backfill_provider.as_ref(),
     };
-    let hydration_report = startup::hydration::hydrate_system_state_with_opts(&hydration_opts).await?;
-
-    // Pump fee_recipient from on-chain Global — no hardcoded tip/fee addresses.
-    solbot_strategy::tx_builder::pump_fun::load_fee_recipient_from_global(shared_rpc.as_ref())
-        .await
-        .map_err(|e| anyhow::anyhow!("pump Global fee_recipient load failed (refusing start): {e}"))?;
-
-    let dedup_filter = DedupFilter::new(30);
-    let signal_source = env::var("SIGNAL_SOURCE").unwrap_or_else(|_| "helius_logs".into());
-
+    let _hydration_report = startup::hydration::hydrate_system_state_with_opts(&hydration_opts).await?;
     // logsSubscribe create-ix is the primary source. programSubscribe is opt-in only
     // (helius_ws / both) — it cannot distinguish new pools from first-seen old ones.
     let use_account_ws = matches!(
