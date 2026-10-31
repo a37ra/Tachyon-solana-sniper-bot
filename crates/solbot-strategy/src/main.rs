@@ -155,24 +155,28 @@ async fn main() -> anyhow::Result<()> {
     let (lifecycle_event_tx, mut lifecycle_event_rx) = mpsc::channel::<PositionLifecycleEvent>(256);
     tokio::spawn(async move {
         while let Some(event) = lifecycle_event_rx.recv().await {
+            tracing::info!(?event, "PositionLifecycleEvent emitted");
+        }
+    });
+
+    let watchlist_cache = Arc::new(WatchlistCache::new());
+    if let Some(ref repo) = wallet_watchlist_repo {
+        if let Ok(n) = watchlist_cache.reload_from_repo(repo).await {
+            tracing::info!(count = n, "Smart money watchlist cache hydrated from DB");
+        }
+    }
+
+    let actor_config = ActorConfig::default();
+    let actor_registry = ActorRegistry::new();
+
+    let rpc_url = resolve_rpc_url();
+    let shared_rpc = Arc::new(
         solana_rpc_client::nonblocking::rpc_client::RpcClient::new_with_commitment(
             rpc_url.clone(),
             solana_sdk::commitment_config::CommitmentConfig::processed(),
         ),
     );
-    let blocking_rpc = Arc::new(solana_rpc_client::rpc_client::RpcClient::new(rpc_url.clone()));
-
-    let shared_risk = Arc::new(RiskGateConfig::from_shared_rpc(
-        shared_rpc.clone(),
-        rpc_url.clone(),
-    ));
-    if !is_paper {
-        shared_risk.assert_safe_for_live()?;
-    }
-
-    let (wallet_pubkey, router, signer_client, live_rpc_url, dex_readiness) = if !is_paper {
-        let live_rpc = env::var("SOLBOT_RPC_URL").unwrap_or_else(|_| rpc_url.clone());
-        let signer_socket = env::var("SOLBOT_SIGNER_SOCKET")
+    let blocking_rpc = Arc::new(solana_rpc_client::rpc_client::RpcClient::new(
             .unwrap_or_else(|_| "/tmp/solbot-signer.sock".to_string());
         let wallet_keypair = env::var("SOLBOT_KEYPAIR_JSON")
             .map_err(|_| anyhow::anyhow!("SOLBOT_KEYPAIR_JSON required for live mode"))?;
