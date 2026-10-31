@@ -177,24 +177,29 @@ async fn main() -> anyhow::Result<()> {
         ),
     );
     let blocking_rpc = Arc::new(solana_rpc_client::rpc_client::RpcClient::new(
+        rpc_url.clone(),
+    ));
+
+    let shared_risk = Arc::new(RiskGateConfig::from_shared_rpc(
+        shared_rpc.clone(),
+        rpc_url.clone(),
+    ));
+    if !is_paper {
+        shared_risk.assert_safe_for_live()?;
+    }
+
+    let default_dex_readiness = loaded_configs
+        .as_ref()
+        .map(|c| c.base.features.dex_readiness.clone())
+        .unwrap_or_default();
+
+    let (wallet_pubkey, router, signer_client, live_rpc_url, dex_readiness) = if !is_paper {
+        let live_rpc = env::var("SOLBOT_RPC_URL").unwrap_or_else(|_| rpc_url.clone());
+        let signer_socket = env::var("SOLBOT_SIGNER_SOCKET")
             .unwrap_or_else(|_| "/tmp/solbot-signer.sock".to_string());
         let wallet_keypair = env::var("SOLBOT_KEYPAIR_JSON")
             .map_err(|_| anyhow::anyhow!("SOLBOT_KEYPAIR_JSON required for live mode"))?;
 
-        let wallet_keypair_bytes: Vec<u8> = serde_json::from_str(&wallet_keypair)?;
-        let wallet_keypair = solana_keypair::Keypair::from_bytes(&wallet_keypair_bytes)?;
-        let wallet_pubkey = wallet_keypair.pubkey();
-
-        let router = Arc::new(TransactionRouter::new(
-            solbot_strategy::routing::RoutingConfig::default(),
-        )?);
-        let signer_client = Arc::new(SignerClient::new(signer_socket));
-        let dex_readiness = DexReadinessConfig::default();
-
-        (
-            wallet_pubkey,
-            Some(router),
-            Some(signer_client),
             Some(live_rpc),
             dex_readiness,
         )
