@@ -200,8 +200,21 @@ async fn main() -> anyhow::Result<()> {
         let wallet_keypair = env::var("SOLBOT_KEYPAIR_JSON")
             .map_err(|_| anyhow::anyhow!("SOLBOT_KEYPAIR_JSON required for live mode"))?;
 
+        let wallet_keypair_bytes: Vec<u8> = serde_json::from_str(&wallet_keypair)?;
+        let wallet_keypair = solana_keypair::Keypair::from_bytes(&wallet_keypair_bytes)?;
+        let wallet_pubkey = wallet_keypair.pubkey();
+
+        let router = Arc::new(TransactionRouter::new(
+            solbot_strategy::routing::RoutingConfig::default(),
+        )?);
+        let signer_client = Arc::new(SignerClient::new(signer_socket));
+
+        (
+            wallet_pubkey,
+            Some(router),
+            Some(signer_client),
             Some(live_rpc),
-            dex_readiness,
+            default_dex_readiness,
         )
     } else {
         (
@@ -209,15 +222,6 @@ async fn main() -> anyhow::Result<()> {
             None,
             None,
             Some(rpc_url.clone()),
-            DexReadinessConfig::default(),
-        )
-    };
-
-    let backfill_provider = sqlite_pool
-        .as_ref()
-        .map(|p| solbot_strategy::signal::geyser_client::ExtendedHistoryProvider::new(blocking_rpc.clone(), Arc::new(p.clone())));
-
-    // Stage 7: Full System Hydration (TZ §2.4)
     let hydration_opts = HydrationOptions {
         is_live: !is_paper,
         signer_client: signer_client.as_deref(),
