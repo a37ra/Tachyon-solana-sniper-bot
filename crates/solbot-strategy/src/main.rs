@@ -288,24 +288,28 @@ async fn main() -> anyhow::Result<()> {
                             let _ = handle
                                 .market_data_tx
                                 .try_send(MarketDataEvent::PriceTick {
-        use solana_pubkey::Pubkey;
-        use std::str::FromStr;
-        let programs = vec![
-            Pubkey::from_str("675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8")?,
-            Pubkey::from_str("CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C")?,
-            Pubkey::from_str("CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK")?,
-            Pubkey::from_str("LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo")?,
-            Pubkey::from_str("cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG")?,
-            Pubkey::from_str("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P")?,
-        ];
-        let create_rx = solbot_strategy::signal::create_ix_source::subscribe_create_ix_signals(
-            programs,
-            shared_rpc.clone(),
-        )
-        .await?;
-        signal_rxs.push((create_rx, "create_ix_logs"));
-        tracing::info!("create-ix logsSubscribe source enabled");
+                                    mint: pos.mint.clone(),
+                                    pool_address: pos.pool_address.clone(),
+                                    price_sol,
+                                    timestamp: ts,
+                                });
+                        }
+                    }
+                }
+            }
+        });
     }
+
+    let dedup_filter = DedupFilter::new(30);
+    let signal_source = env::var("SIGNAL_SOURCE").unwrap_or_else(|_| "helius_logs".into());
+
+    let use_account_ws = matches!(
+        signal_source.as_str(),
+        "helius_ws" | "geyser_grpc" | "both" | "helius_both"
+    );
+    let use_create_ix = matches!(
+        signal_source.as_str(),
+        "helius_logs" | "create_ix" | "both" | "helius_both"
 
     if signal_rxs.is_empty() {
         anyhow::bail!(
