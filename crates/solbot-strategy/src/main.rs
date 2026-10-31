@@ -332,24 +332,29 @@ async fn main() -> anyhow::Result<()> {
         ));
         signal_rxs.push((
             pump_fun_listener.subscribe_to_bonding_curve().await?,
-        let pos_repo = positions_repo.clone();
-        let sm_hits_repo = smart_money_hits_repo.clone();
-        let wl_cache = watchlist_cache.clone();
-        tokio::spawn(async move {
-            tracing::info!(listener = label, "Signal processor started");
-            process_signals(
-                rx, dedup, actors, paper, wallet, router_c, signer_c, rpc_c, dex_r, actor_cfg, risk,
-                pos_repo, sm_hits_repo, Some(wl_cache),
-            )
-            .await;
-        });
+            "pump_fun_ws",
+        ));
     }
 
-    solbot_strategy::signal::pipeline_stats::spawn_stats_logger();
-    tracing::info!(
-        public_rpc = %std::env::var("SOLBOT_PUBLIC_RPC").unwrap_or_default(),
-        max_signal_age_ms = %std::env::var("SOLBOT_MAX_SIGNAL_AGE_MS").unwrap_or_else(|_| "2000".into()),
-        rpc_url_host = %rpc_url.split('?').next().unwrap_or(&rpc_url),
+    if use_create_ix {
+        use solana_pubkey::Pubkey;
+        let programs = vec![
+            Pubkey::from_str("675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8")?,
+            Pubkey::from_str("CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C")?,
+            Pubkey::from_str("CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK")?,
+            Pubkey::from_str("LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo")?,
+            Pubkey::from_str("cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG")?,
+            Pubkey::from_str("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P")?,
+        ];
+        let create_rx = solbot_strategy::signal::create_ix_source::subscribe_create_ix_signals(
+            programs,
+            shared_rpc.clone(),
+        )
+        .await?;
+        signal_rxs.push((create_rx, "create_ix_logs"));
+        tracing::info!("create-ix logsSubscribe source enabled");
+    }
+
         "Actor system ready (pipeline stats are GLOBAL, not per-listener)"
     );
 
