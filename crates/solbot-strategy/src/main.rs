@@ -709,6 +709,17 @@ async fn dispatch_to_actor(
     circuit_breaker: Option<Arc<CircuitBreaker>>,
     smart_money_hits_repo: Option<Arc<SmartMoneyHitsRepo>>,
     watchlist_cache: Option<Arc<WatchlistCache>>,
+    loaded_configs: Option<Arc<solbot_common::config::loader::AppConfig>>,
+) {
+    let new_pool = ControlEvent::NewPoolSignal {
+        mint: signal.mint.clone(),
+        pool_address: signal.pool_address.clone(),
+        dex_program: signal.dex_program.clone(),
+        slot: signal.slot,
+        received_at: signal.received_at,
+        raw_pool_account_data: signal.raw_pool_account_data.clone(),
+        raw_pool_account_owner: signal.raw_pool_account_owner.clone(),
+    };
 
     if let Some(actor_handle) = actors.get(&signal.mint) {
         let _ = actor_handle.control_tx.send(new_pool).await;
@@ -718,16 +729,9 @@ async fn dispatch_to_actor(
     tracing::info!("Creating new actor for mint: {}", signal.mint);
 
     let (control_tx, control_rx) = mpsc::channel(100);
-    let (market_data_tx, _market_data_rx) = mpsc::channel(100);
     let market_data_lane = MarketDataLane::new();
+    let market_data_tx = market_data_lane.sender();
 
-    let ctx = ActorContext {
-        mint: signal.mint.clone(),
-        pool_address: signal.pool_address.clone(),
-        dex_program_id: signal.dex_program.clone(),
-        wallet: wallet_key,
-        trading_mode,
-        risk_gate_config,
         tier: solbot_common::types::tier::CapitalTier::Small,
         tier_params: solbot_common::config::TierParams {
             tier: TierInfo {
