@@ -732,8 +732,10 @@ async fn dispatch_to_actor(
     let market_data_lane = MarketDataLane::new();
     let market_data_tx = market_data_lane.sender();
 
-        tier: solbot_common::types::tier::CapitalTier::Small,
-        tier_params: solbot_common::config::TierParams {
+    let tier_params = loaded_configs
+        .as_ref()
+        .map(|c| c.small_tier.clone())
+        .unwrap_or_else(|| solbot_common::config::TierParams {
             tier: TierInfo {
                 name: "Small".to_string(),
                 capital_range: solbot_common::config::tier_params::CapitalRange {
@@ -750,6 +752,8 @@ async fn dispatch_to_actor(
                 },
                 adaptive: solbot_common::config::tier_params::AdaptiveParams {
                     enabled: false,
+                    calibration_window_slots: 1000,
+                    min_sample_size: 10,
                     calibration_window_slots: 1000,
                     min_sample_size: 10,
                     size_max_pct: 0.05,
