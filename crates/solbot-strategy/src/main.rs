@@ -488,24 +488,28 @@ async fn process_signals(
         }
 
         if inbound_latency > max_signal_age_ms {
-            signal.dex_program,
-            queue_depth,
-            inbound_latency,
-            signal.raw_pool_account_data.is_some()
-        );
+            let seq_num = signal_count.fetch_add(1, Ordering::SeqCst);
+            let age_u = inbound_latency as u64;
+            pipeline_stats::inc_drop("stale");
+            pipeline_stats::record_stale_age_ms(age_u);
+            tracing::warn!(
+                "[SIGNAL DROPPED - STALE] seq={}, mint={}, inbound_age_ms={:.2} > {}ms threshold",
+                seq_num,
+                signal.mint,
+                inbound_latency,
+                max_signal_age_ms
+            );
+            continue;
+        }
 
-        let dedup = dedup_filter.clone();
-        let actors = actor_registry.clone();
-        let router_clone = router.clone();
-        let signer_clone = signer_client.clone();
-        let rpc_clone = rpc_url.clone();
-        let dex_ready = dex_readiness.clone();
-        let actor_cfg = actor_config.clone();
-        let risk_cfg = shared_risk.clone();
-        let sem = semaphore.clone();
-        let wallet_key = wallet_pubkey;
-        let positions_repo_clone = positions_repo.clone();
-        let smart_money_hits_repo_clone = smart_money_hits_repo.clone();
+        if !solbot_strategy::signal::pool_signal::is_plausible_spl_mint(
+            &solana_sdk::pubkey::Pubkey::try_from(signal.mint.as_str()).unwrap_or_default(),
+        ) {
+            let seq_num = signal_count.fetch_add(1, Ordering::SeqCst);
+            pipeline_stats::inc_drop("bad_mint");
+            tracing::warn!(
+                "[SIGNAL DROPPED - BAD_MINT] seq={}, mint={}",
+                seq_num,
         let watchlist_cache_clone = watchlist_cache.clone();
 
         let permit = match StdArc::clone(&sem).acquire_owned().await {
