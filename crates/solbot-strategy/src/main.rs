@@ -643,6 +643,20 @@ async fn process_signals(
                 )
                 .await;
             }
+
+            tracing::info!(
+                "[SIGNAL PROCESSING END] seq={}, mint={}, total_processing_ms={:.2}, inbound_age_ms={:.2}",
+                seq_num,
+                signal.mint,
+                process_start.elapsed().as_secs_f64() * 1000.0,
+                inbound_latency
+            );
+        });
+    }
+}
+
+fn reject_reason_bucket(reason: &str) -> String {
+    let r = reason.to_lowercase();
     if r.contains("stale signal") {
         "stale".into()
     } else if r.contains("timeout") || r.contains("timed out") {
@@ -651,16 +665,6 @@ async fn process_signals(
         "mint_unavailable".into()
     } else if r.contains("failed to parse mint") || r.contains("invalidstate") {
         "mint_parse".into()
-    } else if r.contains("not spl token") {
-        "bad_mint_owner".into()
-    } else if r.contains("freeze") || r.contains("mint_authority") || r.contains("mint authority") {
-        "freeze_or_mint_auth".into()
-    } else if r.contains("lp_lock") || r.contains("lp lock") || r.contains("unsupported dex program for lp") {
-        "lp_lock".into()
-    } else if r.contains("token2022") || r.contains("extension") {
-        "token2022".into()
-    } else if r.contains("unsupported dex program for simulation") {
-        "simulate_unsupported_dex".into()
     } else if r.contains("builder_error") || r.contains("builder error") {
         "builder_error".into()
     } else if r.contains("honeypot") || r.contains("simulate") || r.contains("tax") {
