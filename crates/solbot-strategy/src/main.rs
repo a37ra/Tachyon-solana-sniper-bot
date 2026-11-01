@@ -532,24 +532,28 @@ async fn process_signals(
         let actors = actor_registry.clone();
         let router_clone = router.clone();
         let signer_clone = signer_client.clone();
+        let rpc_clone = rpc_url.clone();
+        let dex_ready = dex_readiness.clone();
+        let actor_cfg = actor_config.clone();
+        let risk_cfg = shared_risk.clone();
+        let sem = semaphore.clone();
+        let wallet_key = wallet_pubkey;
+        let positions_repo_clone = positions_repo.clone();
+        let state_transitions_repo_clone = state_transitions_repo.clone();
+        let position_lifecycle_clone = position_lifecycle.clone();
+        let lifecycle_event_tx_clone = lifecycle_event_tx.clone();
+        let circuit_breaker_clone = circuit_breaker.clone();
+        let smart_money_hits_repo_clone = smart_money_hits_repo.clone();
+        let watchlist_cache_clone = watchlist_cache.clone();
+        let loaded_configs_clone = loaded_configs.clone();
 
-            // Always run anti-rug on shared client (paper + live pre-check log).
-            let timer_risk = PhaseTimer::start();
-            let verdict = run_pre_buy_checks_with_timeout(&signal, risk_cfg.as_ref()).await;
-            let anti_rug_us = timer_risk.elapsed_us();
+        let permit = match StdArc::clone(&sem).acquire_owned().await {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
 
-            match &verdict {
-                solbot_strategy::risk_gate::RiskGateVerdict::Accept => {
-                    pipeline_stats::inc_accept();
-                    solbot_strategy::paper_trade_log::log_accept(
-                        &signal.mint,
-                        &signal.pool_address,
-                        &signal.dex_program,
-                        anti_rug_us as f64 / 1000.0,
-                    );
-                    tracing::info!(
-                        seq = seq_num,
-                        mint = %signal.mint,
+        tokio::spawn(async move {
+            let _permit = permit;
                         anti_rug_us,
                         "Risk gate ACCEPT"
                     );
