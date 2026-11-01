@@ -621,24 +621,28 @@ async fn process_signals(
                 } else {
                     mint_actor::TradingMode::Live
                 };
+                dispatch_to_actor(
+                    &signal,
+                    &actors,
+                    wallet_key,
+                    mode,
+                    risk_cfg.as_ref().clone(),
+                    router_clone,
+                    signer_clone,
+                    rpc_clone,
+                    dex_ready,
+                    actor_cfg,
+                    positions_repo_clone,
+                    state_transitions_repo_clone,
+                    position_lifecycle_clone,
+                    lifecycle_event_tx_clone,
+                    circuit_breaker_clone,
+                    smart_money_hits_repo_clone,
                     watchlist_cache_clone,
+                    loaded_configs_clone,
                 )
                 .await;
             }
-
-            tracing::info!(
-                "[SIGNAL PROCESSING END] seq={}, mint={}, total_processing_ms={:.2}, inbound_age_ms={:.2}",
-                seq_num,
-                signal.mint,
-                process_start.elapsed().as_secs_f64() * 1000.0,
-                inbound_latency
-            );
-        });
-    }
-}
-
-fn reject_reason_bucket(reason: &str) -> String {
-    let r = reason.to_lowercase();
     if r.contains("stale signal") {
         "stale".into()
     } else if r.contains("timeout") || r.contains("timed out") {
