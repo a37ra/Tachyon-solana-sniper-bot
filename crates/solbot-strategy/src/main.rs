@@ -665,6 +665,20 @@ fn reject_reason_bucket(reason: &str) -> String {
         "mint_unavailable".into()
     } else if r.contains("failed to parse mint") || r.contains("invalidstate") {
         "mint_parse".into()
+    } else if r.contains("not spl token") {
+        "bad_mint_owner".into()
+    } else if r.contains("freeze") || r.contains("mint_authority") || r.contains("mint authority")
+    {
+        "freeze_or_mint_auth".into()
+    } else if r.contains("lp_lock")
+        || r.contains("lp lock")
+        || r.contains("unsupported dex program for lp")
+    {
+        "lp_lock".into()
+    } else if r.contains("token2022") || r.contains("extension") {
+        "token2022".into()
+    } else if r.contains("unsupported dex program for simulation") {
+        "simulate_unsupported_dex".into()
     } else if r.contains("builder_error") || r.contains("builder error") {
         "builder_error".into()
     } else if r.contains("honeypot") || r.contains("simulate") || r.contains("tax") {
@@ -672,17 +686,7 @@ fn reject_reason_bucket(reason: &str) -> String {
     } else if r.contains("failed to fetch pre-buy") {
         "context_fetch".into()
     } else {
-        // Keep raw prefix so "other" never swallows unknown reasons silently in greps.
         format!("other:{}", reason.chars().take(48).collect::<String>())
-    }
-}
-
-async fn dispatch_to_actor(
-    signal: &solbot_common::types::Signal,
-    actors: &ActorRegistry,
-    wallet_key: solana_sdk::pubkey::Pubkey,
-    trading_mode: mint_actor::TradingMode,
-    risk_gate_config: RiskGateConfig,
     router: Option<Arc<TransactionRouter>>,
     signer_client: Option<Arc<SignerClient>>,
     rpc_url: Option<String>,
