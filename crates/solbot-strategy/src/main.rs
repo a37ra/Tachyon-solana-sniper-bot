@@ -377,25 +377,28 @@ async fn main() -> anyhow::Result<()> {
         let pos_lifecycle = position_lifecycle.clone();
         let lifecycle_tx = lifecycle_event_tx.clone();
         let cb = circuit_breaker.clone();
-    signer_client: Option<Arc<SignerClient>>,
-    rpc_url: Option<String>,
-    dex_readiness: DexReadinessConfig,
-    actor_config: ActorConfig,
-    shared_risk: Arc<RiskGateConfig>,
-    positions_repo: Option<Arc<PositionsRepo>>,
-    smart_money_hits_repo: Option<Arc<SmartMoneyHitsRepo>>,
-    watchlist_cache: Option<Arc<WatchlistCache>>,
-) {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::Arc as StdArc;
-
-    use solbot_strategy::signal::pipeline_stats;
-    let signal_count = StdArc::new(AtomicUsize::new(0));
-    // Throughput: permits / mean_check_latency. After noise filter, default 5 is enough
-    // for paper; live private RPC can raise via SOLBOT_MAX_CONCURRENT_SIGNALS.
-    let max_concurrent = env::var("SOLBOT_MAX_CONCURRENT_SIGNALS")
-        .ok()
-        .and_then(|v| v.parse().ok())
+        let sm_hits_repo = smart_money_hits_repo.clone();
+        let wl_cache = watchlist_cache.clone();
+        let cfg_clone = loaded_configs.clone();
+        tokio::spawn(async move {
+            tracing::info!(listener = label, "Signal processor started");
+            process_signals(
+                rx,
+                dedup,
+                actors,
+                paper,
+                wallet,
+                router_c,
+                signer_c,
+                rpc_c,
+                dex_r,
+                actor_cfg,
+                risk,
+                pos_repo,
+                trans_repo,
+                pos_lifecycle,
+                Some(lifecycle_tx),
+                Some(cb),
         .unwrap_or(5);
     let semaphore = StdArc::new(tokio::sync::Semaphore::new(max_concurrent));
     // Bound memory: mpsc from listeners is 256; if queue is full, senders await (backpressure).
