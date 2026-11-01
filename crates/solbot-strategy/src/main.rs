@@ -466,24 +466,28 @@ async fn process_signals(
         .unwrap_or(2_000.0);
 
     while let Some(signal) = signal_rx.recv().await {
-        ) {
+        let queue_depth = signal_rx.len();
+        let now_ms = chrono::Utc::now().timestamp_millis() as u64;
+        let inbound_latency = if signal.received_at > 0 && now_ms >= signal.received_at {
+            (now_ms - signal.received_at) as f64
+        } else {
+            0.0
+        };
+
+        if queue_depth > max_queue_depth {
             let seq_num = signal_count.fetch_add(1, Ordering::SeqCst);
-            pipeline_stats::inc_drop("bad_mint");
+            pipeline_stats::inc_drop("queue_overflow");
             tracing::warn!(
-                "[SIGNAL DROPPED - BAD_MINT] seq={}, mint={}",
+                "[SIGNAL DROPPED - QUEUE] seq={}, mint={}, queue_depth={} > max={}",
                 seq_num,
-                signal.mint
+                signal.mint,
+                queue_depth,
+                max_queue_depth
             );
             continue;
         }
 
-        let seq_num = signal_count.fetch_add(1, Ordering::SeqCst);
-        pipeline_stats::inc_queued();
-        tracing::info!(
-            "[SIGNAL QUEUED] seq={}, mint={}, pool={}, dex={}, queue_depth={}, inbound_age_ms={:.2}, has_raw_pool={}",
-            seq_num,
-            signal.mint,
-            signal.pool_address,
+        if inbound_latency > max_signal_age_ms {
             signal.dex_program,
             queue_depth,
             inbound_latency,
