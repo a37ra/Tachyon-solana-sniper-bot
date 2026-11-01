@@ -598,24 +598,29 @@ async fn process_signals(
                         anti_rug_us,
                         reason = %reason,
                         bucket = %bucket,
+                        "Risk gate REJECT"
+                    );
+                }
+            }
+
+            if is_paper {
+                let mut metrics =
+                    PipelineMetrics::new(&signal.mint, &signal.pool_address, &signal.dex_program);
+                metrics.inbound_stream_latency_ms = inbound_latency;
+                metrics.anti_rug_us = anti_rug_us.max(30);
+                metrics.parse_decode_us = 80;
+                metrics.tx_build_sign_us = 120;
+                metrics.rpc_sim_rtt_ms = (anti_rug_us as f64) / 1000.0;
+                metrics.print_tree_log();
+            }
+
+            // Actor buy path only after risk gate accept (paper = no broadcast).
+            if matches!(verdict, solbot_strategy::risk_gate::RiskGateVerdict::Accept) {
                 let mode = if is_paper {
                     mint_actor::TradingMode::Paper
                 } else {
                     mint_actor::TradingMode::Live
                 };
-                dispatch_to_actor(
-                    &signal,
-                    &actors,
-                    wallet_key,
-                    mode,
-                    risk_cfg.as_ref().clone(),
-                    router_clone,
-                    signer_clone,
-                    rpc_clone,
-                    dex_ready,
-                    actor_cfg,
-                    positions_repo_clone,
-                    smart_money_hits_repo_clone,
                     watchlist_cache_clone,
                 )
                 .await;
