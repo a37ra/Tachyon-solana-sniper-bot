@@ -399,24 +399,28 @@ async fn main() -> anyhow::Result<()> {
                 pos_lifecycle,
                 Some(lifecycle_tx),
                 Some(cb),
-        .unwrap_or(5);
-    let semaphore = StdArc::new(tokio::sync::Semaphore::new(max_concurrent));
-    // Bound memory: mpsc from listeners is 256; if queue is full, senders await (backpressure).
-    // Additional hard drop when receiver-side backlog exceeds this while waiting for permit.
-    let max_queue_depth: usize = env::var("SOLBOT_MAX_QUEUE_DEPTH")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(64);
+                sm_hits_repo,
+                Some(wl_cache),
+                cfg_clone,
+            )
+            .await;
+        });
+    }
 
-    // Paper public profile default 2000ms; override via SOLBOT_MAX_SIGNAL_AGE_MS.
-    let max_signal_age_ms: f64 = env::var("SOLBOT_MAX_SIGNAL_AGE_MS")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(2_000.0);
+    solbot_strategy::signal::pipeline_stats::spawn_stats_logger();
+    tracing::info!(
+        public_rpc = %std::env::var("SOLBOT_PUBLIC_RPC").unwrap_or_default(),
+        max_signal_age_ms = %std::env::var("SOLBOT_MAX_SIGNAL_AGE_MS").unwrap_or_else(|_| "2000".into()),
+        rpc_url_host = %rpc_url.split('?').next().unwrap_or(&rpc_url),
+        "Actor system ready (pipeline stats are GLOBAL, not per-listener)"
+    );
 
-    while let Some(signal) = signal_rx.recv().await {
-        let queue_depth = signal_rx.len();
-        let now_ms = chrono::Utc::now().timestamp_millis() as u64;
+    tokio::signal::ctrl_c().await?;
+    tracing::info!("Received shutdown signal");
+    let final_stats = solbot_strategy::signal::pipeline_stats::snapshot();
+    tracing::info!(?final_stats, "PIPELINE STATS final");
+
+    Ok(())
         let inbound_latency = if signal.received_at > 0 && now_ms >= signal.received_at {
             (now_ms - signal.received_at) as f64
         } else {
