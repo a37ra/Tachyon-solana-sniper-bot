@@ -576,24 +576,28 @@ async fn process_signals(
                     solbot_strategy::paper_trade_log::log_accept(
                         &signal.mint,
                         &signal.pool_address,
-            }
-
-            if is_paper {
-                let mut metrics =
-                    PipelineMetrics::new(&signal.mint, &signal.pool_address, &signal.dex_program);
-                metrics.inbound_stream_latency_ms = inbound_latency;
-                metrics.anti_rug_us = anti_rug_us.max(30);
-                metrics.parse_decode_us = 80;
-                metrics.tx_build_sign_us = 120;
-                metrics.rpc_sim_rtt_ms = (anti_rug_us as f64) / 1000.0;
-                metrics.print_tree_log();
-            }
-
-            // Actor buy path only after risk gate accept (paper = no broadcast).
-            if matches!(
-                verdict,
-                solbot_strategy::risk_gate::RiskGateVerdict::Accept
-            ) {
+                        &signal.dex_program,
+                        anti_rug_us as f64 / 1000.0,
+                    );
+                    tracing::info!(
+                        seq = seq_num,
+                        mint = %signal.mint,
+                        anti_rug_us,
+                        "Risk gate ACCEPT"
+                    );
+                }
+                solbot_strategy::risk_gate::RiskGateVerdict::Reject { reason } => {
+                    let bucket = reject_reason_bucket(reason);
+                    pipeline_stats::inc_reject(&bucket);
+                    if is_paper {
+                        solbot_strategy::paper_trade_log::log_reject(&signal.mint, reason);
+                    }
+                    tracing::warn!(
+                        seq = seq_num,
+                        mint = %signal.mint,
+                        anti_rug_us,
+                        reason = %reason,
+                        bucket = %bucket,
                 let mode = if is_paper {
                     mint_actor::TradingMode::Paper
                 } else {
