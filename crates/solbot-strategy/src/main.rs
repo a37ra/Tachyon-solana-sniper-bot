@@ -443,24 +443,29 @@ async fn process_signals(
     circuit_breaker: Option<Arc<CircuitBreaker>>,
     smart_money_hits_repo: Option<Arc<SmartMoneyHitsRepo>>,
     watchlist_cache: Option<Arc<WatchlistCache>>,
+    loaded_configs: Option<Arc<solbot_common::config::loader::AppConfig>>,
+) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc as StdArc;
 
-        if inbound_latency > max_signal_age_ms {
-            let seq_num = signal_count.fetch_add(1, Ordering::SeqCst);
-            let age_u = inbound_latency as u64;
-            pipeline_stats::inc_drop("stale");
-            pipeline_stats::record_stale_age_ms(age_u);
-            tracing::warn!(
-                "[SIGNAL DROPPED - STALE] seq={}, mint={}, inbound_age_ms={:.2} > {}ms threshold",
-                seq_num,
-                signal.mint,
-                inbound_latency,
-                max_signal_age_ms
-            );
-            continue;
-        }
+    use solbot_strategy::signal::pipeline_stats;
+    let signal_count = StdArc::new(AtomicUsize::new(0));
+    let max_concurrent = env::var("SOLBOT_MAX_CONCURRENT_SIGNALS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(5);
+    let semaphore = StdArc::new(tokio::sync::Semaphore::new(max_concurrent));
+    let max_queue_depth: usize = env::var("SOLBOT_MAX_QUEUE_DEPTH")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(64);
 
-        if !solbot_strategy::signal::pool_signal::is_plausible_spl_mint(
-            &solana_sdk::pubkey::Pubkey::try_from(signal.mint.as_str()).unwrap_or_default(),
+    let max_signal_age_ms: f64 = env::var("SOLBOT_MAX_SIGNAL_AGE_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(2_000.0);
+
+    while let Some(signal) = signal_rx.recv().await {
         ) {
             let seq_num = signal_count.fetch_add(1, Ordering::SeqCst);
             pipeline_stats::inc_drop("bad_mint");
