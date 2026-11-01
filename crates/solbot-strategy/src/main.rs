@@ -510,24 +510,28 @@ async fn process_signals(
             tracing::warn!(
                 "[SIGNAL DROPPED - BAD_MINT] seq={}, mint={}",
                 seq_num,
-        let watchlist_cache_clone = watchlist_cache.clone();
+                signal.mint
+            );
+            continue;
+        }
 
-        let permit = match StdArc::clone(&sem).acquire_owned().await {
-            Ok(p) => p,
-            Err(_) => continue,
-        };
+        let seq_num = signal_count.fetch_add(1, Ordering::SeqCst);
+        pipeline_stats::inc_queued();
+        tracing::info!(
+            "[SIGNAL QUEUED] seq={}, mint={}, pool={}, dex={}, queue_depth={}, inbound_age_ms={:.2}, has_raw_pool={}",
+            seq_num,
+            signal.mint,
+            signal.pool_address,
+            signal.dex_program,
+            queue_depth,
+            inbound_latency,
+            signal.raw_pool_account_data.is_some()
+        );
 
-        tokio::spawn(async move {
-            let _permit = permit;
-            let process_start = Instant::now();
-            let signal_span = tracing::info_span!("signal_received", mint = %signal.mint, pool = %signal.pool_address, dex = %signal.dex_program);
-            let _enter = signal_span.enter();
-            drop(_enter); // Don't hold across await — just record the span event
-
-            if !dedup.check_signal(&signal) {
-                tracing::debug!("Dedup filtered signal: {}", signal.mint);
-                return;
-            }
+        let dedup = dedup_filter.clone();
+        let actors = actor_registry.clone();
+        let router_clone = router.clone();
+        let signer_clone = signer_client.clone();
 
             // Always run anti-rug on shared client (paper + live pre-check log).
             let timer_risk = PhaseTimer::start();
