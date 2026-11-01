@@ -554,25 +554,28 @@ async fn process_signals(
 
         tokio::spawn(async move {
             let _permit = permit;
-                        anti_rug_us,
-                        "Risk gate ACCEPT"
-                    );
-                }
-                solbot_strategy::risk_gate::RiskGateVerdict::Reject { reason } => {
-                    let bucket = reject_reason_bucket(reason);
-                    pipeline_stats::inc_reject(&bucket);
-                    if is_paper {
-                        solbot_strategy::paper_trade_log::log_reject(&signal.mint, reason);
-                    }
-                    tracing::warn!(
-                        seq = seq_num,
-                        mint = %signal.mint,
-                        anti_rug_us,
-                        reason = %reason,
-                        bucket = %bucket,
-                        "Risk gate REJECT"
-                    );
-                }
+            let process_start = Instant::now();
+            let signal_span = tracing::info_span!("signal_received", mint = %signal.mint, pool = %signal.pool_address, dex = %signal.dex_program);
+            let _enter = signal_span.enter();
+            drop(_enter);
+
+            if !dedup.check_signal(&signal) {
+                tracing::debug!("Dedup filtered signal: {}", signal.mint);
+                return;
+            }
+
+            // Always run anti-rug on shared client (paper + live pre-check log).
+            // RiskGateCache inside risk_cfg caches Accept verdicts by pool_address so the actor won't repeat RPC calls.
+            let timer_risk = PhaseTimer::start();
+            let verdict = run_pre_buy_checks_with_timeout(&signal, risk_cfg.as_ref()).await;
+            let anti_rug_us = timer_risk.elapsed_us();
+
+            match &verdict {
+                solbot_strategy::risk_gate::RiskGateVerdict::Accept => {
+                    pipeline_stats::inc_accept();
+                    solbot_strategy::paper_trade_log::log_accept(
+                        &signal.mint,
+                        &signal.pool_address,
             }
 
             if is_paper {
