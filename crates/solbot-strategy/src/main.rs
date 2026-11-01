@@ -687,24 +687,28 @@ fn reject_reason_bucket(reason: &str) -> String {
         "context_fetch".into()
     } else {
         format!("other:{}", reason.chars().take(48).collect::<String>())
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn dispatch_to_actor(
+    signal: &solbot_common::types::Signal,
+    actors: &ActorRegistry,
+    wallet_key: solana_sdk::pubkey::Pubkey,
+    trading_mode: mint_actor::TradingMode,
+    risk_gate_config: RiskGateConfig,
     router: Option<Arc<TransactionRouter>>,
     signer_client: Option<Arc<SignerClient>>,
     rpc_url: Option<String>,
     dex_readiness: DexReadinessConfig,
     actor_config: ActorConfig,
     positions_repo: Option<Arc<PositionsRepo>>,
+    state_transitions_repo: Option<Arc<StateTransitionsRepo>>,
+    position_lifecycle: Option<Arc<PositionLifecycle>>,
+    lifecycle_event_tx: Option<mpsc::Sender<PositionLifecycleEvent>>,
+    circuit_breaker: Option<Arc<CircuitBreaker>>,
     smart_money_hits_repo: Option<Arc<SmartMoneyHitsRepo>>,
     watchlist_cache: Option<Arc<WatchlistCache>>,
-) {
-    let new_pool = ControlEvent::NewPoolSignal {
-        mint: signal.mint.clone(),
-        pool_address: signal.pool_address.clone(),
-        dex_program: signal.dex_program.clone(),
-        slot: signal.slot,
-        received_at: signal.received_at,
-        raw_pool_account_data: signal.raw_pool_account_data.clone(),
-        raw_pool_account_owner: signal.raw_pool_account_owner.clone(),
-    };
 
     if let Some(actor_handle) = actors.get(&signal.mint) {
         let _ = actor_handle.control_tx.send(new_pool).await;
