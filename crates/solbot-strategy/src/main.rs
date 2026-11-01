@@ -421,24 +421,28 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!(?final_stats, "PIPELINE STATS final");
 
     Ok(())
-        let inbound_latency = if signal.received_at > 0 && now_ms >= signal.received_at {
-            (now_ms - signal.received_at) as f64
-        } else {
-            0.0
-        };
+}
 
-        if queue_depth > max_queue_depth {
-            let seq_num = signal_count.fetch_add(1, Ordering::SeqCst);
-            pipeline_stats::inc_drop("queue_overflow");
-            tracing::warn!(
-                "[SIGNAL DROPPED - QUEUE] seq={}, mint={}, queue_depth={} > max={}",
-                seq_num,
-                signal.mint,
-                queue_depth,
-                max_queue_depth
-            );
-            continue;
-        }
+#[allow(clippy::too_many_arguments)]
+async fn process_signals(
+    mut signal_rx: mpsc::Receiver<solbot_common::types::Signal>,
+    dedup_filter: DedupFilter,
+    actor_registry: ActorRegistry,
+    is_paper: bool,
+    wallet_pubkey: solana_sdk::pubkey::Pubkey,
+    router: Option<Arc<TransactionRouter>>,
+    signer_client: Option<Arc<SignerClient>>,
+    rpc_url: Option<String>,
+    dex_readiness: DexReadinessConfig,
+    actor_config: ActorConfig,
+    shared_risk: Arc<RiskGateConfig>,
+    positions_repo: Option<Arc<PositionsRepo>>,
+    state_transitions_repo: Option<Arc<StateTransitionsRepo>>,
+    position_lifecycle: Option<Arc<PositionLifecycle>>,
+    lifecycle_event_tx: Option<mpsc::Sender<PositionLifecycleEvent>>,
+    circuit_breaker: Option<Arc<CircuitBreaker>>,
+    smart_money_hits_repo: Option<Arc<SmartMoneyHitsRepo>>,
+    watchlist_cache: Option<Arc<WatchlistCache>>,
 
         if inbound_latency > max_signal_age_ms {
             let seq_num = signal_count.fetch_add(1, Ordering::SeqCst);
