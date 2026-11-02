@@ -776,10 +776,14 @@ async fn dispatch_to_actor(
         });
 
     let ctx = ActorContext {
-                emergency_slippage_bps: 1000,
-                priority_fee_baseline: 1000,
-            },
-        },
+        mint: signal.mint.clone(),
+        pool_address: signal.pool_address.clone(),
+        dex_program_id: signal.dex_program.clone(),
+        wallet: wallet_key,
+        trading_mode,
+        risk_gate_config,
+        tier: solbot_common::types::tier::CapitalTier::Small,
+        tier_params,
         capital_sol: 1.0,
         router: router.as_ref().and_then(|_| {
             TransactionRouter::new(solbot_strategy::routing::RoutingConfig::default()).ok()
@@ -790,10 +794,10 @@ async fn dispatch_to_actor(
         trade_stats: None,
         dex_readiness,
         positions_repo: positions_repo.clone(),
-        state_transitions_repo: None,
-        position_lifecycle: None,
-        lifecycle_event_tx: None,
-        circuit_breaker: None,
+        state_transitions_repo,
+        position_lifecycle,
+        lifecycle_event_tx,
+        circuit_breaker,
         raw_pool_account_data: signal.raw_pool_account_data.clone(),
         raw_pool_account_owner: signal.raw_pool_account_owner.clone(),
         last_signal_slot: signal.slot,
