@@ -754,8 +754,6 @@ async fn dispatch_to_actor(
                     enabled: false,
                     calibration_window_slots: 1000,
                     min_sample_size: 10,
-                    calibration_window_slots: 1000,
-                    min_sample_size: 10,
                     size_max_pct: 0.05,
                 },
             },
@@ -772,6 +770,12 @@ async fn dispatch_to_actor(
                 signing_rate_threshold_5min: 10,
             },
             emergency_exit: EmergencyExitParams {
+                emergency_slippage_bps: 1000,
+                priority_fee_baseline: 1000,
+            },
+        });
+
+    let ctx = ActorContext {
                 emergency_slippage_bps: 1000,
                 priority_fee_baseline: 1000,
             },
