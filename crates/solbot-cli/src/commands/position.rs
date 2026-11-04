@@ -17,7 +17,15 @@ pub async fn execute(action: &str, position_id: Option<&str>) -> Result<()> {
     };
 
     match action {
-
+        "list" => {
+            let rows = sqlx::query_as::<_, (String, String, String, String, f64, f64, f64)>(
+                r#"
+                SELECT position_id, mint, tier, status, size_sol, entry_price_sol, COALESCE(realized_pnl_net_sol, 0.0)
+                FROM positions
+                ORDER BY opened_at_utc DESC
+                "#,
+            )
+            .fetch_all(&pool)
 pub async fn execute(action: &str, position_id: Option<&str>) -> Result<()> {
     match action {
         "list" => tracing::info!("Listing all positions"),
