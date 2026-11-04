@@ -26,7 +26,15 @@ pub async fn execute(action: &str, position_id: Option<&str>) -> Result<()> {
                 "#,
             )
             .fetch_all(&pool)
-pub async fn execute(action: &str, position_id: Option<&str>) -> Result<()> {
+            .await
+            .unwrap_or_default();
+
+            println!(
+                "{:<36} | {:<44} | {:<6} | {:<12} | {:>8} | {:>12} | {:>10}",
+                "POSITION_ID", "MINT", "TIER", "STATUS", "SIZE_SOL", "ENTRY_SOL", "PNL_SOL"
+            );
+            println!("{}", "-".repeat(142));
+            for (pos_id, mint, tier, status, size_sol, entry_sol, pnl_sol) in rows {
     match action {
         "list" => tracing::info!("Listing all positions"),
         "show" => tracing::info!("Showing details for position: {:?}", position_id),
