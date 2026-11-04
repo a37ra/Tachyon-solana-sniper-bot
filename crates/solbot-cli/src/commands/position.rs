@@ -7,6 +7,16 @@ async fn connect_db() -> Result<SqlitePool> {
     Ok(SqlitePool::connect(&db_url).await?)
 }
 
+pub async fn execute(action: &str, position_id: Option<&str>) -> Result<()> {
+    let pool = match connect_db().await {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!("Could not connect to SQLite DB ({}); running dry-run output", e);
+            return Ok(());
+        }
+    };
+
+    match action {
 
 pub async fn execute(action: &str, position_id: Option<&str>) -> Result<()> {
     match action {
