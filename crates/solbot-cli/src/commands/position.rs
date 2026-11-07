@@ -73,7 +73,15 @@ pub async fn execute(action: &str, position_id: Option<&str>) -> Result<()> {
             .await?;
 
             match row {
-        "force-close" => tracing::info!("Force closing position: {:?}", position_id),
+                Some((id, mint, pool_addr, tier, status, size, entry, rem, pnl, opened, closed)) => {
+                    println!("Position ID:         {}", id);
+                    println!("Mint:                {}", mint);
+                    println!("Pool Address:        {}", pool_addr);
+                    println!("Tier:                {}", tier);
+                    println!("Status:              {}", status);
+                    println!("Size (SOL):          {:.4}", size);
+                    println!("Entry Price (SOL):   {:.8}", entry);
+                    println!("Remaining Token %:   {:.1}%", rem * 100.0);
         _ => tracing::info!("Unknown position action"),
     }
     Ok(())
