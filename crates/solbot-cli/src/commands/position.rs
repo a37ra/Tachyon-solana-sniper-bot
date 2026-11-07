@@ -45,6 +45,15 @@ pub async fn execute(action: &str, position_id: Option<&str>) -> Result<()> {
             let Some(pos_id) = position_id else {
                 bail!("--id <POSITION_ID> is required for 'position show'");
             };
+            let row = sqlx::query_as::<
+                _,
+                (
+                    String,
+                    String,
+                    String,
+                    String,
+                    String,
+                    f64,
         "list" => tracing::info!("Listing all positions"),
         "show" => tracing::info!("Showing details for position: {:?}", position_id),
         "force-close" => tracing::info!("Force closing position: {:?}", position_id),
