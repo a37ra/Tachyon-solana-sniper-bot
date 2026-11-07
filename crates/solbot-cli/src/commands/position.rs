@@ -129,4 +129,12 @@ pub async fn execute(action: &str, position_id: Option<&str>) -> Result<()> {
             .bind(from_status)
             .bind(now)
             .execute(&pool)
+            .await;
+
+            tracing::info!(position_id = %pos_id, "Force-closed position in SQLite DB");
+            println!("Position '{}' force-closed.", pos_id);
+        }
+        _ => tracing::info!("Unknown position action: {}", action),
+    }
+    Ok(())
 }
