@@ -101,6 +101,14 @@ pub async fn execute(action: &str, position_id: Option<&str>) -> Result<()> {
                     .await?;
 
             let Some((from_status,)) = old_status else {
-    }
+                println!("Position '{}' not found", pos_id);
+                return Ok(());
+            };
+
+            sqlx::query(
+                r#"
+                UPDATE positions
+                SET status = 'closed', remaining_token_pct = 0.0, closed_at_utc = ?1
+                WHERE position_id = ?2
     Ok(())
 }
