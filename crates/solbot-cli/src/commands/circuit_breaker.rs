@@ -38,5 +38,11 @@ pub async fn execute(action: &str) -> Result<()> {
                     for (tier, loss_sol, count) in rows {
                         println!(
                             "Tier {:<8}: cumulative_loss={:.4} SOL across {} closed position(s)",
-    Ok(())
+                            tier, loss_sol, count
+                        );
+                    }
+                }
+            }
+        }
+        "reset" => {
 }
