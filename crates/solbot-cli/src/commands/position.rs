@@ -110,5 +110,13 @@ pub async fn execute(action: &str, position_id: Option<&str>) -> Result<()> {
                 UPDATE positions
                 SET status = 'closed', remaining_token_pct = 0.0, closed_at_utc = ?1
                 WHERE position_id = ?2
-    Ok(())
+                "#,
+            )
+            .bind(now)
+            .bind(pos_id)
+            .execute(&pool)
+            .await?;
+
+            let transition_id = uuid::Uuid::new_v4().to_string();
+            let _ = sqlx::query(
 }
