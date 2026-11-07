@@ -32,7 +32,11 @@ pub async fn execute(action: &str) -> Result<()> {
                 .unwrap_or_default();
 
                 println!("=== Circuit Breaker Daily Status (since 00:00 UTC) ===");
-        _ => tracing::info!("Unknown circuit breaker action"),
-    }
+                if rows.is_empty() {
+                    println!("No closed positions today — all tiers at 0.00% daily loss (OK).");
+                } else {
+                    for (tier, loss_sol, count) in rows {
+                        println!(
+                            "Tier {:<8}: cumulative_loss={:.4} SOL across {} closed position(s)",
     Ok(())
 }
