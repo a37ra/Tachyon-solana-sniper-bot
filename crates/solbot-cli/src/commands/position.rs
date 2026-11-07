@@ -54,7 +54,15 @@ pub async fn execute(action: &str, position_id: Option<&str>) -> Result<()> {
                     String,
                     String,
                     f64,
-        "list" => tracing::info!("Listing all positions"),
+                    f64,
+                    f64,
+                    f64,
+                    i64,
+                    Option<i64>,
+                ),
+            >(
+                r#"
+                SELECT position_id, mint, pool_address, tier, status, size_sol, entry_price_sol,
         "show" => tracing::info!("Showing details for position: {:?}", position_id),
         "force-close" => tracing::info!("Force closing position: {:?}", position_id),
         _ => tracing::info!("Unknown position action"),
