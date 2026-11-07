@@ -35,7 +35,16 @@ pub async fn execute(action: &str, position_id: Option<&str>) -> Result<()> {
             );
             println!("{}", "-".repeat(142));
             for (pos_id, mint, tier, status, size_sol, entry_sol, pnl_sol) in rows {
-    match action {
+                println!(
+                    "{:<36} | {:<44} | {:<6} | {:<12} | {:>8.4} | {:>12.8} | {:>10.4}",
+                    pos_id, mint, tier, status, size_sol, entry_sol, pnl_sol
+                );
+            }
+        }
+        "show" => {
+            let Some(pos_id) = position_id else {
+                bail!("--id <POSITION_ID> is required for 'position show'");
+            };
         "list" => tracing::info!("Listing all positions"),
         "show" => tracing::info!("Showing details for position: {:?}", position_id),
         "force-close" => tracing::info!("Force closing position: {:?}", position_id),
