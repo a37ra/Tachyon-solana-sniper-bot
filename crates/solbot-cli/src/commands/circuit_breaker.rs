@@ -25,7 +25,13 @@ pub async fn execute(action: &str) -> Result<()> {
                     WHERE status = 'closed' AND COALESCE(closed_at_utc, 0) >= ?1
                     GROUP BY tier
                     "#,
-        "reset" => tracing::info!("Resetting circuit breaker daily loss limits"),
+                )
+                .bind(start_of_day)
+                .fetch_all(&pool)
+                .await
+                .unwrap_or_default();
+
+                println!("=== Circuit Breaker Daily Status (since 00:00 UTC) ===");
         _ => tracing::info!("Unknown circuit breaker action"),
     }
     Ok(())
