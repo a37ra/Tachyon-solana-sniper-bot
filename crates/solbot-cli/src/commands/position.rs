@@ -82,6 +82,15 @@ pub async fn execute(action: &str, position_id: Option<&str>) -> Result<()> {
                     println!("Size (SOL):          {:.4}", size);
                     println!("Entry Price (SOL):   {:.8}", entry);
                     println!("Remaining Token %:   {:.1}%", rem * 100.0);
+                    println!("Realized PnL (SOL):  {:.6}", pnl);
+                    println!("Opened At (UTC):     {}", opened);
+                    println!("Closed At (UTC):     {:?}", closed);
+                }
+                None => println!("Position '{}' not found", pos_id),
+            }
+        }
+        "force-close" => {
+            let Some(pos_id) = position_id else {
         _ => tracing::info!("Unknown position action"),
     }
     Ok(())
