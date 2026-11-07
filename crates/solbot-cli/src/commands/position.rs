@@ -63,7 +63,16 @@ pub async fn execute(action: &str, position_id: Option<&str>) -> Result<()> {
             >(
                 r#"
                 SELECT position_id, mint, pool_address, tier, status, size_sol, entry_price_sol,
-        "show" => tracing::info!("Showing details for position: {:?}", position_id),
+                       remaining_token_pct, COALESCE(realized_pnl_net_sol, 0.0), opened_at_utc, closed_at_utc
+                FROM positions
+                WHERE position_id = ?1
+                "#,
+            )
+            .bind(pos_id)
+            .fetch_optional(&pool)
+            .await?;
+
+            match row {
         "force-close" => tracing::info!("Force closing position: {:?}", position_id),
         _ => tracing::info!("Unknown position action"),
     }
