@@ -119,4 +119,14 @@ pub async fn execute(action: &str, position_id: Option<&str>) -> Result<()> {
 
             let transition_id = uuid::Uuid::new_v4().to_string();
             let _ = sqlx::query(
+                r#"
+                INSERT INTO state_transitions (id, position_id, from_status, to_status, reason, tx_signature, created_at_utc)
+                VALUES (?1, ?2, ?3, 'closed', 'cli_force_close', NULL, ?4)
+                "#,
+            )
+            .bind(transition_id)
+            .bind(pos_id)
+            .bind(from_status)
+            .bind(now)
+            .execute(&pool)
 }
