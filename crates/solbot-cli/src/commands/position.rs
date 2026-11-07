@@ -91,7 +91,16 @@ pub async fn execute(action: &str, position_id: Option<&str>) -> Result<()> {
         }
         "force-close" => {
             let Some(pos_id) = position_id else {
-        _ => tracing::info!("Unknown position action"),
+                bail!("--id <POSITION_ID> is required for 'position force-close'");
+            };
+            let now = chrono::Utc::now().timestamp();
+            let old_status: Option<(String,)> =
+                sqlx::query_as("SELECT status FROM positions WHERE position_id = ?1")
+                    .bind(pos_id)
+                    .fetch_optional(&pool)
+                    .await?;
+
+            let Some((from_status,)) = old_status else {
     }
     Ok(())
 }
