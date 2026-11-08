@@ -14,7 +14,15 @@ pub async fn execute(action: &str) -> Result<()> {
                 value TEXT NOT NULL,
                 updated_at_utc INTEGER NOT NULL
             )
-pub async fn execute(action: &str) -> Result<()> {
+            "#,
+        )
+        .execute(pool)
+        .await;
+    }
+
+    let now = chrono::Utc::now().timestamp();
+    match action {
+        "on" => {
     match action {
         "on" => tracing::info!("Kill switch ACTIVATED via CLI"),
         "off" => tracing::info!("Kill switch DEACTIVATED via CLI"),
