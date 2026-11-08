@@ -39,7 +39,14 @@ pub async fn execute(action: &str) -> Result<()> {
             println!("Kill switch: ON (activated at {})", now);
         }
         "off" => {
-        _ => tracing::info!("Kill switch status checked via CLI"),
+            if let Some(ref pool) = pool_opt {
+                let _ = sqlx::query(
+                    r#"
+                    INSERT INTO bot_control_state (key, value, updated_at_utc)
+                    VALUES ('kill_switch', 'off', ?1)
+                    ON CONFLICT(key) DO UPDATE SET value = 'off', updated_at_utc = ?1
+                    "#,
+                )
     }
     Ok(())
 }
