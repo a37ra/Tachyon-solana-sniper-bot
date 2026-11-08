@@ -47,6 +47,14 @@ pub async fn execute(action: &str) -> Result<()> {
                     ON CONFLICT(key) DO UPDATE SET value = 'off', updated_at_utc = ?1
                     "#,
                 )
-    }
+                .bind(now)
+                .execute(pool)
+                .await;
+            }
+            tracing::info!("Kill switch DEACTIVATED via CLI");
+            println!("Kill switch: OFF (deactivated at {})", now);
+        }
+        _ => {
+            let mut status = "off".to_string();
     Ok(())
 }
