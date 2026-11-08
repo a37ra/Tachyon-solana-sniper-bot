@@ -31,8 +31,14 @@ pub async fn execute(action: &str) -> Result<()> {
                     ON CONFLICT(key) DO UPDATE SET value = 'on', updated_at_utc = ?1
                     "#,
                 )
-        "on" => tracing::info!("Kill switch ACTIVATED via CLI"),
-        "off" => tracing::info!("Kill switch DEACTIVATED via CLI"),
+                .bind(now)
+                .execute(pool)
+                .await;
+            }
+            tracing::info!("Kill switch ACTIVATED via CLI");
+            println!("Kill switch: ON (activated at {})", now);
+        }
+        "off" => {
         _ => tracing::info!("Kill switch status checked via CLI"),
     }
     Ok(())
