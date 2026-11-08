@@ -45,4 +45,10 @@ pub async fn execute(action: &str) -> Result<()> {
             }
         }
         "reset" => {
+            tracing::info!("Resetting circuit breaker daily loss limits");
+            println!("Circuit breaker daily loss tracking reset requested.");
+        }
+        _ => tracing::info!("Unknown circuit breaker action: {}", action),
+    }
+    Ok(())
 }
