@@ -23,7 +23,14 @@ pub async fn execute(action: &str) -> Result<()> {
     let now = chrono::Utc::now().timestamp();
     match action {
         "on" => {
-    match action {
+            if let Some(ref pool) = pool_opt {
+                let _ = sqlx::query(
+                    r#"
+                    INSERT INTO bot_control_state (key, value, updated_at_utc)
+                    VALUES ('kill_switch', 'on', ?1)
+                    ON CONFLICT(key) DO UPDATE SET value = 'on', updated_at_utc = ?1
+                    "#,
+                )
         "on" => tracing::info!("Kill switch ACTIVATED via CLI"),
         "off" => tracing::info!("Kill switch DEACTIVATED via CLI"),
         _ => tracing::info!("Kill switch status checked via CLI"),
