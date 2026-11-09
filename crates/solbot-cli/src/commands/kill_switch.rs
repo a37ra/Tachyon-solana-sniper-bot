@@ -56,5 +56,12 @@ pub async fn execute(action: &str) -> Result<()> {
         }
         _ => {
             let mut status = "off".to_string();
-    Ok(())
+            if let Some(ref pool) = pool_opt {
+                if let Ok(Some((val,))) = sqlx::query_as::<_, (String,)>(
+                    "SELECT value FROM bot_control_state WHERE key = 'kill_switch'",
+                )
+                .fetch_optional(pool)
+                .await
+                {
+                    status = val;
 }
