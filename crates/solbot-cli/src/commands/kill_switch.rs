@@ -64,4 +64,11 @@ pub async fn execute(action: &str) -> Result<()> {
                 .await
                 {
                     status = val;
+                }
+            }
+            tracing::info!(status = %status, "Kill switch status checked via CLI");
+            println!("Kill switch status: {}", status.to_uppercase());
+        }
+    }
+    Ok(())
 }
