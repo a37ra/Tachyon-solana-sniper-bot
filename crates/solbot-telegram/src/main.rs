@@ -3,6 +3,12 @@ use solbot_notify::events::BotEvent;
 use solbot_telegram::alerts::format_event;
 use solbot_telegram::client::TelegramClient;
 use solbot_telegram::email_backup::handle_critical_fallback;
+use sqlx::SqlitePool;
+use std::collections::HashSet;
+use std::env;
+use std::time::Duration;
+use tokio::sync::broadcast;
+use solbot_telegram::email_backup::handle_critical_fallback;
 use tokio::sync::broadcast;
 
 #[tokio::main]
