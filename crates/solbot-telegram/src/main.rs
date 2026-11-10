@@ -8,9 +8,16 @@ use std::collections::HashSet;
 use std::env;
 use std::time::Duration;
 use tokio::sync::broadcast;
-use solbot_telegram::email_backup::handle_critical_fallback;
-use tokio::sync::broadcast;
 
+#[tokio::main]
+async fn main() -> Result<()> {
+    dotenvy::dotenv().ok();
+    tracing_subscriber::fmt::init();
+    tracing::info!("Starting solbot-telegram bot service...");
+
+    let telegram_client = TelegramClient::from_env();
+    if telegram_client.is_none() {
+        tracing::warn!(
 #[tokio::main]
 async fn main() -> Result<()> {
     dotenvy::dotenv().ok();
