@@ -39,10 +39,16 @@ async fn main() -> Result<()> {
             }
         }
     });
-    if telegram_client.is_none() {
-        tracing::warn!("TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID not configured — running in dry-run log mode");
-    }
 
+    // Poll SQLite state_transitions / positions table to forward real trading lifecycle alerts
+    let db_url = env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite:solbot.db".to_string());
+    if let Ok(pool) = SqlitePool::connect(&db_url).await {
+        let tx_db = tx.clone();
+        tokio::spawn(async move {
+            let mut seen_transitions: HashSet<String> = HashSet::new();
+            let mut interval = tokio::time::interval(Duration::from_secs(2));
+            loop {
+                interval.tick().await;
     let (tx, mut rx) = broadcast::channel::<BotEvent>(256);
 
     // Non-blocking alert processing loop (never blocks trading path >1ms)
