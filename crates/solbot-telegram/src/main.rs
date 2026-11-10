@@ -49,9 +49,16 @@ async fn main() -> Result<()> {
             let mut interval = tokio::time::interval(Duration::from_secs(2));
             loop {
                 interval.tick().await;
-    let (tx, mut rx) = broadcast::channel::<BotEvent>(256);
-
-    // Non-blocking alert processing loop (never blocks trading path >1ms)
+                let Ok(rows) = sqlx::query_as::<_, (String, String, String, String)>(
+                    r#"
+                    SELECT id, position_id, to_status, reason
+                    FROM state_transitions
+                    ORDER BY created_at_utc DESC
+                    LIMIT 50
+                    "#,
+                )
+                .fetch_all(&pool)
+                .await
     tokio::spawn(async move {
         while let Ok(event) = rx.recv().await {
             let msg = format_event(&event);
