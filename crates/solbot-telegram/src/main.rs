@@ -79,9 +79,16 @@ async fn main() -> Result<()> {
                     .await
                     .ok()
                     .flatten();
-                    handle_critical_fallback(&event, &msg).await;
-                }
-            } else {
+
+                    let (mint, entry_price_sol, size_sol, pnl_net_sol) =
+                        pos_row.unwrap_or_else(|| ("unknown".to_string(), 0.0, 0.0, 0.0));
+
+                    let bot_event = match to_status.as_str() {
+                        "open" => Some(BotEvent::PositionOpened {
+                            position_id,
+                            mint,
+                            entry_price_sol,
+                            size_sol,
                 tracing::info!("Telegram Alert (Dry-Run):\n{}", msg);
             }
         }
