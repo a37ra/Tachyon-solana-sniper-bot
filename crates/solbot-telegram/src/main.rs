@@ -63,9 +63,49 @@ async fn main() -> Result<()> {
     });
 
     // Poll SQLite state_transitions / positions table to forward real trading lifecycle alerts
-    let db_url = env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite:solbot.db".to_string());
+    let db_url =
+        env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite:solbot.db?mode=rwc".to_string());
     let pool_opt = SqlitePool::connect(&db_url).await.ok();
     if let Some(ref pool) = pool_opt {
+        let _ = sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS positions (
+                position_id TEXT PRIMARY KEY NOT NULL,
+                mint TEXT NOT NULL,
+                pool_address TEXT NOT NULL,
+                dex_program_id TEXT NOT NULL,
+                tier TEXT NOT NULL,
+                status TEXT NOT NULL,
+                entry_price_sol REAL NOT NULL,
+                size_sol REAL NOT NULL,
+                size_pct_of_capital REAL NOT NULL,
+                remaining_token_pct REAL NOT NULL DEFAULT 1.0,
+                hard_sl_price_sol REAL NOT NULL,
+                trailing_active INTEGER NOT NULL DEFAULT 0,
+                trailing_high_water_sol REAL,
+                realized_pnl_net_sol REAL,
+                opened_at_utc INTEGER NOT NULL,
+                closed_at_utc INTEGER
+            );
+            "#,
+        )
+        .execute(pool)
+        .await;
+        let _ = sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS state_transitions (
+                id TEXT PRIMARY KEY NOT NULL,
+                position_id TEXT NOT NULL,
+                from_status TEXT NOT NULL,
+                to_status TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                tx_signature TEXT,
+                created_at_utc INTEGER NOT NULL
+            );
+            "#,
+        )
+        .execute(pool)
+        .await;
         let pool = pool.clone();
         let tx_db = tx.clone();
         tokio::spawn(async move {

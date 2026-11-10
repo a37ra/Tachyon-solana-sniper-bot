@@ -146,9 +146,15 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or(9090);
     observability::spawn_metrics_server(metrics_port);
 
-    let db_url = env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite:solbot.db".to_string());
+    let db_url =
+        env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite:solbot.db?mode=rwc".to_string());
     let sqlite_pool = match SqlitePool::connect(&db_url).await {
-        Ok(pool) => Some(pool),
+        Ok(pool) => {
+            if let Err(e) = sqlx::migrate!("../../migrations").run(&pool).await {
+                tracing::warn!("SQLite migration warning: {}", e);
+            }
+            Some(pool)
+        }
         Err(e) => {
             tracing::warn!("SQLite DB connection error ( ephemerals/dev ): {}", e);
             None
