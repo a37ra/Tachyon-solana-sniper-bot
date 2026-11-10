@@ -89,10 +89,16 @@ async fn main() -> Result<()> {
                             mint,
                             entry_price_sol,
                             size_sol,
-                tracing::info!("Telegram Alert (Dry-Run):\n{}", msg);
-            }
-        }
-    });
+                        }),
+                        "tp1_filled" => Some(BotEvent::TpTriggered {
+                            position_id,
+                            tp_level: "TP1".to_string(),
+                            sell_fraction: 0.30,
+                        }),
+                        "tp2_filled" => Some(BotEvent::TpTriggered {
+                            position_id,
+                            tp_level: "TP2".to_string(),
+                            sell_fraction: 0.30,
 
     // Sample health status event on service startup
     let startup_event = BotEvent::PositionOpened {
