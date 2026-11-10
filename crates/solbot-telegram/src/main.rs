@@ -28,9 +28,17 @@ async fn main() -> Result<()> {
     tokio::spawn(async move {
         while let Ok(event) = rx.recv().await {
             let msg = format_event(&event);
-    tracing::info!("Starting solbot-telegram bot service...");
 
-    let telegram_client = TelegramClient::from_env();
+            if let Some(ref client) = telegram_client {
+                if let Err(e) = client.send_markdown_v2(&msg).await {
+                    tracing::error!("Telegram alert send failed: {}", e);
+                    handle_critical_fallback(&event, &msg).await;
+                }
+            } else {
+                tracing::info!("Telegram Alert (Dry-Run):\n{}", msg);
+            }
+        }
+    });
     if telegram_client.is_none() {
         tracing::warn!("TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID not configured — running in dry-run log mode");
     }
