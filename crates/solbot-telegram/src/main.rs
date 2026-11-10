@@ -120,9 +120,16 @@ async fn main() -> Result<()> {
                     };
 
                     if let Some(ev) = bot_event {
-    };
-    let _ = tx.send(startup_event);
+                        let _ = tx_db.send(ev);
+                    }
+                }
+            }
+        });
+    }
 
+    // Sample health status event on service startup
+    let startup_event = BotEvent::PositionOpened {
+        position_id: "init_check".to_string(),
     tokio::signal::ctrl_c().await?;
     tracing::info!("Shutting down solbot-telegram");
     Ok(())
