@@ -18,10 +18,16 @@ async fn main() -> Result<()> {
     let telegram_client = TelegramClient::from_env();
     if telegram_client.is_none() {
         tracing::warn!(
-#[tokio::main]
-async fn main() -> Result<()> {
-    dotenvy::dotenv().ok();
-    tracing_subscriber::fmt::init();
+            "TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID not configured — running in dry-run log mode"
+        );
+    }
+
+    let (tx, mut rx) = broadcast::channel::<BotEvent>(256);
+
+    // Non-blocking alert processing loop (never blocks trading path >1ms)
+    tokio::spawn(async move {
+        while let Ok(event) = rx.recv().await {
+            let msg = format_event(&event);
     tracing::info!("Starting solbot-telegram bot service...");
 
     let telegram_client = TelegramClient::from_env();
