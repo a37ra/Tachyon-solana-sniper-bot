@@ -456,7 +456,14 @@ async fn main() -> anyhow::Result<()> {
                                 .bytes()
                                 .fold(0u64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u64));
                             let profile = hash_seed % 10;
-                            let mult = if profile < 4 {
+                            let mult = if profile == 0 {
+                                // Flat / stagnant curve: hovers around 0.98..1.01 without +15% impulse -> triggers MomentumTimeout at 45s
+                                match *step {
+                                    1..=5 => 1.01,
+                                    6..=10 => 0.99,
+                                    _ => 0.98,
+                                }
+                            } else if profile < 4 {
                                 // Strong runner: climbs through TP1 (1.5x) -> TP2 (2.0x) -> TP3 (3.0x) or Trailing Stop
                                 match *step {
                                     1..=3 => 1.0 + (*step as f64) * 0.12,
@@ -474,11 +481,11 @@ async fn main() -> anyhow::Result<()> {
                                     _ => 1.42,
                                 }
                             } else {
-                                // Rug / dump after launch: drops below -50% Hard Stop-Loss
+                                // Rug / dump after launch: drops below tightened -25% Hard Stop-Loss (<= 0.75x)
                                 match *step {
                                     1..=2 => 0.92,
-                                    3..=4 => 0.74,
-                                    _ => 0.46,
+                                    3..=4 => 0.82,
+                                    _ => 0.70,
                                 }
                             };
                             entry * mult

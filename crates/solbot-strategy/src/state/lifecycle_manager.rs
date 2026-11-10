@@ -297,6 +297,7 @@ impl PositionLifecycleManager {
                 self.on_trailing_stop(position, *trigger_price, *high_water_mark)
                     .await
             }
+            ExitAction::MomentumTimeout { .. } => self.on_stop_loss(position, current_price).await,
             ExitAction::HardStopLoss => self.on_stop_loss(position, current_price).await,
             ExitAction::Emergency { reason } => {
                 self.on_manual_intervention_required(position, reason.clone())

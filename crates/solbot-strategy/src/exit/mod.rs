@@ -1,5 +1,6 @@
 pub mod escalation;
 pub mod hard_stop_loss;
+pub mod momentum_timeout;
 pub mod take_profit_ladder;
 pub mod trailing_stop;
 
@@ -50,28 +51,34 @@ pub enum ExitAction {
         trigger_price: f64,
         high_water_mark: f64,
     },
-    /// Hard stop loss at -50% — sell 100% and start escalation.
+    /// Hard stop loss at -20% .. -30% (default -25%) — sell 100% and start escalation.
     HardStopLoss,
     /// Emergency exit triggered externally (circuit breaker, kill switch).
     Emergency { reason: String },
+    /// No upward momentum (+15..+20%) within the initial 30..60s window — close at breakeven/micro-loss
+    MomentumTimeout {
+        elapsed_secs: u64,
+        peak_multiplier: f64,
+    },
 }
 
 /// Evaluate whether the current price triggers any exit action for the given position.
 ///
 /// Priority order:
-/// 1. Hard stop loss (most urgent — capital preservation)
+/// 1. Hard stop loss (most urgent — capital preservation at -25%)
 /// 2. Trailing stop (if active)
 /// 3. Take profit ladder (TP1 → TP2 → TP3)
+/// 4. Momentum timeout (if initial 30..60s lacked +15..+20% impulse, close at breakeven/micro-loss)
 ///
 /// Returns `None` if no exit condition is met.
 pub fn evaluate_exit(position: &Position, current_price: f64) -> Option<ExitAction> {
-    // 1. Hard stop loss — always checked first (capital preservation)
+    // 1. Hard stop loss — always checked first (capital preservation at -20% .. -30%)
     if hard_stop_loss::evaluate_sl(position, current_price) {
         tracing::warn!(
             position_id = %position.position_id,
             entry_price = %position.entry_price_sol,
             current_price = %current_price,
-            "Hard stop loss triggered at -50%"
+            "Hard stop loss triggered at tightened threshold (-25%)"
         );
         return Some(ExitAction::HardStopLoss);
     }
@@ -108,6 +115,11 @@ pub fn evaluate_exit(position: &Position, current_price: f64) -> Option<ExitActi
         });
     }
 
+    // 4. Momentum timeout — if in the first 30..60s it didn't give +15..+20% impulse, close at breakeven/micro-loss
+    if let Some(action) = momentum_timeout::evaluate_momentum(position, current_price) {
+        return Some(action);
+    }
+
     None
 }
 
@@ -138,10 +150,11 @@ mod tests {
     use solbot_common::types::tier::CapitalTier;
 
     fn make_position(entry_price: f64, status: PositionStatus, remaining_pct: f64) -> Position {
+        let now = chrono::Utc::now().timestamp() as u64;
         Position {
-            position_id: "test-pos-1".to_string(),
-            mint: "TestMint111111111111111111111111111111111".to_string(),
-            pool_address: "TestPool111111111111111111111111111111111".to_string(),
+            position_id: "pos-1".to_string(),
+            mint: "Mint11111111111111111111111111111111111111".to_string(),
+            pool_address: "Pool11111111111111111111111111111111111111".to_string(),
             dex_program_id: "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8".to_string(),
             tier: CapitalTier::Micro,
             status,
@@ -149,11 +162,11 @@ mod tests {
             size_sol: 0.5,
             size_pct_of_capital: 0.05,
             remaining_token_pct: remaining_pct,
-            hard_sl_price_sol: entry_price * 0.5,
+            hard_sl_price_sol: hard_stop_loss::compute_sl_price(entry_price),
             trailing_active: false,
             trailing_high_water_sol: None,
             realized_pnl_net_sol: 0.0,
-            opened_at_utc: 1000000,
+            opened_at_utc: now,
             closed_at_utc: None,
         }
     }
@@ -161,8 +174,8 @@ mod tests {
     #[test]
     fn test_hard_sl_takes_priority() {
         let pos = make_position(1.0, PositionStatus::Open, 1.0);
-        // Price at 40% of entry → below -50% SL
-        let action = evaluate_exit(&pos, 0.4);
+        // Price at 70% of entry → below tightened -25% SL (0.75)
+        let action = evaluate_exit(&pos, 0.70);
         assert!(matches!(action, Some(ExitAction::HardStopLoss)));
     }
 
@@ -197,7 +210,7 @@ mod tests {
     #[test]
     fn test_no_exit_in_range() {
         let pos = make_position(1.0, PositionStatus::Open, 1.0);
-        // Price at +20% → no exit conditions met
+        // Price at +20% fresh opening → no exit conditions met
         let action = evaluate_exit(&pos, 1.2);
         assert!(action.is_none());
     }

@@ -384,13 +384,11 @@ pub async fn process_market_data_event(mint: &str, event: MarketDataEvent, ctx: 
                 timestamp
             );
 
-            // Update high water mark for trailing stop if active
+            // Update high water mark / peak price seen since opening (for momentum impulse check and trailing stop)
             if let Some(ref mut pos) = ctx.active_position {
-                if pos.trailing_active {
-                    let high_water = pos.trailing_high_water_sol.unwrap_or(price_sol);
-                    if price_sol > high_water {
-                        pos.trailing_high_water_sol = Some(price_sol);
-                    }
+                let high_water = pos.trailing_high_water_sol.unwrap_or(pos.entry_price_sol);
+                if price_sol > high_water {
+                    pos.trailing_high_water_sol = Some(price_sol);
                 }
             }
 
@@ -1424,7 +1422,7 @@ pub async fn execute_buy_pipeline(
         size_sol: position_size_sol,
         size_pct_of_capital: position_size_sol / ctx.capital_sol,
         remaining_token_pct: 1.0,
-        hard_sl_price_sol: effective_entry_price_sol * 0.5,
+        hard_sl_price_sol: exit::hard_stop_loss::compute_sl_price(effective_entry_price_sol),
         trailing_active: false,
         trailing_high_water_sol: None,
         realized_pnl_net_sol: 0.0,
@@ -1582,7 +1580,8 @@ pub async fn execute_exit_pipeline(
             sell_fraction_of_remaining,
             ..
         } => (*sell_fraction_of_remaining, IntentType::Sell),
-        ExitAction::TrailingStop { .. } => (1.0, IntentType::Sell),
+        ExitAction::TrailingStop { .. }
+        | ExitAction::MomentumTimeout { .. } => (1.0, IntentType::Sell),
         ExitAction::HardStopLoss => (1.0, IntentType::Emergency),
         ExitAction::Emergency { .. } => (1.0, IntentType::Emergency),
     };
@@ -2004,6 +2003,7 @@ pub async fn execute_exit_pipeline(
                 }
             },
             ExitAction::TrailingStop { .. }
+            | ExitAction::MomentumTimeout { .. }
             | ExitAction::HardStopLoss
             | ExitAction::Emergency { .. } => {
                 pos.remaining_token_pct = 0.0;
@@ -2293,6 +2293,9 @@ pub async fn execute_exit_pipeline(
                         format!("take_profit_{:?}", level).to_lowercase()
                     }
                     ExitAction::TrailingStop { .. } => "trailing_stop".to_string(),
+                    ExitAction::MomentumTimeout { elapsed_secs, peak_multiplier } => {
+                        format!("momentum_timeout_{}s_peak_{:.2}x", elapsed_secs, peak_multiplier)
+                    }
                     ExitAction::HardStopLoss => "hard_stop_loss".to_string(),
                     ExitAction::Emergency { reason } => format!("emergency_{}", reason),
                 };
@@ -2563,6 +2566,7 @@ mod tests {
 
         let (intermediate_status, final_status) = match &trailing_action {
             ExitAction::TrailingStop { .. }
+            | ExitAction::MomentumTimeout { .. }
             | ExitAction::HardStopLoss
             | ExitAction::Emergency { .. } => {
                 (PositionStatus::Closing, Some(PositionStatus::Closed))
