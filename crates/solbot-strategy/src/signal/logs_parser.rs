@@ -19,7 +19,6 @@ use anyhow::{anyhow, Result};
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 use solana_pubkey::Pubkey;
-use std::str::FromStr;
 
 /// DEX type enum
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

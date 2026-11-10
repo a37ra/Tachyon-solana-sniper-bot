@@ -1,3 +1,10 @@
+#![allow(
+    dead_code,
+    unused_imports,
+    unused_variables,
+    deprecated,
+    clippy::all
+)]
 //! Diagnostic tool for testing sequential signal processing and queue depth.
 //!
 //! Generates a burst of signals to simulate queue buildup and logs the processing

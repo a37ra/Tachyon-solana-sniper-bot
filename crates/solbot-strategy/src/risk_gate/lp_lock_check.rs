@@ -227,7 +227,7 @@ pub async fn check(pool_address: &str, dex_program: &str, rpc: Arc<RpcClient>) -
 
 fn extract_lp_mint(
     pool_data: &[u8],
-    pool_owner: &str,
+    _pool_owner: &str,
     dex_program: &str,
 ) -> anyhow::Result<LpMintResult> {
     match dex_program {
@@ -307,7 +307,7 @@ pub async fn check_with_context(
 ) -> CheckResult {
     let start = std::time::Instant::now();
 
-    let pool_pubkey = match Pubkey::try_from(pool_address) {
+    let _pool_pubkey = match Pubkey::try_from(pool_address) {
         Ok(pk) => pk,
         Err(e) => {
             return CheckResult {

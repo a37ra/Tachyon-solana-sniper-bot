@@ -319,6 +319,7 @@ mod tests {
     use solbot_common::types::tier::CapitalTier;
     use std::sync::mpsc::channel;
 
+    #[allow(dead_code)]
     fn make_test_position(status: PositionStatus) -> Position {
         Position {
             position_id: "test-pos-1".to_string(),

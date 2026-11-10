@@ -1,3 +1,10 @@
+#![allow(
+    dead_code,
+    unused_imports,
+    unused_variables,
+    deprecated,
+    clippy::all
+)]
 //! Real Devnet Roundtrip Test for Phase 1 (1.2 Tx Builder & 1.3 Signer IPC gRPC)
 //!
 //! 1. Generates or loads a devnet Keypair.
@@ -11,7 +18,6 @@
 use anyhow::{bail, Context, Result};
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use solana_keypair::Keypair;
-use solana_pubkey::Pubkey;
 use solana_rpc_client::rpc_client::RpcClient;
 use solana_sdk::commitment_config::CommitmentConfig;
 use solana_signer::Signer;
@@ -171,7 +177,7 @@ async fn main() -> Result<()> {
         additional_signers: vec![],
     };
 
-    let (unsigned_tx, tx_base64) = build_unsigned_transaction(
+    let (_unsigned_tx, tx_base64) = build_unsigned_transaction(
         swap_instructions,
         200_000,
         1000,

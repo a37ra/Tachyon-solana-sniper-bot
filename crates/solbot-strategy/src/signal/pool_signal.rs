@@ -409,7 +409,7 @@ mod tests {
     #[test]
     fn garbage_system_mint_bytes_rejected() {
         let seen = SeenPools::with_warmup_secs(0);
-        let mut data = vec![0u8; RAYDIUM_AMM_V4_SIZE];
+        let data = vec![0u8; RAYDIUM_AMM_V4_SIZE];
         // leave mints as zeros → not plausible
         let owner = pk("675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8");
         assert!(try_parse_raydium_amm_v4(Pubkey::new_unique(), owner, &data, 1, 1, "t", &seen).is_none());

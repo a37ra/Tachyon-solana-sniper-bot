@@ -1,3 +1,10 @@
+#![allow(
+    dead_code,
+    unused_imports,
+    unused_variables,
+    deprecated,
+    clippy::all
+)]
 //! Test to prove signer validation fix for metadata spoofing attack
 //!
 //! This test demonstrates that the signer now correctly rejects intents

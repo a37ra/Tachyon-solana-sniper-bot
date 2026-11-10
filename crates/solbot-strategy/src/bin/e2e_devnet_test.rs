@@ -1,3 +1,10 @@
+#![allow(
+    dead_code,
+    unused_imports,
+    unused_variables,
+    deprecated,
+    clippy::all
+)]
 //! End-to-end integration test on Solana devnet.
 //!
 //! This binary tests the full trading pipeline:
@@ -23,7 +30,6 @@ use solana_sdk::signature::Signer;
 use solana_transaction::Transaction;
 use std::time::{Duration, Instant};
 use tracing::{error, warn};
-use tracing_subscriber;
 
 use solbot_common::types::intent::{IntentType, SignerIntentRequest, VerdictStatus};
 use solbot_strategy::risk_gate::lp_lock_check;

@@ -1,3 +1,10 @@
+#![allow(
+    dead_code,
+    unused_imports,
+    unused_variables,
+    deprecated,
+    clippy::all
+)]
 //! Standalone debug binary for Stage 2 (DEX Listeners) verification.
 //!
 //! Subscribes to all 6 target DEX programs via Geyser gRPC, parses each

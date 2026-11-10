@@ -22,7 +22,7 @@ use crate::validation::{validate_intent, RejectionReason};
 use solbot_common::types::dex::DexProgram;
 use solbot_common::types::intent::{IntentType, SignerIntentRequest};
 
-#[allow(clippy::enum_variant_names)]
+#[allow(clippy::enum_variant_names, clippy::result_large_err, clippy::double_must_use)]
 pub mod signer_proto {
     tonic::include_proto!("signer");
 }

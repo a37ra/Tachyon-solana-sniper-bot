@@ -1,3 +1,10 @@
+#![allow(
+    dead_code,
+    unused_imports,
+    unused_variables,
+    deprecated,
+    clippy::all
+)]
 //! Helius logsSubscribe debug binary.
 //!
 //! Tests logsSubscribe for all 6 DEX programs and parses instruction-level signals.

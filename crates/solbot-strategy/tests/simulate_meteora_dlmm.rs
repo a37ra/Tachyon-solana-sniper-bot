@@ -6,9 +6,6 @@
 use anyhow::{Context, Result};
 use solana_pubkey::Pubkey;
 use solana_rpc_client::rpc_client::RpcClient;
-use solana_rpc_client_api::config::RpcSimulateTransactionConfig;
-use solana_sdk::commitment_config::CommitmentConfig;
-use solana_sdk::transaction::Transaction;
 use std::str::FromStr;
 use std::sync::Arc;
 

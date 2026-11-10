@@ -1,3 +1,10 @@
+#![allow(
+    dead_code,
+    unused_imports,
+    unused_variables,
+    deprecated,
+    clippy::all
+)]
 use solana_rpc_client::rpc_client::RpcClient;
 use solana_sdk::pubkey::Pubkey;
 use std::time::Instant;

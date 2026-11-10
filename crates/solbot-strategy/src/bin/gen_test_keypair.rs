@@ -1,3 +1,10 @@
+#![allow(
+    dead_code,
+    unused_imports,
+    unused_variables,
+    deprecated,
+    clippy::all
+)]
 use solana_keypair::Keypair;
 use solana_signer::Signer;
 use std::fs;

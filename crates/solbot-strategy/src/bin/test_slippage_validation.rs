@@ -1,3 +1,10 @@
+#![allow(
+    dead_code,
+    unused_imports,
+    unused_variables,
+    deprecated,
+    clippy::all
+)]
 //! Test to prove signer validation fix for slippage spoofing attack
 //!
 //! This test demonstrates that the signer now correctly rejects intents
@@ -12,7 +19,6 @@ use solana_pubkey::Pubkey;
 use solana_sdk::signature::Signer;
 use solana_transaction::Transaction;
 use std::str::FromStr;
-use tracing_subscriber;
 
 use solbot_common::types::intent::{IntentType, SignerIntentRequest, VerdictStatus};
 use solbot_strategy::signer_client::SignerClient;

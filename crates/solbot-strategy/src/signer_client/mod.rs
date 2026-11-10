@@ -11,6 +11,11 @@ use tonic::transport::{Channel, Endpoint, Uri};
 use tower::service_fn;
 
 /// Generated gRPC client from signer.proto
+#[allow(
+    clippy::enum_variant_names,
+    clippy::result_large_err,
+    clippy::double_must_use
+)]
 pub mod signer_proto {
     tonic::include_proto!("signer");
 }

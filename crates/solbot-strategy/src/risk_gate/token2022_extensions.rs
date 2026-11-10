@@ -85,7 +85,7 @@ pub async fn check_with_context(
     if Pubkey::try_from(mint).is_err() {
         return CheckResult {
             passed: false,
-            reason: Some(format!("Invalid mint pubkey")),
+            reason: Some("Invalid mint pubkey".to_string()),
             duration_ms: start.elapsed().as_millis() as u64,
         };
     }
@@ -212,7 +212,7 @@ fn is_blocked(name: &str, blocklist: &[String]) -> bool {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct TokenExtension {
+pub struct TokenExtension {
     extension_type: u16,
     length: usize,
     data: Vec<u8>,

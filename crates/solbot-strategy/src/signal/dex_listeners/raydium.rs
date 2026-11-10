@@ -5,10 +5,7 @@
 
 use crate::signal::geyser_client::{AccountUpdate, GeyserClient, GeyserConfig};
 use crate::signal::helius_ws_client::{HeliusWsClient, HeliusWsConfig};
-use crate::signal::pool_signal::{
-    self, SeenPools, RAYDIUM_AMM_V4_SIZE, RAYDIUM_CLMM_POOL_SIZE, RAYDIUM_CPMM_SIZE_MAX,
-    RAYDIUM_CPMM_SIZE_MIN,
-};
+use crate::signal::pool_signal::{self, SeenPools};
 use crate::signal::signal_validator::SignalValidator;
 use anyhow::{Context, Result};
 use solana_pubkey::Pubkey;
@@ -186,6 +183,9 @@ pub fn parse_raydium_account(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::signal::pool_signal::{
+        RAYDIUM_AMM_V4_SIZE, RAYDIUM_CLMM_POOL_SIZE, RAYDIUM_CPMM_SIZE_MAX, RAYDIUM_CPMM_SIZE_MIN,
+    };
     use crate::signal::geyser_client::AccountUpdate;
 
     fn upd(owner: &str, data: Vec<u8>) -> AccountUpdate {

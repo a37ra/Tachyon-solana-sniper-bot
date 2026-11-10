@@ -12,7 +12,6 @@
 use super::CheckResult;
 use solana_pubkey::Pubkey;
 use solana_rpc_client::nonblocking::rpc_client::RpcClient;
-use solana_sdk::program_pack::Pack;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -160,7 +159,7 @@ pub async fn check_with_context(
 ) -> CheckResult {
     let start = std::time::Instant::now();
 
-    let mint_pubkey = match Pubkey::try_from(mint) {
+    let _mint_pubkey = match Pubkey::try_from(mint) {
         Ok(pk) => pk,
         Err(e) => {
             return CheckResult {

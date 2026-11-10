@@ -1,3 +1,10 @@
+#![allow(
+    dead_code,
+    unused_imports,
+    unused_variables,
+    deprecated,
+    clippy::all
+)]
 use anyhow::Result;
 use solana_pubkey::Pubkey;
 use solbot_common::types::Signal;

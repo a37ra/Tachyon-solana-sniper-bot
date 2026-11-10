@@ -1,3 +1,10 @@
+#![allow(
+    dead_code,
+    unused_imports,
+    unused_variables,
+    deprecated,
+    clippy::all
+)]
 //! Paper pipeline e2e: synthetic Signal → risk gate (optional live RPC) → swap build.
 //!
 //! Does NOT broadcast. Validates builders + risk path compile/run end-to-end.

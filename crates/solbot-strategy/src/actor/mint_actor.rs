@@ -339,7 +339,7 @@ async fn process_control_event(mint: &str, event: ControlEvent, ctx: &mut ActorC
                     );
                     let exit_action = ExitAction::Emergency { reason };
                     let current_price = pos.entry_price_sol;
-                    let _ = execute_exit_pipeline(ctx, &pos, exit_action, current_price).await;
+                    let _ = execute_exit_pipeline(ctx, pos, exit_action, current_price).await;
                 }
             }
         }
@@ -541,7 +541,7 @@ pub async fn fetch_pool_spot_price_sol(
         let state = raydium_amm_v4_builder::RaydiumAmmV4PoolState::from_account_data(pool_data).ok()?;
         let (vault_a, vault_b) = state.active_vaults();
         let accs = rpc.get_multiple_accounts(&[vault_a, vault_b]).await.ok()?;
-        let bal_a = accs.get(0)?.as_ref().and_then(|a| parse_spl_token_account_balance(&a.data))?;
+        let bal_a = accs.first()?.as_ref().and_then(|a| parse_spl_token_account_balance(&a.data))?;
         let bal_b = accs.get(1)?.as_ref().and_then(|a| parse_spl_token_account_balance(&a.data))?;
         let state = state.with_vault_balances(bal_a, bal_b);
         let out_tokens = state.calculate_buy_output(probe_lamports);
@@ -554,7 +554,7 @@ pub async fn fetch_pool_spot_price_sol(
             .get_multiple_accounts(&[state.token_0_vault, state.token_1_vault])
             .await
             .ok()?;
-        let bal_0 = accs.get(0)?.as_ref().and_then(|a| parse_spl_token_account_balance(&a.data))?;
+        let bal_0 = accs.first()?.as_ref().and_then(|a| parse_spl_token_account_balance(&a.data))?;
         let bal_1 = accs.get(1)?.as_ref().and_then(|a| parse_spl_token_account_balance(&a.data))?;
         let state = state.with_vault_balances(bal_0, bal_1);
         let out_tokens = state.calculate_buy_output(probe_lamports);
@@ -570,7 +570,7 @@ pub async fn fetch_pool_spot_price_sol(
             .get_multiple_accounts(&[state.reserve_x, state.reserve_y])
             .await
             .ok()?;
-        let bal_x = accs.get(0)?.as_ref().and_then(|a| parse_spl_token_account_balance(&a.data))?;
+        let bal_x = accs.first()?.as_ref().and_then(|a| parse_spl_token_account_balance(&a.data))?;
         let bal_y = accs.get(1)?.as_ref().and_then(|a| parse_spl_token_account_balance(&a.data))?;
         let state = state.with_vault_balances(bal_x, bal_y);
         let out_tokens = state.calculate_buy_output(probe_lamports);
@@ -585,7 +585,7 @@ pub async fn fetch_pool_spot_price_sol(
             .get_multiple_accounts(&[state.token_a_vault, state.token_b_vault])
             .await
             .ok()?;
-        let bal_a = accs.get(0)?.as_ref().and_then(|a| parse_spl_token_account_balance(&a.data))?;
+        let bal_a = accs.first()?.as_ref().and_then(|a| parse_spl_token_account_balance(&a.data))?;
         let bal_b = accs.get(1)?.as_ref().and_then(|a| parse_spl_token_account_balance(&a.data))?;
         let state = state.with_vault_balances(bal_a, bal_b);
         let out_tokens = state.calculate_buy_output(probe_lamports);
@@ -622,8 +622,8 @@ pub async fn reconcile_post_buy_balance(
                 commitment: Some(solana_sdk::commitment_config::CommitmentConfig::confirmed()),
                 max_supported_transaction_version: Some(0),
             };
-            if let Ok(tx_With_meta) = rpc.get_transaction_with_config(&sig, cfg) {
-                if let Some(meta) = tx_With_meta.transaction.meta {
+            if let Ok(tx_with_meta) = rpc.get_transaction_with_config(&sig, cfg) {
+                if let Some(meta) = tx_with_meta.transaction.meta {
                     use solana_transaction_status::option_serializer::OptionSerializer;
                     let pre_amt: u64 = match meta.pre_token_balances {
                         OptionSerializer::Some(ref list) => list
@@ -1228,7 +1228,7 @@ pub async fn execute_buy_pipeline(
     let (unsigned_tx, unsigned_tx_base64) = build_unsigned_transaction(
         swap_instructions,
         200_000,
-        ctx.tier_params.emergency_exit.priority_fee_baseline as u64,
+        ctx.tier_params.emergency_exit.priority_fee_baseline,
         &ctx.wallet,
         blockhash,
     )?;
@@ -1477,7 +1477,7 @@ pub async fn execute_buy_pipeline(
     if expected_tokens_out > 0 {
         ctx.fee_ledger.set_token_amount(&position.position_id, expected_tokens_out);
     }
-    let buy_priority_fee_lamports = ctx.tier_params.emergency_exit.priority_fee_baseline as u64;
+    let buy_priority_fee_lamports = ctx.tier_params.emergency_exit.priority_fee_baseline;
     ctx.fee_ledger.track_priority_fee(&position.position_id, buy_priority_fee_lamports);
     if buy_jito_tip_lamports > 0 {
         ctx.fee_ledger.track_jito_tip(&position.position_id, buy_jito_tip_lamports);
@@ -1564,7 +1564,7 @@ pub async fn execute_exit_pipeline(
 
     let use_escalation = matches!(exit_action, ExitAction::HardStopLoss | ExitAction::Emergency { .. })
         && ctx.trading_mode == TradingMode::Live;
-    let mut final_tx = None;
+    let mut final_tx;
 
     if use_escalation {
         tracing::info!(
@@ -1572,7 +1572,7 @@ pub async fn execute_exit_pipeline(
             exit_action
         );
 
-        let priority_fee_baseline = ctx.tier_params.emergency_exit.priority_fee_baseline as u64;
+        let priority_fee_baseline = ctx.tier_params.emergency_exit.priority_fee_baseline;
         let hard_cap_bps = ctx.tier_params.emergency_exit.emergency_slippage_bps;
         let signer = ctx.signer_client.as_ref().unwrap().clone();
         let router_arc = Arc::new(tokio::sync::Mutex::new(ctx.router.take().unwrap()));
@@ -1593,7 +1593,7 @@ pub async fn execute_exit_pipeline(
         let dex_program_pubkey_clone = dex_program_pubkey;
         let amount_in_lamports_clone = amount_in_lamports;
 
-        let mut sign_fn: Box<
+        let sign_fn: Box<
             dyn for<'a> FnMut(
                 &'a EscalationState,
             ) -> std::pin::Pin<
@@ -1633,7 +1633,7 @@ pub async fn execute_exit_pipeline(
                 let priority_fee =
                     ((priority_fee_baseline as f64) * state.current_stage.priority_fee_multiplier())
                         as u64;
-                let (unsigned_tx, unsigned_tx_base64) = build_unsigned_transaction(
+                let (_unsigned_tx, unsigned_tx_base64) = build_unsigned_transaction(
                     swap_instructions,
                     200_000,
                     priority_fee,
@@ -1679,7 +1679,7 @@ pub async fn execute_exit_pipeline(
                     .map_err(|e| anyhow!("Failed to deserialize signed transaction: {}", e))?;
                 let signature = decoded_tx
                     .signatures
-                    .get(0)
+                    .first()
                     .ok_or_else(|| anyhow!("Signed transaction has no signature"))
                     .map(|s| s.to_string())?;
 
@@ -1692,7 +1692,7 @@ pub async fn execute_exit_pipeline(
 
         let router_arc_for_submit = router_arc.clone();
 
-        let mut submit_fn: Box<
+        let submit_fn: Box<
             dyn for<'a> FnMut(
                 &'a EscalationState,
             ) -> std::pin::Pin<
@@ -1747,7 +1747,7 @@ pub async fn execute_exit_pipeline(
         });
 
 
-        let mut persist_fn: Box<
+        let persist_fn: Box<
             dyn for<'a> FnMut(
                 &'a EscalationState,
             ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>>
@@ -1807,7 +1807,7 @@ pub async fn execute_exit_pipeline(
         let (unsigned_tx, unsigned_tx_base64) = build_unsigned_transaction(
             swap_instructions,
             200_000,
-            ctx.tier_params.emergency_exit.priority_fee_baseline as u64 * 2,
+            ctx.tier_params.emergency_exit.priority_fee_baseline * 2,
             &ctx.wallet,
             blockhash,
         )?;
@@ -1909,7 +1909,7 @@ pub async fn execute_exit_pipeline(
 
     // === Fee tracking for sell transaction (TZ §4.5) ===
     {
-        let sell_priority_fee_lamports = ctx.tier_params.emergency_exit.priority_fee_baseline as u64 * 2;
+        let sell_priority_fee_lamports = ctx.tier_params.emergency_exit.priority_fee_baseline * 2;
         ctx.fee_ledger.track_priority_fee(&position.position_id, sell_priority_fee_lamports);
         tracing::debug!(
             position_id = %position.position_id,
@@ -2269,7 +2269,7 @@ pub async fn execute_exit_pipeline(
                                     additional_signers: vec![],
                                 },
                                 100_000,
-                                ctx.tier_params.emergency_exit.priority_fee_baseline as u64,
+                                ctx.tier_params.emergency_exit.priority_fee_baseline,
                                 &ctx.wallet,
                                 blockhash,
                             ) {

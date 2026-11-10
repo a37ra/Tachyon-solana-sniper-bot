@@ -1,3 +1,10 @@
+#![allow(
+    dead_code,
+    unused_imports,
+    unused_variables,
+    deprecated,
+    clippy::all
+)]
 //! Integration test for Stage 1 (Transaction Builder) and Stage 2 (Geyser gRPC/WebSocket Listeners).
 //!
 //! This binary tests the end-to-end flow:

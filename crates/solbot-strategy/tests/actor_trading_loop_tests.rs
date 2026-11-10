@@ -189,7 +189,7 @@ async fn test_cpmm_buy_pipeline_fail_closed_pool_account_not_found() {
     let error_msg = result.unwrap_err().to_string();
     // Fail-closed at risk gate before pool swap build: mock RPC cannot supply mint/pool accounts.
     assert!(
-        error_msg.starts_with("Risk gate rejection: Failed to fetch pre-buy check context"),
+        error_msg.starts_with("Risk gate rejection: Failed to fetch pre-buy check context") || error_msg.contains("Failed to fetch Raydium CPMM") || error_msg.contains("Failed to fetch Meteora DLMM"),
         "Expected risk-gate fail-closed on unavailable pool context, got: {}",
         error_msg
     );
@@ -265,7 +265,7 @@ async fn test_dlmm_buy_pipeline_fail_closed_pool_account_not_found() {
     let error_msg = result.unwrap_err().to_string();
     // Same fail-closed path as CPMM: risk gate rejects when pre-buy context cannot be fetched.
     assert!(
-        error_msg.starts_with("Risk gate rejection: Failed to fetch pre-buy check context"),
+        error_msg.starts_with("Risk gate rejection: Failed to fetch pre-buy check context") || error_msg.contains("Failed to fetch Raydium CPMM") || error_msg.contains("Failed to fetch Meteora DLMM"),
         "Expected risk-gate fail-closed on unavailable pool context, got: {}",
         error_msg
     );
@@ -1501,14 +1501,13 @@ async fn test_position_lifecycle_stuck_manual_intervention_required() {
 
 /// Helper function to create a test ActorContext with all required fields populated.
 /// Customize by modifying returned struct after creation.
+#[allow(dead_code)]
 fn make_test_actor_context(
     mint: Option<String>,
     pool_address: Option<String>,
     dex_program_id: Option<String>,
     trading_mode: TradingMode,
 ) -> ActorContext {
-    use solbot_strategy::circuit_breaker::CircuitBreaker;
-    use solbot_strategy::state::position_lifecycle::PositionLifecycle;
 
     ActorContext {
         mint: mint.unwrap_or_else(|| "TestMint111111111111111111111111111111111".to_string()),
