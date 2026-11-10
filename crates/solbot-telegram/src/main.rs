@@ -59,10 +59,16 @@ async fn main() -> Result<()> {
                 )
                 .fetch_all(&pool)
                 .await
-    tokio::spawn(async move {
-        while let Ok(event) = rx.recv().await {
-            let msg = format_event(&event);
+                else {
+                    continue;
+                };
 
+                for (id, position_id, to_status, reason) in rows.into_iter().rev() {
+                    if !seen_transitions.insert(id) {
+                        continue;
+                    }
+                    let pos_row = sqlx::query_as::<_, (String, f64, f64, f64)>(
+                        r#"
             if let Some(ref client) = telegram_client {
                 if let Err(e) = client.send_markdown_v2(&msg).await {
                     tracing::error!("Telegram alert send failed: {}", e);
