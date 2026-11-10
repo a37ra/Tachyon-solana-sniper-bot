@@ -36,6 +36,17 @@ pub fn compute_position_size_with_multiplier(
     stats: Option<&TradeStats>,
     size_multiplier: f64,
 ) -> f64 {
+    // If user configured a fixed position size via environment (e.g. SOLBOT_POSITION_SIZE_SOL=0.1),
+    // use it directly so trades aren't burned by fixed fees.
+    if let Ok(val) = std::env::var("SOLBOT_POSITION_SIZE_SOL") {
+        if let Ok(fixed_size) = val.parse::<f64>() {
+            if fixed_size > 0.0 {
+                let mult = size_multiplier.clamp(0.5, 1.25);
+                return (fixed_size * mult).min(tier_params.sizing.max_size_sol.max(1.0));
+            }
+        }
+    }
+
     let base_size = capital * tier_params.sizing.base_size_pct;
 
     let kelly_adjusted = if let Some(stats) = stats {

@@ -773,11 +773,15 @@ async fn process_signals(
             // Respect max_concurrent_positions so free-tier RPC and capital limits aren't overwhelmed
             if let Some(ref pos_repo) = positions_repo_clone {
                 if let Ok(open_list) = pos_repo.get_open_positions().await {
-                    let max_open = loaded_configs_clone
-                        .as_ref()
-                        .map(|c| c.small_tier.position_limits.max_concurrent_positions as usize)
-                        .unwrap_or(3)
-                        .min(3);
+                    let max_open = std::env::var("SOLBOT_MAX_CONCURRENT_POSITIONS")
+                        .ok()
+                        .and_then(|s| s.parse::<usize>().ok())
+                        .unwrap_or_else(|| {
+                            loaded_configs_clone
+                                .as_ref()
+                                .map(|c| c.small_tier.position_limits.max_concurrent_positions as usize)
+                                .unwrap_or(3)
+                        });
                     if open_list.len() >= max_open {
                         tracing::debug!(
                             open = open_list.len(),
