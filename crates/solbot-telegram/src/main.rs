@@ -69,10 +69,16 @@ async fn main() -> Result<()> {
                     }
                     let pos_row = sqlx::query_as::<_, (String, f64, f64, f64)>(
                         r#"
-            if let Some(ref client) = telegram_client {
-                if let Err(e) = client.send_markdown_v2(&msg).await {
-                    tracing::error!("Telegram alert send failed: {}", e);
-                    // Critical alert SMTP fallback on Telegram failure
+                        SELECT mint, entry_price_sol, size_sol, COALESCE(realized_pnl_net_sol, 0.0)
+                        FROM positions
+                        WHERE position_id = ?1
+                        "#,
+                    )
+                    .bind(&position_id)
+                    .fetch_optional(&pool)
+                    .await
+                    .ok()
+                    .flatten();
                     handle_critical_fallback(&event, &msg).await;
                 }
             } else {
