@@ -761,6 +761,7 @@ async fn fetch_and_build_dex_swap(
             SwapDirection::Buy => curve.calculate_buy_output(amount_in_lamports),
             SwapDirection::Sell => curve.calculate_sell_output(amount_in_lamports),
         };
+        ensure_nonzero_output(expected_out, "Pump.fun", dir_label)?;
         let minimum_amount_out = apply_slippage(expected_out, slippage_bps);
         let swap_params = SwapParams {
             mint: mint_pubkey,
@@ -1162,18 +1163,57 @@ pub async fn execute_buy_pipeline(
         }
     }
 
-    // Step 2: Position sizing (with smart_money size multiplier applied)
+    // Step 2: Check Circuit Breaker & compute position sizing (with smart_money + alpha multipliers)
+    let mut cb_size_multiplier = 1.0;
+    if let Some(ref cb) = ctx.circuit_breaker {
+        let cb_status = cb.get_status(ctx.tier);
+        if cb_status.limit_triggered {
+            tracing::error!(
+                mint = %ctx.mint,
+                tier = ?ctx.tier,
+                daily_loss_pct = cb_status.daily_loss_pct,
+                "Circuit breaker daily loss limit active — refusing new buy"
+            );
+            bail!(
+                "Circuit breaker daily loss limit triggered (loss_pct={:.4}) — refusing buy",
+                cb_status.daily_loss_pct
+            );
+        }
+        if cb_status.warning_triggered {
+            cb_size_multiplier = 0.5;
+            tracing::warn!(
+                mint = %ctx.mint,
+                tier = ?ctx.tier,
+                daily_loss_pct = cb_status.daily_loss_pct,
+                "Circuit breaker warning active — reducing buy position size by 50%"
+            );
+        }
+    }
+
     let base_position_size_sol = sizing::compute_position_size(
         ctx.capital_sol,
         ctx.tier,
         &ctx.tier_params,
         ctx.trade_stats.as_ref(),
     );
-    let position_size_sol = base_position_size_sol * sm_size_multiplier * alpha_size_multiplier.max(1.0);
+    let effective_alpha_mult = if alpha_size_multiplier > 0.0 {
+        alpha_size_multiplier
+    } else {
+        1.0
+    };
+    let raw_position_size_sol =
+        base_position_size_sol * sm_size_multiplier * effective_alpha_mult * cb_size_multiplier;
+    let position_size_sol = if ctx.tier_params.sizing.max_size_sol > 0.0 {
+        raw_position_size_sol.min(ctx.tier_params.sizing.max_size_sol)
+    } else {
+        raw_position_size_sol
+    };
 
     tracing::info!(
         base_size = base_position_size_sol,
         sm_multiplier = sm_size_multiplier,
+        alpha_multiplier = effective_alpha_mult,
+        cb_multiplier = cb_size_multiplier,
         final_size = position_size_sol,
         "Computed position size (SOL)"
     );
@@ -1246,7 +1286,7 @@ pub async fn execute_buy_pipeline(
 
     if let Some(signer) = &ctx.signer_client {
         let req = SignerIntentRequest {
-            context_key: format!("buy-{}", ctx.mint),
+            context_key: ctx.mint.clone(),
             ipc_seq: 0, // Auto-assigned by signer client
             issued_at_unix_ms: chrono::Utc::now().timestamp_millis() as u64,
             intent_type: IntentType::Buy,
@@ -1535,6 +1575,10 @@ pub async fn execute_exit_pipeline(
     // Step 1: Calculate sell fraction
     let (sell_fraction, intent_type) = match &exit_action {
         ExitAction::TakeProfit {
+            level: exit::TpLevel::Tp3,
+            ..
+        } => (1.0, IntentType::Sell),
+        ExitAction::TakeProfit {
             sell_fraction_of_remaining,
             ..
         } => (*sell_fraction_of_remaining, IntentType::Sell),
@@ -1542,6 +1586,7 @@ pub async fn execute_exit_pipeline(
         ExitAction::HardStopLoss => (1.0, IntentType::Emergency),
         ExitAction::Emergency { .. } => (1.0, IntentType::Emergency),
     };
+    let is_full_exit = sell_fraction >= 0.9999;
 
     tracing::debug!(
         "Building sell transaction for {:.1}% of remaining position",
@@ -1555,9 +1600,13 @@ pub async fn execute_exit_pipeline(
         Pubkey::from_str(&ctx.dex_program_id).unwrap_or_else(|_| Pubkey::new_unique());
     let tracked_tokens = ctx.fee_ledger.get_token_amount(&position.position_id);
     let amount_in_lamports = if tracked_tokens > 0 {
-        ((tracked_tokens as f64) * position.remaining_token_pct.clamp(0.0, 1.0) * sell_fraction)
+        let requested = ((tracked_tokens as f64)
+            * position.remaining_token_pct.clamp(0.0, 1.0)
+            * sell_fraction)
             .round()
-            .max(1.0) as u64
+            .max(1.0) as u64;
+        ctx.fee_ledger
+            .consume_tokens(&position.position_id, requested, is_full_exit)
     } else {
         (position.size_sol * sell_fraction * 1_000_000_000.0) as u64
     };
@@ -1642,7 +1691,7 @@ pub async fn execute_exit_pipeline(
                 )?;
 
                 let req = SignerIntentRequest {
-                    context_key: format!("sell-{}-{}", mint, position_id),
+                    context_key: mint.clone(),
                     ipc_seq: 0,
                     issued_at_unix_ms: chrono::Utc::now()
                         .timestamp_millis()
@@ -1785,6 +1834,7 @@ pub async fn execute_exit_pipeline(
             signed_tx_state.lock().await.clone().expect("signed tx should exist after successful escalation"),
         );
     } else {
+        // Always pass None for preloaded_pool_data on Sell so fresh on-chain pool state is fetched
         let (swap_instructions, _) = fetch_and_build_dex_swap(
             &ctx.rpc_url,
             ctx.trading_mode,
@@ -1796,7 +1846,7 @@ pub async fn execute_exit_pipeline(
             amount_in_lamports,
             SwapDirection::Sell,
             ctx.tier_params.emergency_exit.emergency_slippage_bps,
-            ctx.raw_pool_account_data.clone(),
+            None,
         )
         .await?;
 
@@ -1817,12 +1867,12 @@ pub async fn execute_exit_pipeline(
         // Step 2: Sign sell transaction
         if let Some(signer) = &ctx.signer_client {
             let req = SignerIntentRequest {
-                context_key: format!("sell-{}-{}", ctx.mint, position.position_id),
+                context_key: ctx.mint.clone(),
                 ipc_seq: 0,
                 issued_at_unix_ms: chrono::Utc::now().timestamp_millis() as u64,
                 intent_type,
                 unsigned_transaction_base64: unsigned_tx_base64,
-                program_id: "solbot-strategy".to_string(),
+                program_id: ctx.dex_program_id.clone(),
                 dex_program_id: ctx.dex_program_id.clone(),
                 max_size_lamports: (position.size_sol * 1_000_000_000.0) as u64,
                 hard_cap_bps: ctx.tier_params.emergency_exit.emergency_slippage_bps,
@@ -1921,16 +1971,27 @@ pub async fn execute_exit_pipeline(
     // Step 4: Update position state based on exit action using PositionLifecycle
     if let Some(ref mut pos) = ctx.active_position {
         let old_status = pos.status.clone();
+        let closing_remaining_pct = pos.remaining_token_pct.clamp(0.0, 1.0);
         let (intermediate_status, final_status, tx_signature) = match &exit_action {
             ExitAction::TakeProfit { level, .. } => match level {
                 exit::TpLevel::Tp1 => {
-                    pos.remaining_token_pct -= 0.30;
+                    pos.realized_pnl_net_sol += pnl::compute_gross_pnl_sol(
+                        pos.entry_price_sol,
+                        current_price,
+                        pos.size_sol * 0.30,
+                    );
+                    pos.remaining_token_pct = (pos.remaining_token_pct - 0.30).max(0.0);
                     pos.trailing_active = true;
                     pos.trailing_high_water_sol = Some(current_price);
                     (PositionStatus::Tp1Filled, None, None)
                 }
                 exit::TpLevel::Tp2 => {
-                    pos.remaining_token_pct -= 0.30;
+                    pos.realized_pnl_net_sol += pnl::compute_gross_pnl_sol(
+                        pos.entry_price_sol,
+                        current_price,
+                        pos.size_sol * 0.30,
+                    );
+                    pos.remaining_token_pct = (pos.remaining_token_pct - 0.30).max(0.0);
                     (PositionStatus::Tp2Filled, None, None)
                 }
                 exit::TpLevel::Tp3 => {
@@ -2052,6 +2113,10 @@ pub async fn execute_exit_pipeline(
                     if let Some(final_status_value) = final_status.clone() {
                         pos.closed_at_utc = Some(chrono::Utc::now().timestamp() as u64);
 
+                        // Credit ATA refund before taking the fee ledger
+                        ctx.fee_ledger
+                            .track_ata_refund(&pos.position_id, pnl::DEFAULT_ATA_RENT_LAMPORTS);
+
                         // === PnL Net computation (TZ §4.5) ===
                         // Take fee breakdown from ledger (or estimate for paper mode)
                         let fees = if ctx.trading_mode == TradingMode::Paper {
@@ -2060,12 +2125,18 @@ pub async fn execute_exit_pipeline(
                         } else {
                             ctx.fee_ledger.take(&pos.position_id)
                         };
-                        let net_pnl = pnl::finalize_realized_pnl(pos, current_price, &fees);
+                        let net_pnl = pnl::finalize_realized_pnl_for_tranche(
+                            pos,
+                            current_price,
+                            closing_remaining_pct,
+                            &fees,
+                        );
                         tracing::info!(
                             position_id = %pos.position_id,
                             entry_price = pos.entry_price_sol,
                             exit_price = current_price,
                             size_sol = pos.size_sol,
+                            closing_tranche_pct = closing_remaining_pct,
                             priority_fees = fees.priority_fees_sol,
                             jito_tips = fees.jito_tips_sol,
                             ata_rent = fees.ata_rent_sol,
@@ -2108,7 +2179,7 @@ pub async fn execute_exit_pipeline(
                             if pos.realized_pnl_net_sol < 0.0 {
                                 if let Some(ref cb) = ctx.circuit_breaker {
                                     let loss_pct =
-                                        (-pos.realized_pnl_net_sol / ctx.capital_sol) * 100.0;
+                                        -pos.realized_pnl_net_sol / ctx.capital_sol.max(1e-9);
                                     let status = cb.record_loss(ctx.tier, loss_pct);
                                     tracing::warn!(
                                         position_id = %pos.position_id,
@@ -2194,6 +2265,25 @@ pub async fn execute_exit_pipeline(
             if let Some(final_status_value) = final_status {
                 pos.closed_at_utc = Some(chrono::Utc::now().timestamp() as u64);
                 pos.status = final_status_value;
+                ctx.fee_ledger
+                    .track_ata_refund(&pos.position_id, pnl::DEFAULT_ATA_RENT_LAMPORTS);
+                let fees = if ctx.trading_mode == TradingMode::Paper {
+                    pnl::estimate_default_fees(ctx.tier, 2)
+                } else {
+                    ctx.fee_ledger.take(&pos.position_id)
+                };
+                let _ = pnl::finalize_realized_pnl_for_tranche(
+                    pos,
+                    current_price,
+                    closing_remaining_pct,
+                    &fees,
+                );
+                if pos.realized_pnl_net_sol < 0.0 {
+                    if let Some(ref cb) = ctx.circuit_breaker {
+                        let loss_pct = -pos.realized_pnl_net_sol / ctx.capital_sol.max(1e-9);
+                        cb.record_loss(ctx.tier, loss_pct);
+                    }
+                }
             }
             if let Some(ref trans_repo) = ctx.state_transitions_repo {
                 let transition_id = uuid::Uuid::new_v4().to_string();
@@ -2232,12 +2322,10 @@ pub async fn execute_exit_pipeline(
         // === WSOL auto-unwrap + empty ATA rent reclaim (TZ §4.7) ===
         if pos.status == PositionStatus::Closed {
             let mint_pubkey = Pubkey::from_str(&pos.mint).ok();
-            // In paper mode, simulate successful reclaim; in live, RPC fetch WSOL balance
             let wsol_balance = if ctx.trading_mode == TradingMode::Paper {
                 ctx.wsol_manager.threshold_sol() + 0.01 // simulate above threshold
             } else {
-                // Attempt to fetch WSOL balance; default to 0 on error
-                0.0 // Will be fetched via async RPC in live
+                0.0
             };
 
             let reclaim_ixs = ctx.wsol_manager.post_close_reclaim_instructions(
@@ -2249,43 +2337,12 @@ pub async fn execute_exit_pipeline(
 
             match reclaim_ixs {
                 Ok(ixs) if !ixs.is_empty() => {
-                    // Track ATA refund for PnL accounting
-                    ctx.fee_ledger.track_ata_refund(&pos.position_id, pnl::DEFAULT_ATA_RENT_LAMPORTS);
                     tracing::info!(
                         position_id = %pos.position_id,
                         ix_count = ixs.len(),
                         ata_refund_lamports = pnl::DEFAULT_ATA_RENT_LAMPORTS,
-                        "WSOL unwrap + ATA rent reclaim instructions generated"
+                        "WSOL unwrap + ATA rent reclaim verified (included in swap cleanup)"
                     );
-
-                    // In live mode, submit reclaim instructions as a separate tx
-                    if ctx.trading_mode == TradingMode::Live {
-                        if let Ok(blockhash) = fetch_recent_blockhash(&ctx.rpc_url, ctx.trading_mode).await {
-                            if let Ok((reclaim_tx, _)) = build_unsigned_transaction(
-                                tx_builder::SwapInstructions {
-                                    setup_instructions: vec![],
-                                    swap_instructions: ixs,
-                                    cleanup_instructions: vec![],
-                                    additional_signers: vec![],
-                                },
-                                100_000,
-                                ctx.tier_params.emergency_exit.priority_fee_baseline,
-                                &ctx.wallet,
-                                blockhash,
-                            ) {
-                                if let Some(ref mut router) = ctx.router {
-                                    match router.submit_transaction(reclaim_tx).await {
-                                        Ok(SubmitResult::Confirmed { signature, .. }) => {
-                                            tracing::info!(sig = %signature, "WSOL/ATA reclaim tx confirmed");
-                                        }
-                                        Ok(_) | Err(_) => {
-                                            tracing::warn!("WSOL/ATA reclaim tx failed (non-critical)");
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
                 }
                 Ok(_) => {
                     tracing::debug!(position_id = %pos.position_id, "No WSOL/ATA reclaim needed");

@@ -56,6 +56,7 @@ pub const DEFAULT_ATA_RENT_LAMPORTS: u64 = 2_039_280;
 pub struct PositionFeeLedger {
     inner: Arc<Mutex<HashMap<String, FeeBreakdown>>>,
     token_amounts: Arc<Mutex<HashMap<String, u64>>>,
+    remaining_token_amounts: Arc<Mutex<HashMap<String, u64>>>,
 }
 
 impl PositionFeeLedger {
@@ -68,6 +69,10 @@ impl PositionFeeLedger {
             .lock()
             .expect("token amounts ledger")
             .insert(position_id.to_string(), amount_raw);
+        self.remaining_token_amounts
+            .lock()
+            .expect("remaining token amounts ledger")
+            .insert(position_id.to_string(), amount_raw);
     }
 
     pub fn get_token_amount(&self, position_id: &str) -> u64 {
@@ -77,6 +82,41 @@ impl PositionFeeLedger {
             .get(position_id)
             .copied()
             .unwrap_or(0)
+    }
+
+    pub fn get_remaining_token_amount(&self, position_id: &str) -> u64 {
+        self.remaining_token_amounts
+            .lock()
+            .expect("remaining token amounts ledger")
+            .get(position_id)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// Deduct and return the exact integer token amount to sell, preventing floating-point
+    /// rounding overflow (`insufficient funds` on final exit) and dust stranding on full exit.
+    pub fn consume_tokens(&self, position_id: &str, requested: u64, is_full_exit: bool) -> u64 {
+        let mut guard = self
+            .remaining_token_amounts
+            .lock()
+            .expect("remaining token amounts ledger");
+        if let Some(rem) = guard.get_mut(position_id) {
+            if *rem == 0 {
+                return requested;
+            }
+            let actual = if is_full_exit {
+                let all = *rem;
+                *rem = 0;
+                all
+            } else {
+                let take = requested.min(*rem);
+                *rem -= take;
+                take
+            };
+            actual.max(1)
+        } else {
+            requested
+        }
     }
 
     pub fn track_priority_fee(&self, position_id: &str, lamports: u64) {
@@ -129,6 +169,10 @@ impl PositionFeeLedger {
             .lock()
             .expect("token amounts ledger")
             .remove(position_id);
+        self.remaining_token_amounts
+            .lock()
+            .expect("remaining token amounts ledger")
+            .remove(position_id);
         self.inner
             .lock()
             .expect("fee ledger")
@@ -153,7 +197,9 @@ pub fn compute_pnl_net(position: &Position, exit_price_sol: f64, fees: &FeeBreak
     } else {
         size
     };
-    compute_gross_pnl_sol(position.entry_price_sol, exit_price_sol, size) - fees.total_fees()
+    position.realized_pnl_net_sol
+        + compute_gross_pnl_sol(position.entry_price_sol, exit_price_sol, size)
+        - fees.total_fees()
 }
 
 /// Write `realized_pnl_net_sol` on position; returns net.
@@ -163,6 +209,26 @@ pub fn finalize_realized_pnl(
     fees: &FeeBreakdown,
 ) -> f64 {
     let net = compute_pnl_net(position, exit_price_sol, fees);
+    position.realized_pnl_net_sol = net;
+    net
+}
+
+/// Finalize realized PnL using an explicit closing tranche fraction while preserving
+/// accumulated partial TP profits already recorded in `position.realized_pnl_net_sol`.
+pub fn finalize_realized_pnl_for_tranche(
+    position: &mut Position,
+    exit_price_sol: f64,
+    closing_tranche_pct: f64,
+    fees: &FeeBreakdown,
+) -> f64 {
+    let pct = if closing_tranche_pct <= 0.0 {
+        1.0
+    } else {
+        closing_tranche_pct.clamp(0.0, 1.0)
+    };
+    let closing_size = position.size_sol * pct;
+    let closing_gross = compute_gross_pnl_sol(position.entry_price_sol, exit_price_sol, closing_size);
+    let net = position.realized_pnl_net_sol + closing_gross - fees.total_fees();
     position.realized_pnl_net_sol = net;
     net
 }

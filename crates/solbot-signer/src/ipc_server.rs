@@ -72,9 +72,11 @@ impl signer_proto::transaction_signer_service_server::TransactionSignerService f
         let req = request.into_inner();
         let now_ms = Utc::now().timestamp_millis() as u64;
 
-        // Build context_key: use mint as primary key, fallback to pool_address
+        // Build canonical context_key: prefer mint, fallback to context_key, then pool_address
         let context_key = if !req.mint.is_empty() {
             req.mint.clone()
+        } else if !req.context_key.is_empty() {
+            req.context_key.clone()
         } else {
             req.pool_address.clone()
         };
@@ -231,7 +233,11 @@ impl signer_proto::transaction_signer_service_server::TransactionSignerService f
             rejection_reason: rejection_reason.unwrap_or("").to_string(),
             signed_transaction_base64: signed_b64.unwrap_or_default(),
             constructed_tx_signature: signature.unwrap_or_default(),
-            last_ipc_seq: internal_req.ipc_seq,
+            last_ipc_seq: if verdict_str == "accepted" {
+                internal_req.ipc_seq
+            } else {
+                last_seq
+            },
         };
 
         if verdict_str == "accepted" {

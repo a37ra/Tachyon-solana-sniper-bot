@@ -172,11 +172,33 @@ async fn main() -> anyhow::Result<()> {
         .map(|p| Arc::new(WalletWatchlistRepo::new(p.clone())));
     let circuit_breaker = Arc::new(CircuitBreaker::new());
 
-    // Lifecycle event bus -> logs & persists notifications
+    let actor_config = ActorConfig::default();
+    let actor_registry = ActorRegistry::new();
+
+    // Lifecycle event bus -> logs & broadcasts circuit breaker triggers to all active actors
     let (lifecycle_event_tx, mut lifecycle_event_rx) = mpsc::channel::<PositionLifecycleEvent>(256);
+    let actors_for_lifecycle = actor_registry.clone();
     tokio::spawn(async move {
         while let Some(event) = lifecycle_event_rx.recv().await {
             tracing::info!(?event, "PositionLifecycleEvent emitted");
+            if let PositionLifecycleEvent::PositionStuck { ref reason, .. } = event {
+                if reason.contains("circuit_breaker_limit_triggered") {
+                    let handles: Vec<ActorHandle> = actors_for_lifecycle
+                        .actors
+                        .iter()
+                        .map(|entry| entry.value().clone())
+                        .collect();
+                    for handle in handles {
+                        let _ = handle
+                            .control_tx
+                            .send(ControlEvent::KillSwitch {
+                                activated: true,
+                                reason: reason.clone(),
+                            })
+                            .await;
+                    }
+                }
+            }
         }
     });
 
@@ -186,9 +208,6 @@ async fn main() -> anyhow::Result<()> {
             tracing::info!(count = n, "Smart money watchlist cache hydrated from DB");
         }
     }
-
-    let actor_config = ActorConfig::default();
-    let actor_registry = ActorRegistry::new();
 
     let rpc_url = resolve_rpc_url();
     let shared_rpc = Arc::new(
@@ -265,6 +284,82 @@ async fn main() -> anyhow::Result<()> {
         backfill_provider: backfill_provider.as_ref(),
     };
     let _hydration_report = startup::hydration::hydrate_system_state_with_opts(&hydration_opts).await?;
+
+    // Re-spawn MintActors for open positions recovered during hydration so TP/SL/TrailingStop continue
+    if let Some(ref pos_repo) = positions_repo {
+        if let Ok(open_positions) = pos_repo.get_open_positions().await {
+            let mode = if is_paper {
+                mint_actor::TradingMode::Paper
+            } else {
+                mint_actor::TradingMode::Live
+            };
+            for pos in open_positions {
+                if actor_registry.get(&pos.mint).is_some() {
+                    continue;
+                }
+                tracing::info!(
+                    position_id = %pos.position_id,
+                    mint = %pos.mint,
+                    status = ?pos.status,
+                    "Spawning hydrated MintActor for open position"
+                );
+                let (control_tx, control_rx) = mpsc::channel(100);
+                let market_data_lane = MarketDataLane::new();
+                let market_data_tx = market_data_lane.sender();
+                let tier_params = loaded_configs
+                    .as_ref()
+                    .map(|c| c.small_tier.clone())
+                    .unwrap_or_else(default_small_tier_params);
+                let ctx = ActorContext {
+                    mint: pos.mint.clone(),
+                    pool_address: pos.pool_address.clone(),
+                    dex_program_id: pos.dex_program_id.clone(),
+                    wallet: wallet_pubkey,
+                    trading_mode: mode,
+                    risk_gate_config: shared_risk.as_ref().clone(),
+                    tier: pos.tier,
+                    tier_params,
+                    capital_sol: 1.0,
+                    router: router.as_ref().and_then(|_| {
+                        TransactionRouter::new(solbot_strategy::routing::RoutingConfig::default())
+                            .ok()
+                    }),
+                    signer_client: signer_client.clone(),
+                    rpc_url: live_rpc_url.clone(),
+                    active_position: Some(pos.clone()),
+                    trade_stats: None,
+                    dex_readiness: dex_readiness.clone(),
+                    positions_repo: positions_repo.clone(),
+                    state_transitions_repo: state_transitions_repo.clone(),
+                    position_lifecycle: position_lifecycle.clone(),
+                    lifecycle_event_tx: Some(lifecycle_event_tx.clone()),
+                    circuit_breaker: Some(circuit_breaker.clone()),
+                    raw_pool_account_data: None,
+                    raw_pool_account_owner: None,
+                    last_signal_slot: 0,
+                    last_signal_received_at: 0,
+                    buy_attempted: true,
+                    fee_ledger: solbot_strategy::pnl::PositionFeeLedger::new(),
+                    smart_money_mode: solbot_strategy::smart_money::SmartMoneyMode::from_env(),
+                    watchlist_cache: Some((*watchlist_cache).clone()),
+                    smart_money_hits_repo: smart_money_hits_repo.clone(),
+                    wsol_manager: solbot_strategy::wsol::WsolManager::default(),
+                };
+                actor_registry.register(
+                    pos.mint.clone(),
+                    ActorHandle {
+                        control_tx,
+                        market_data_tx,
+                    },
+                );
+                let mint_clone = pos.mint.clone();
+                let cfg_clone = actor_config.clone();
+                tokio::spawn(async move {
+                    mint_actor::run(mint_clone, control_rx, market_data_lane, ctx, cfg_clone).await;
+                });
+            }
+        }
+    }
 
     // Pump fee_recipient from on-chain Global — no hardcoded tip/fee addresses.
     solbot_strategy::tx_builder::pump_fun::load_fee_recipient_from_global(shared_rpc.as_ref())
@@ -711,6 +806,48 @@ fn reject_reason_bucket(reason: &str) -> String {
     }
 }
 
+fn default_small_tier_params() -> solbot_common::config::TierParams {
+    solbot_common::config::TierParams {
+        tier: TierInfo {
+            name: "Small".to_string(),
+            capital_range: solbot_common::config::tier_params::CapitalRange {
+                min_usd: 1000,
+                max_usd: 10000,
+            },
+        },
+        sizing: SizingParams {
+            base_size_pct: 0.01,
+            max_size_sol: 1.0,
+            slippage_hard_cap_bps: 500,
+            kelly: solbot_common::config::tier_params::KellyParams {
+                fraction_of_kelly: 0.5,
+            },
+            adaptive: solbot_common::config::tier_params::AdaptiveParams {
+                enabled: false,
+                calibration_window_slots: 1000,
+                min_sample_size: 10,
+                size_max_pct: 0.05,
+            },
+        },
+        position_limits: PositionLimits {
+            max_concurrent_positions: 5,
+            circuit_breaker: solbot_common::config::tier_params::CircuitBreakerParams {
+                warning_threshold_pct: 0.5,
+                daily_loss_limit_pct: 0.1,
+                max_parallel_emergency_sells: 3,
+            },
+        },
+        hot_wallet: HotWalletParams { cap_sol: 10.0 },
+        compromise_detection: CompromiseDetection {
+            signing_rate_threshold_5min: 10,
+        },
+        emergency_exit: EmergencyExitParams {
+            emergency_slippage_bps: 1000,
+            priority_fee_baseline: 1000,
+        },
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn dispatch_to_actor(
     signal: &solbot_common::types::Signal,
@@ -756,45 +893,7 @@ async fn dispatch_to_actor(
     let tier_params = loaded_configs
         .as_ref()
         .map(|c| c.small_tier.clone())
-        .unwrap_or_else(|| solbot_common::config::TierParams {
-            tier: TierInfo {
-                name: "Small".to_string(),
-                capital_range: solbot_common::config::tier_params::CapitalRange {
-                    min_usd: 1000,
-                    max_usd: 10000,
-                },
-            },
-            sizing: SizingParams {
-                base_size_pct: 0.01,
-                max_size_sol: 1.0,
-                slippage_hard_cap_bps: 500,
-                kelly: solbot_common::config::tier_params::KellyParams {
-                    fraction_of_kelly: 0.5,
-                },
-                adaptive: solbot_common::config::tier_params::AdaptiveParams {
-                    enabled: false,
-                    calibration_window_slots: 1000,
-                    min_sample_size: 10,
-                    size_max_pct: 0.05,
-                },
-            },
-            position_limits: PositionLimits {
-                max_concurrent_positions: 5,
-                circuit_breaker: solbot_common::config::tier_params::CircuitBreakerParams {
-                    warning_threshold_pct: 0.5,
-                    daily_loss_limit_pct: 0.1,
-                    max_parallel_emergency_sells: 3,
-                },
-            },
-            hot_wallet: HotWalletParams { cap_sol: 10.0 },
-            compromise_detection: CompromiseDetection {
-                signing_rate_threshold_5min: 10,
-            },
-            emergency_exit: EmergencyExitParams {
-                emergency_slippage_bps: 1000,
-                priority_fee_baseline: 1000,
-            },
-        });
+        .unwrap_or_else(default_small_tier_params);
 
     let ctx = ActorContext {
         mint: signal.mint.clone(),

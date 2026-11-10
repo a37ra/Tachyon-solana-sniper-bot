@@ -2,7 +2,7 @@
 
 use anyhow::{anyhow, Result};
 use reqwest::Client;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
@@ -12,8 +12,33 @@ use tokio::sync::Mutex;
 struct SendMessagePayload<'a> {
     chat_id: &'a str,
     text: &'a str,
-    parse_mode: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    parse_mode: Option<&'a str>,
     disable_web_page_preview: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct GetUpdatesResponse {
+    ok: bool,
+    #[serde(default)]
+    result: Vec<TelegramUpdate>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TelegramUpdate {
+    update_id: i64,
+    message: Option<TelegramMessage>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TelegramMessage {
+    chat: TelegramChat,
+    text: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TelegramChat {
+    id: i64,
 }
 
 /// Token bucket rate limiter for Telegram API (max 20 msgs/sec, max 1 msg/sec per chat).
@@ -92,7 +117,7 @@ impl TelegramClient {
         let payload = SendMessagePayload {
             chat_id: &self.chat_id,
             text,
-            parse_mode: "MarkdownV2",
+            parse_mode: Some("MarkdownV2"),
             disable_web_page_preview: true,
         };
 
@@ -111,6 +136,61 @@ impl TelegramClient {
 
         tracing::debug!("Telegram MarkdownV2 message sent successfully");
         Ok(())
+    }
+
+    pub async fn send_plain_text(&self, text: &str) -> Result<()> {
+        if self.bot_token.is_empty() || self.chat_id.is_empty() {
+            return Err(anyhow!("Telegram credentials not configured"));
+        }
+
+        self.rate_limiter.wait_for_slot().await;
+
+        let url = format!("https://api.telegram.org/bot{}/sendMessage", self.bot_token);
+        let payload = SendMessagePayload {
+            chat_id: &self.chat_id,
+            text,
+            parse_mode: None,
+            disable_web_page_preview: true,
+        };
+
+        let response = self.http.post(&url).json(&payload).send().await?;
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(anyhow!("Telegram API error HTTP {}: {}", status, body));
+        }
+        Ok(())
+    }
+
+    /// Poll incoming commands from the configured `TELEGRAM_CHAT_ID`.
+    /// Returns `(update_id, command_text)` tuples.
+    pub async fn poll_authorized_commands(&self, offset: i64) -> Result<Vec<(i64, String)>> {
+        if self.bot_token.is_empty() || self.chat_id.is_empty() {
+            return Ok(vec![]);
+        }
+        let url = format!(
+            "https://api.telegram.org/bot{}/getUpdates?offset={}&timeout=2",
+            self.bot_token, offset
+        );
+        let resp = self.http.get(&url).send().await?;
+        if !resp.status().is_success() {
+            return Ok(vec![]);
+        }
+        let parsed: GetUpdatesResponse = resp.json().await?;
+        if !parsed.ok {
+            return Ok(vec![]);
+        }
+        let mut commands = Vec::new();
+        for upd in parsed.result {
+            if let Some(msg) = upd.message {
+                if msg.chat.id.to_string() == self.chat_id {
+                    if let Some(text) = msg.text {
+                        commands.push((upd.update_id, text));
+                    }
+                }
+            }
+        }
+        Ok(commands)
     }
 }
 

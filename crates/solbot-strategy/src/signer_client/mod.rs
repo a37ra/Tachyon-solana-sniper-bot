@@ -130,7 +130,15 @@ impl SignerClient {
         &self,
         mut request: SignerIntentRequest,
     ) -> Result<SignerIntentResponse> {
-        let seq = self.seq_counter.next_seq(&request.context_key);
+        let canonical_key = if !request.mint.is_empty() {
+            request.mint.clone()
+        } else if !request.context_key.is_empty() {
+            request.context_key.clone()
+        } else {
+            request.pool_address.clone()
+        };
+        request.context_key = canonical_key.clone();
+        let seq = self.seq_counter.next_seq(&canonical_key);
         request.ipc_seq = seq;
 
         tracing::info!(
@@ -141,7 +149,7 @@ impl SignerClient {
         );
 
         // Convert domain type to proto
-        let proto_req = signer_proto::SignerIntentRequest {
+        let mut proto_req = signer_proto::SignerIntentRequest {
             context_key: request.context_key.clone(),
             ipc_seq: request.ipc_seq,
             issued_at_unix_ms: request.issued_at_unix_ms,
@@ -174,10 +182,37 @@ impl SignerClient {
                     "Retrying signer RPC call with exponential backoff"
                 );
                 tokio::time::sleep(backoff).await;
+                if request.issued_at_unix_ms > 0 {
+                    proto_req.issued_at_unix_ms = chrono::Utc::now().timestamp_millis() as u64;
+                }
             }
 
             match self.do_sign_intent(proto_req.clone()).await {
-                Ok(resp) => return Ok(resp),
+                Ok(resp) => {
+                    // Auto-recover from sequence desync (e.g., strategy restarted while signer kept SQLite ledger)
+                    if resp.status == VerdictStatus::Rejected
+                        && resp.rejection_reason.as_deref() == Some("SequenceTooOld")
+                        && resp.last_ipc_seq >= proto_req.ipc_seq
+                    {
+                        self.seq_counter.set_seq(&canonical_key, resp.last_ipc_seq);
+                        let resynced_seq = self.seq_counter.next_seq(&canonical_key);
+                        proto_req.ipc_seq = resynced_seq;
+                        if request.issued_at_unix_ms > 0 {
+                            proto_req.issued_at_unix_ms =
+                                chrono::Utc::now().timestamp_millis() as u64;
+                        }
+                        tracing::warn!(
+                            context_key = %canonical_key,
+                            signer_last_seq = resp.last_ipc_seq,
+                            resynced_seq = resynced_seq,
+                            "Resynced IPC sequence counter with solbot-signer after SequenceTooOld"
+                        );
+                        if let Ok(retry_resp) = self.do_sign_intent(proto_req.clone()).await {
+                            return Ok(retry_resp);
+                        }
+                    }
+                    return Ok(resp);
+                }
                 Err(e) => {
                     tracing::warn!(
                         attempt = attempt,

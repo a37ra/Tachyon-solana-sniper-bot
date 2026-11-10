@@ -143,7 +143,12 @@ pub fn build_unsigned_transaction(
 /// `slippage_bps` is the tolerance (e.g., 500 = 5%).
 pub fn apply_slippage(expected_out: u64, slippage_bps: u32) -> u64 {
     let factor = 10_000u128.saturating_sub(slippage_bps as u128);
-    ((expected_out as u128) * factor / 10_000u128) as u64
+    let raw = ((expected_out as u128) * factor / 10_000u128) as u64;
+    if expected_out > 0 && slippage_bps < 10_000 {
+        raw.max(1)
+    } else {
+        raw
+    }
 }
 
 #[cfg(test)]
