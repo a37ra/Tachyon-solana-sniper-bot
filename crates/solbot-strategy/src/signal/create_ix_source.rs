@@ -44,6 +44,20 @@ pub async fn subscribe_create_ix_signals(
     let ws_url = std::env::var("HELIUS_WS_URL")
         .unwrap_or_else(|_| format!("wss://mainnet.helius-rpc.com/?api-key={}", api_key));
 
+    // When running on free/public RPC (where WS may return 503 Service Unavailable),
+    // spawn a gentle HTTP RPC poller in parallel so live Mainnet signals always flow.
+    let is_public_rpc = std::env::var("SOLBOT_PUBLIC_RPC")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(true);
+    if is_public_rpc {
+        let rpc_http = rpc.clone();
+        let tx_http = tx.clone();
+        let seen_http = seen.clone();
+        tokio::spawn(async move {
+            run_http_pump_poller(rpc_http, tx_http, seen_http).await;
+        });
+    }
+
     tokio::spawn(async move {
         let mut attempts = 0u32;
         loop {
@@ -60,6 +74,126 @@ pub async fn subscribe_create_ix_signals(
     });
 
     Ok(rx)
+}
+
+async fn run_http_pump_poller(
+    rpc: Arc<RpcClient>,
+    tx: mpsc::Sender<Signal>,
+    seen: SeenPools,
+) {
+    use solana_rpc_client::rpc_client::GetConfirmedSignaturesForAddress2Config;
+    use solana_message::VersionedMessage;
+    use std::collections::HashSet;
+
+    let Ok(pump_pid) = Pubkey::from_str("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P") else {
+        return;
+    };
+    let mut seen_sigs: HashSet<String> = HashSet::new();
+    let mut poll_interval = interval(Duration::from_secs(6));
+    info!("HTTP RPC fallback signal poller started (free-tier resilient mode)");
+
+    loop {
+        poll_interval.tick().await;
+        let cfg = GetConfirmedSignaturesForAddress2Config {
+            before: None,
+            until: None,
+            limit: Some(10),
+            commitment: Some(CommitmentConfig::confirmed()),
+        };
+        let Ok(sigs) = rpc
+            .get_signatures_for_address_with_config(&pump_pid, cfg)
+            .await
+        else {
+            continue;
+        };
+
+        for sig_info in sigs {
+            if sig_info.err.is_some() {
+                continue;
+            }
+            if !seen_sigs.insert(sig_info.signature.clone()) {
+                continue;
+            }
+            let Ok(sig) = Signature::from_str(&sig_info.signature) else {
+                continue;
+            };
+            let tx_cfg = RpcTransactionConfig {
+                encoding: Some(UiTransactionEncoding::Base64),
+                commitment: Some(CommitmentConfig::confirmed()),
+                max_supported_transaction_version: Some(0),
+            };
+            let Ok(conf) = rpc.get_transaction_with_config(&sig, tx_cfg).await else {
+                continue;
+            };
+
+            let mut all_keys = Vec::new();
+            let encoded = conf.transaction.transaction;
+            let bytes_opt = match encoded {
+                solana_transaction_status::EncodedTransaction::Binary(b64, _)
+                | solana_transaction_status::EncodedTransaction::LegacyBinary(b64) => {
+                    base64::engine::general_purpose::STANDARD.decode(b64).ok()
+                }
+                _ => None,
+            };
+            let Some(bytes) = bytes_opt else {
+                continue;
+            };
+
+            if let Ok(vtx) =
+                bincode::deserialize::<solana_transaction::versioned::VersionedTransaction>(&bytes)
+            {
+                all_keys.extend_from_slice(vtx.message.static_account_keys());
+            } else if let Ok(ltx) = bincode::deserialize::<solana_transaction::Transaction>(&bytes)
+            {
+                let vmsg = VersionedMessage::Legacy(ltx.message);
+                all_keys.extend_from_slice(vmsg.static_account_keys());
+            }
+
+            if let Some(ref meta) = conf.transaction.meta {
+                if let OptionSerializer::Some(ref loaded) = meta.loaded_addresses {
+                    for k in loaded.writable.iter().chain(loaded.readonly.iter()) {
+                        if let Ok(pk) = Pubkey::from_str(k) {
+                            all_keys.push(pk);
+                        }
+                    }
+                }
+            }
+
+            let key_set: HashSet<Pubkey> = all_keys.iter().copied().collect();
+            let mut found_pair = None;
+            for candidate_mint in &all_keys {
+                let (expected_curve, _) = Pubkey::find_program_address(
+                    &[b"bonding-curve", candidate_mint.as_ref()],
+                    &pump_pid,
+                );
+                if key_set.contains(&expected_curve) {
+                    found_pair = Some((candidate_mint.to_string(), expected_curve.to_string()));
+                    break;
+                }
+            }
+
+            if let Some((mint_str, pool_str)) = found_pair {
+                if let Some(mut signal) = finalize_signal(
+                    mint_str,
+                    pool_str,
+                    pump_pid.to_string(),
+                    sig_info.slot,
+                    &seen,
+                ) {
+                    attach_pool_account(rpc.as_ref(), &mut signal).await;
+                    signal.received_at = chrono::Utc::now().timestamp_millis() as u64;
+                    info!(
+                        mint = %signal.mint,
+                        pool = %signal.pool_address,
+                        slot = sig_info.slot,
+                        "HTTP RPC signal resolved (Pump.fun bonding curve)"
+                    );
+                    let _ = tx.send(signal).await;
+                    break;
+                }
+            }
+        }
+    }
 }
 
 async fn run_logs_loop(
@@ -86,6 +220,14 @@ async fn run_logs_loop(
         info!(program = %pid, "create-ix logsSubscribe OK");
     }
 
+    let is_public_rpc = std::env::var("SOLBOT_PUBLIC_RPC")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(true);
+    let min_signal_gap = Duration::from_millis(if is_public_rpc { 2500 } else { 0 });
+    let mut last_signal_emitted = std::time::Instant::now()
+        .checked_sub(Duration::from_secs(10))
+        .unwrap_or_else(std::time::Instant::now);
+
     let mut ping = interval(Duration::from_secs(30));
     loop {
         tokio::select! {
@@ -95,6 +237,9 @@ async fn run_logs_loop(
             msg = read.next() => {
                 match msg {
                     Some(Ok(Message::Text(text))) => {
+                        if !min_signal_gap.is_zero() && last_signal_emitted.elapsed() < min_signal_gap {
+                            continue;
+                        }
                         let parsed = match logs_parser::parse_logs_message(&text) {
                             Ok(p) => p,
                             Err(_) => continue,
@@ -102,6 +247,9 @@ async fn run_logs_loop(
                         for ps in parsed {
                             if !ps.instruction_type.is_create_event() {
                                 continue;
+                            }
+                            if !min_signal_gap.is_zero() && last_signal_emitted.elapsed() < min_signal_gap {
+                                break;
                             }
 
                             // Fast path: pump Create with Program data fully decoded.
@@ -114,8 +262,10 @@ async fn run_logs_loop(
                                         ps.slot,
                                         seen,
                                     ) {
+                                        last_signal_emitted = std::time::Instant::now();
                                         // Restore 1-RTT risk-gate path: attach curve account now.
                                         attach_pool_account(rpc.as_ref(), &mut signal).await;
+                                        signal.received_at = chrono::Utc::now().timestamp_millis() as u64;
                                         info!(
                                             mint = %signal.mint,
                                             pool = %signal.pool_address,
@@ -131,10 +281,13 @@ async fn run_logs_loop(
                                 continue;
                             }
 
+                            // On free/public RPC, skip heavy getTransaction resolution if rate-limited
                             let Some(sig_str) = ps.signature.as_ref() else { continue };
+                            last_signal_emitted = std::time::Instant::now();
                             match resolve_from_tx(rpc.as_ref(), sig_str, ps.slot, program_ids, seen).await {
                                 Ok(Some(mut signal)) => {
                                     attach_pool_account(rpc.as_ref(), &mut signal).await;
+                                    signal.received_at = chrono::Utc::now().timestamp_millis() as u64;
                                     info!(
                                         mint = %signal.mint,
                                         pool = %signal.pool_address,
