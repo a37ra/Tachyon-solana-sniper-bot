@@ -99,9 +99,17 @@ async fn main() -> Result<()> {
                             position_id,
                             tp_level: "TP2".to_string(),
                             sell_fraction: 0.30,
-
-    // Sample health status event on service startup
-    let startup_event = BotEvent::PositionOpened {
+                        }),
+                        "tp3_filled" => Some(BotEvent::TpTriggered {
+                            position_id,
+                            tp_level: "TP3".to_string(),
+                            sell_fraction: 0.20,
+                        }),
+                        "closed" => Some(BotEvent::PositionClosed {
+                            position_id,
+                            mint,
+                            pnl_net_sol,
+                            reason,
         position_id: "init_check".to_string(),
         mint: "SolbotTelegramInitialized".to_string(),
         entry_price_sol: 0.0,
