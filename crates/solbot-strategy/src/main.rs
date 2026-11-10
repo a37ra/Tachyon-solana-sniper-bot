@@ -325,7 +325,10 @@ async fn main() -> anyhow::Result<()> {
                     risk_gate_config: shared_risk.as_ref().clone(),
                     tier: pos.tier,
                     tier_params,
-                    capital_sol: 1.0,
+                    capital_sol: std::env::var("SOLBOT_CAPITAL_SOL")
+                        .ok()
+                        .and_then(|v| v.parse::<f64>().ok())
+                        .unwrap_or(10.0),
                     router: router.as_ref().and_then(|_| {
                         TransactionRouter::new(solbot_strategy::routing::RoutingConfig::default())
                             .ok()
@@ -1018,7 +1021,10 @@ async fn dispatch_to_actor(
         risk_gate_config,
         tier: solbot_common::types::tier::CapitalTier::Small,
         tier_params,
-        capital_sol: 1.0,
+        capital_sol: std::env::var("SOLBOT_CAPITAL_SOL")
+            .ok()
+            .and_then(|v| v.parse::<f64>().ok())
+            .unwrap_or(10.0),
         router: router.as_ref().and_then(|_| {
             TransactionRouter::new(solbot_strategy::routing::RoutingConfig::default()).ok()
         }),

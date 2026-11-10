@@ -1163,28 +1163,33 @@ pub async fn execute_buy_pipeline(
 
     // Step 2: Check Circuit Breaker & compute position sizing (with smart_money + alpha multipliers)
     let mut cb_size_multiplier = 1.0;
-    if let Some(ref cb) = ctx.circuit_breaker {
-        let cb_status = cb.get_status(ctx.tier);
-        if cb_status.limit_triggered {
-            tracing::error!(
-                mint = %ctx.mint,
-                tier = ?ctx.tier,
-                daily_loss_pct = cb_status.daily_loss_pct,
-                "Circuit breaker daily loss limit active — refusing new buy"
-            );
-            bail!(
-                "Circuit breaker daily loss limit triggered (loss_pct={:.4}) — refusing buy",
-                cb_status.daily_loss_pct
-            );
-        }
-        if cb_status.warning_triggered {
-            cb_size_multiplier = 0.5;
-            tracing::warn!(
-                mint = %ctx.mint,
-                tier = ?ctx.tier,
-                daily_loss_pct = cb_status.daily_loss_pct,
-                "Circuit breaker warning active — reducing buy position size by 50%"
-            );
+    let disable_cb = std::env::var("SOLBOT_DISABLE_CIRCUIT_BREAKER")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    if !disable_cb {
+        if let Some(ref cb) = ctx.circuit_breaker {
+            let cb_status = cb.get_status(ctx.tier);
+            if cb_status.limit_triggered {
+                tracing::error!(
+                    mint = %ctx.mint,
+                    tier = ?ctx.tier,
+                    daily_loss_pct = cb_status.daily_loss_pct,
+                    "Circuit breaker daily loss limit active — refusing new buy"
+                );
+                bail!(
+                    "Circuit breaker daily loss limit triggered (loss_pct={:.4}) — refusing buy",
+                    cb_status.daily_loss_pct
+                );
+            }
+            if cb_status.warning_triggered {
+                cb_size_multiplier = 0.5;
+                tracing::warn!(
+                    mint = %ctx.mint,
+                    tier = ?ctx.tier,
+                    daily_loss_pct = cb_status.daily_loss_pct,
+                    "Circuit breaker warning active — reducing buy position size by 50%"
+                );
+            }
         }
     }
 
@@ -2176,15 +2181,15 @@ pub async fn execute_exit_pipeline(
                                     "exit_pipeline",
                                 );
                             }
-                            if pos.realized_pnl_net_sol < 0.0 {
-                                if let Some(ref cb) = ctx.circuit_breaker {
-                                    let loss_pct =
-                                        -pos.realized_pnl_net_sol / ctx.capital_sol.max(1e-9);
-                                    let status = cb.record_loss(ctx.tier, loss_pct);
+                            if let Some(ref cb) = ctx.circuit_breaker {
+                                let pnl_pct =
+                                    pos.realized_pnl_net_sol / ctx.capital_sol.max(1e-9);
+                                let status = cb.record_pnl(ctx.tier, pnl_pct);
+                                if pos.realized_pnl_net_sol < 0.0 {
                                     tracing::warn!(
                                         position_id = %pos.position_id,
                                         loss_sol = pos.realized_pnl_net_sol,
-                                        loss_pct = loss_pct,
+                                        loss_pct = -pnl_pct,
                                         tier = ?ctx.tier,
                                         daily_loss_pct = status.daily_loss_pct,
                                         warning_triggered = status.warning_triggered,
@@ -2210,6 +2215,15 @@ pub async fn execute_exit_pipeline(
                                             let _ = tx.send(event).await;
                                         }
                                     }
+                                } else {
+                                    tracing::info!(
+                                        position_id = %pos.position_id,
+                                        profit_sol = pos.realized_pnl_net_sol,
+                                        profit_pct = pnl_pct,
+                                        tier = ?ctx.tier,
+                                        daily_loss_pct = status.daily_loss_pct,
+                                        "Profit offset applied to circuit breaker daily loss"
+                                    );
                                 }
                             }
 
@@ -2278,11 +2292,9 @@ pub async fn execute_exit_pipeline(
                     closing_remaining_pct,
                     &fees,
                 );
-                if pos.realized_pnl_net_sol < 0.0 {
-                    if let Some(ref cb) = ctx.circuit_breaker {
-                        let loss_pct = -pos.realized_pnl_net_sol / ctx.capital_sol.max(1e-9);
-                        cb.record_loss(ctx.tier, loss_pct);
-                    }
+                if let Some(ref cb) = ctx.circuit_breaker {
+                    let pnl_pct = pos.realized_pnl_net_sol / ctx.capital_sol.max(1e-9);
+                    cb.record_pnl(ctx.tier, pnl_pct);
                 }
             }
             if let Some(ref trans_repo) = ctx.state_transitions_repo {

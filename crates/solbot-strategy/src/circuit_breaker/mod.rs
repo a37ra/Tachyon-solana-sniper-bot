@@ -40,9 +40,15 @@ impl CircuitBreaker {
         cb
     }
 
-    pub fn record_loss(&self, tier: CapitalTier, loss_pct: f64) -> CircuitBreakerStatus {
+    pub fn record_pnl(&self, tier: CapitalTier, pnl_pct: f64) -> CircuitBreakerStatus {
         let mut entry = self.tier_losses.entry(tier).or_insert(0.0);
-        *entry += loss_pct;
+        // pnl_pct is negative for loss, positive for profit.
+        // entry tracks net daily loss (floored at 0.0 so profits offset losses).
+        if pnl_pct < 0.0 {
+            *entry += -pnl_pct;
+        } else {
+            *entry = (*entry - pnl_pct).max(0.0);
+        }
         let current_loss = *entry;
 
         let warning_threshold = self
@@ -76,6 +82,10 @@ impl CircuitBreaker {
             warning_triggered,
             limit_triggered,
         }
+    }
+
+    pub fn record_loss(&self, tier: CapitalTier, loss_pct: f64) -> CircuitBreakerStatus {
+        self.record_pnl(tier, -loss_pct)
     }
 
     pub fn reset_daily(&self) {
