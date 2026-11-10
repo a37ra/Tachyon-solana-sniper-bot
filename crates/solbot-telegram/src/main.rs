@@ -110,10 +110,16 @@ async fn main() -> Result<()> {
                             mint,
                             pnl_net_sol,
                             reason,
-        position_id: "init_check".to_string(),
-        mint: "SolbotTelegramInitialized".to_string(),
-        entry_price_sol: 0.0,
-        size_sol: 0.0,
+                        }),
+                        "stuck_manual_intervention_required" => Some(BotEvent::StuckPosition {
+                            position_id,
+                            mint,
+                            stage: reason,
+                        }),
+                        _ => None,
+                    };
+
+                    if let Some(ev) = bot_event {
     };
     let _ = tx.send(startup_event);
 
