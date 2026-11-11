@@ -520,6 +520,75 @@ pub fn compute_pool_spot_price_sol(
     None
 }
 
+/// Compute realistic exit execution price by simulating selling tokens directly into the bonding curve
+/// with constant product formula (x * y = k), slippage/price-impact, and 1% protocol fee.
+pub fn calculate_real_curve_exit_price(
+    dex_program_id: &str,
+    pool_pubkey_str: &str,
+    mint_pubkey_str: &str,
+    raw_pool_data: Option<&[u8]>,
+    pos_size_sol: f64,
+    entry_price_sol: f64,
+    stored_token_amount: u64,
+    closing_remaining_pct: f64,
+    spot_price: f64,
+) -> f64 {
+    if dex_program_id == pump_fun_builder::PUMP_FUN_PROGRAM.to_string() {
+        let pool_pk = Pubkey::from_str(pool_pubkey_str).ok();
+        let mint_pk = Pubkey::from_str(mint_pubkey_str).ok();
+        let total_tokens = if stored_token_amount > 0 {
+            stored_token_amount
+        } else if entry_price_sol > 0.0 {
+            ((pos_size_sol / entry_price_sol) * 1_000_000.0).round() as u64
+        } else {
+            0
+        };
+        let pct = closing_remaining_pct.clamp(0.0, 1.0);
+        let tranche_tokens = ((total_tokens as f64) * pct).round() as u64;
+
+        if tranche_tokens > 0 {
+            if let (Some(ref pool_pk), Some(ref mint_pk)) = (pool_pk, mint_pk) {
+                if let Some(raw) = raw_pool_data {
+                    if let Ok(curve) = pump_fun_builder::PumpFunBondingCurve::from_account_data_unchecked(raw, pool_pk, mint_pk) {
+                        let sol_out_raw = curve.calculate_sell_output(tranche_tokens);
+                        let sol_out_net = (sol_out_raw as u128 * 99 / 100) as u64;
+                        let sol_received = sol_out_net as f64 / 1_000_000_000.0;
+                        if sol_received > 0.0 {
+                            let real_price = sol_received / (tranche_tokens as f64 / 1_000_000.0);
+                            tracing::info!(
+                                spot_price = spot_price,
+                                real_execution_price = real_price,
+                                tranche_tokens = tranche_tokens,
+                                sol_received = sol_received,
+                                "Virtual curve sell math applied: price impact & 1% fee accounted for"
+                            );
+                            return real_price;
+                        }
+                    }
+                }
+            }
+            if spot_price > 0.0 {
+                // Approximate via standard pump.fun constant product curve: K = 30 SOL * 1.073B tokens
+                const PUMP_K: f64 = 30.0 * 1_073_000_000.0;
+                let tokens_to_sell = tranche_tokens as f64 / 1_000_000.0;
+                let virtual_tokens = (PUMP_K / spot_price).sqrt();
+                if virtual_tokens > 0.0 {
+                    let impact_factor = 1.0 / (1.0 + (tokens_to_sell / virtual_tokens));
+                    let real_price = spot_price * 0.99 * impact_factor;
+                    tracing::info!(
+                        spot_price = spot_price,
+                        real_execution_price = real_price,
+                        impact_factor = impact_factor,
+                        "Virtual curve fallback math applied: price impact & 1% fee accounted for"
+                    );
+                    return real_price;
+                }
+            }
+        }
+    }
+    spot_price
+}
+
 /// Fetch live spot price in SOL per token across all supported DEXes (Pump.fun, Raydium AMM v4,
 /// Raydium CPMM, Meteora DLMM, Meteora DAMM v2) using a single batch RPC vault lookup when needed.
 pub async fn fetch_pool_spot_price_sol(
@@ -1403,16 +1472,47 @@ pub async fn execute_buy_pipeline(
         tracing::info!("Paper trading mode - skipping live router transaction submission");
     }
 
-    // Compute effective entry_price_sol if caller passed 0.0 (from NewPoolSignal)
-    let effective_entry_price_sol = if entry_price_sol > 0.0 {
-        entry_price_sol
+    // Compute effective entry_price_sol and raw token units bought using exact virtual curve math
+    let (effective_entry_price_sol, tokens_bought) = if ctx.dex_program_id == pump_fun_builder::PUMP_FUN_PROGRAM.to_string() {
+        if let Some(ref raw_data) = ctx.raw_pool_account_data {
+            if let Ok(curve) = pump_fun_builder::PumpFunBondingCurve::from_account_data(raw_data, &pool_pubkey, &mint_pubkey) {
+                let sol_in_lamports = (position_size_sol * 1_000_000_000.0).round() as u64;
+                let sol_after_fee = (sol_in_lamports as u128 * 99 / 100) as u64;
+                let out_tokens = curve.calculate_buy_output(sol_after_fee);
+                if out_tokens > 0 {
+                    let price = position_size_sol / (out_tokens as f64 / 1_000_000.0);
+                    tracing::info!(
+                        position_size_sol = position_size_sol,
+                        out_tokens = out_tokens,
+                        entry_price = price,
+                        "Pump.fun virtual bonding curve buy math applied"
+                    );
+                    (price, out_tokens)
+                } else if expected_tokens_out > 0 {
+                    (position_size_sol / (expected_tokens_out as f64 / 1_000_000.0), expected_tokens_out)
+                } else {
+                    (entry_price_sol.max(0.00000001), 0)
+                }
+            } else if expected_tokens_out > 0 {
+                (position_size_sol / (expected_tokens_out as f64 / 1_000_000.0), expected_tokens_out)
+            } else {
+                (entry_price_sol.max(0.00000001), 0)
+            }
+        } else if expected_tokens_out > 0 {
+            (position_size_sol / (expected_tokens_out as f64 / 1_000_000.0), expected_tokens_out)
+        } else {
+            (entry_price_sol.max(0.00000001), 0)
+        }
+    } else if entry_price_sol > 0.0 {
+        (entry_price_sol, expected_tokens_out)
     } else if expected_tokens_out > 0 {
-        position_size_sol / (expected_tokens_out as f64 / 1_000_000.0)
+        (position_size_sol / (expected_tokens_out as f64 / 1_000_000.0), expected_tokens_out)
     } else if let Some(ref raw_data) = ctx.raw_pool_account_data {
-        compute_pool_spot_price_sol(&ctx.dex_program_id, &pool_pubkey, &mint_pubkey, raw_data)
-            .unwrap_or(0.001)
+        let px = compute_pool_spot_price_sol(&ctx.dex_program_id, &pool_pubkey, &mint_pubkey, raw_data)
+            .unwrap_or(0.001);
+        (px, expected_tokens_out)
     } else {
-        0.001
+        (0.001, expected_tokens_out)
     };
 
     // Create position record with Opening status first
@@ -1434,6 +1534,10 @@ pub async fn execute_buy_pipeline(
         opened_at_utc: chrono::Utc::now().timestamp() as u64,
         closed_at_utc: None,
     };
+
+    if tokens_bought > 0 {
+        ctx.fee_ledger.set_token_amount(&position.position_id, tokens_bought);
+    }
 
     if ctx.trading_mode == TradingMode::Paper {
         crate::paper_trade_log::log_paper_buy(
@@ -2130,16 +2234,28 @@ pub async fn execute_exit_pipeline(
                         } else {
                             ctx.fee_ledger.take(&pos.position_id)
                         };
+                        let effective_exit_price = calculate_real_curve_exit_price(
+                            &ctx.dex_program_id,
+                            &pos.pool_address,
+                            &pos.mint,
+                            ctx.raw_pool_account_data.as_deref(),
+                            pos.size_sol,
+                            pos.entry_price_sol,
+                            ctx.fee_ledger.get_token_amount(&pos.position_id),
+                            closing_remaining_pct,
+                            current_price,
+                        );
                         let net_pnl = pnl::finalize_realized_pnl_for_tranche(
                             pos,
-                            current_price,
+                            effective_exit_price,
                             closing_remaining_pct,
                             &fees,
                         );
                         tracing::info!(
                             position_id = %pos.position_id,
                             entry_price = pos.entry_price_sol,
-                            exit_price = current_price,
+                            spot_price = current_price,
+                            effective_exit_price = effective_exit_price,
                             size_sol = pos.size_sol,
                             closing_tranche_pct = closing_remaining_pct,
                             priority_fees = fees.priority_fees_sol,
@@ -2164,7 +2280,7 @@ pub async fn execute_exit_pipeline(
                             // Record loss to circuit breaker if position closed with negative PnL
                             if ctx.trading_mode == TradingMode::Paper {
                                 let entry = pos.entry_price_sol;
-                                let exit_px = current_price;
+                                let exit_px = effective_exit_price;
                                 let pnl_pct = if pos.size_sol > 0.0 {
                                     (pos.realized_pnl_net_sol / pos.size_sol) * 100.0
                                 } else {
@@ -2286,12 +2402,41 @@ pub async fn execute_exit_pipeline(
                 } else {
                     ctx.fee_ledger.take(&pos.position_id)
                 };
+                let effective_exit_price = calculate_real_curve_exit_price(
+                    &ctx.dex_program_id,
+                    &pos.pool_address,
+                    &pos.mint,
+                    ctx.raw_pool_account_data.as_deref(),
+                    pos.size_sol,
+                    pos.entry_price_sol,
+                    ctx.fee_ledger.get_token_amount(&pos.position_id),
+                    closing_remaining_pct,
+                    current_price,
+                );
                 let _ = pnl::finalize_realized_pnl_for_tranche(
                     pos,
-                    current_price,
+                    effective_exit_price,
                     closing_remaining_pct,
                     &fees,
                 );
+                if ctx.trading_mode == TradingMode::Paper {
+                    let entry = pos.entry_price_sol;
+                    let pnl_pct = if pos.size_sol > 0.0 {
+                        (pos.realized_pnl_net_sol / pos.size_sol) * 100.0
+                    } else {
+                        0.0
+                    };
+                    crate::paper_trade_log::log_paper_sell(
+                        &pos.mint,
+                        &pos.position_id,
+                        pos.size_sol,
+                        entry,
+                        effective_exit_price,
+                        pos.realized_pnl_net_sol,
+                        pnl_pct,
+                        "exit_pipeline_fallback",
+                    );
+                }
                 if let Some(ref cb) = ctx.circuit_breaker {
                     let pnl_pct = pos.realized_pnl_net_sol / ctx.capital_sol.max(1e-9);
                     cb.record_pnl(ctx.tier, pnl_pct);

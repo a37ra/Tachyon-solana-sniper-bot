@@ -1,3 +1,4 @@
+pub mod liquidity_gate;
 pub mod lp_lock_check;
 pub mod mint_freeze_authority;
 pub mod simulate_sell;
@@ -515,6 +516,9 @@ mod tests {
             token2022_allowlist: vec![],
             max_signal_age_ms: max_age,
             skip_simulate_sell: skip_sim,
+            min_pool_sol: 0.0,
+            volume_confirm_secs: 0,
+            min_unique_buyers: 0,
             cache: RiskGateCache::new(10),
         }
     }
@@ -583,6 +587,7 @@ fn compute_verdict(
     lp_result: &CheckResult,
     token2022_result: &CheckResult,
     simulate_result: &CheckResult,
+    liquidity_result: &CheckResult,
 ) -> RiskGateVerdict {
     if !freeze_result.passed {
         RiskGateVerdict::Reject {
@@ -611,6 +616,13 @@ fn compute_verdict(
                 .reason
                 .clone()
                 .unwrap_or_else(|| "Simulate sell check failed".to_string()),
+        }
+    } else if !liquidity_result.passed {
+        RiskGateVerdict::Reject {
+            reason: liquidity_result
+                .reason
+                .clone()
+                .unwrap_or_else(|| "Liquidity and volume spike check failed".to_string()),
         }
     } else {
         RiskGateVerdict::Accept
@@ -717,6 +729,24 @@ pub async fn run_pre_buy_checks(signal: &Signal, config: &RiskGateConfig) -> Ris
         )
     };
 
+    let liquidity_result = if config.min_pool_sol > 0.0 {
+        liquidity_gate::check_liquidity_and_volume(
+            signal,
+            &context,
+            &config.rpc,
+            config.min_pool_sol,
+            config.volume_confirm_secs,
+            config.min_unique_buyers,
+        )
+        .await
+    } else {
+        CheckResult {
+            passed: true,
+            reason: None,
+            duration_ms: 0,
+        }
+    };
+
     let elapsed = start.elapsed();
     tracing::info!(
         mint = %signal.mint,
@@ -724,11 +754,13 @@ pub async fn run_pre_buy_checks(signal: &Signal, config: &RiskGateConfig) -> Ris
         lp_ms = lp_result.duration_ms,
         token2022_ms = token2022_result.duration_ms,
         simulate_ms = simulate_result.duration_ms,
+        liquidity_ms = liquidity_result.duration_ms,
         total_ms = elapsed.as_millis() as u64,
         freeze_ok = freeze_result.passed,
         lp_ok = lp_result.passed,
         token2022_ok = token2022_result.passed,
         simulate_ok = simulate_result.passed,
+        liquidity_ok = liquidity_result.passed,
         "Pre-buy checks completed"
     );
 
@@ -737,6 +769,7 @@ pub async fn run_pre_buy_checks(signal: &Signal, config: &RiskGateConfig) -> Ris
         &lp_result,
         &token2022_result,
         &simulate_result,
+        &liquidity_result,
     );
 
     if is_cacheable(&verdict) {
@@ -820,6 +853,9 @@ pub struct RiskGateConfig {
     pub token2022_allowlist: Vec<String>,
     pub max_signal_age_ms: u64,
     pub skip_simulate_sell: bool,
+    pub min_pool_sol: f64,
+    pub volume_confirm_secs: u64,
+    pub min_unique_buyers: usize,
     pub cache: RiskGateCache,
 }
 
@@ -849,6 +885,19 @@ impl RiskGateConfig {
             );
         }
 
+        let min_pool_sol = std::env::var("SOLBOT_MIN_POOL_SOL")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(liquidity_gate::DEFAULT_MIN_POOL_SOL);
+        let volume_confirm_secs = env_u64(
+            "SOLBOT_VOLUME_CONFIRM_SECS",
+            liquidity_gate::DEFAULT_VOLUME_CONFIRM_SECS,
+        );
+        let min_unique_buyers = std::env::var("SOLBOT_MIN_UNIQUE_BUYERS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(liquidity_gate::DEFAULT_MIN_UNIQUE_BUYERS);
+
         Self {
             rpc,
             rpc_url,
@@ -873,6 +922,9 @@ impl RiskGateConfig {
             token2022_allowlist: vec![],
             max_signal_age_ms: env_u64("SOLBOT_MAX_SIGNAL_AGE_MS", if public { 2_000 } else { 500 }),
             skip_simulate_sell,
+            min_pool_sol,
+            volume_confirm_secs,
+            min_unique_buyers,
             cache: RiskGateCache::new(30),
         }
     }
