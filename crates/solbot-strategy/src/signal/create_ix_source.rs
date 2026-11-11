@@ -126,6 +126,20 @@ async fn run_http_pump_poller(
                 continue;
             };
 
+            // Only accept genuine pool creation transactions, not ordinary trades on old pools
+            let is_create_tx = if let Some(ref meta) = conf.transaction.meta {
+                if let OptionSerializer::Some(ref logs) = meta.log_messages {
+                    logs.iter().any(|l| l.contains("Instruction: Create"))
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+            if !is_create_tx {
+                continue;
+            }
+
             let mut all_keys = Vec::new();
             let encoded = conf.transaction.transaction;
             let bytes_opt = match encoded {

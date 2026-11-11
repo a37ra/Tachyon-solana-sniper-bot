@@ -299,8 +299,23 @@ async fn main() -> anyhow::Result<()> {
             } else {
                 mint_actor::TradingMode::Live
             };
+            let now_utc = chrono::Utc::now().timestamp() as u64;
             for pos in open_positions {
                 if actor_registry.get(&pos.mint).is_some() {
+                    continue;
+                }
+                // Do not resurrect ancient zombie positions opened hours ago
+                if now_utc.saturating_sub(pos.opened_at_utc) > 1800 {
+                    tracing::warn!(
+                        position_id = %pos.position_id,
+                        mint = %pos.mint,
+                        age_secs = now_utc.saturating_sub(pos.opened_at_utc),
+                        "Skipping and auto-closing ancient zombie position from prior run"
+                    );
+                    let mut closed_pos = pos.clone();
+                    closed_pos.status = solbot_common::types::position::PositionStatus::Closed;
+                    closed_pos.closed_at_utc = Some(now_utc);
+                    let _ = pos_repo.update_position(&closed_pos).await;
                     continue;
                 }
                 tracing::info!(

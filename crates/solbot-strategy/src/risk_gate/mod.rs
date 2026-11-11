@@ -519,6 +519,7 @@ mod tests {
             min_pool_sol: 0.0,
             volume_confirm_secs: 0,
             min_unique_buyers: 0,
+            max_pool_age_secs: 180,
             cache: RiskGateCache::new(10),
         }
     }
@@ -729,7 +730,7 @@ pub async fn run_pre_buy_checks(signal: &Signal, config: &RiskGateConfig) -> Ris
         )
     };
 
-    let liquidity_result = if config.min_pool_sol > 0.0 {
+    let liquidity_result = if config.min_pool_sol > 0.0 || config.max_pool_age_secs > 0 {
         liquidity_gate::check_liquidity_and_volume(
             signal,
             &context,
@@ -737,6 +738,7 @@ pub async fn run_pre_buy_checks(signal: &Signal, config: &RiskGateConfig) -> Ris
             config.min_pool_sol,
             config.volume_confirm_secs,
             config.min_unique_buyers,
+            config.max_pool_age_secs,
         )
         .await
     } else {
@@ -856,6 +858,7 @@ pub struct RiskGateConfig {
     pub min_pool_sol: f64,
     pub volume_confirm_secs: u64,
     pub min_unique_buyers: usize,
+    pub max_pool_age_secs: u64,
     pub cache: RiskGateCache,
 }
 
@@ -897,6 +900,10 @@ impl RiskGateConfig {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(liquidity_gate::DEFAULT_MIN_UNIQUE_BUYERS);
+        let max_pool_age_secs = env_u64(
+            "SOLBOT_MAX_POOL_AGE_SECS",
+            liquidity_gate::DEFAULT_MAX_POOL_AGE_SECS,
+        );
 
         Self {
             rpc,
@@ -925,6 +932,7 @@ impl RiskGateConfig {
             min_pool_sol,
             volume_confirm_secs,
             min_unique_buyers,
+            max_pool_age_secs,
             cache: RiskGateCache::new(30),
         }
     }
