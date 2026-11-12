@@ -26,6 +26,9 @@ pub const DEFAULT_MIN_UNIQUE_BUYERS: usize = 5;
 /// Default maximum age of pool from creation to entry (180 seconds = 3 minutes).
 pub const DEFAULT_MAX_POOL_AGE_SECS: u64 = 180;
 
+/// Max transactions by the creator wallet in the last 6h before it is treated as a serial deployer.
+pub const DEFAULT_MAX_DEPLOYER_RECENT_TXS: usize = 25;
+
 /// Evaluate pool liquidity, age, and volume spike requirements.
 pub async fn check_liquidity_and_volume(
     signal: &Signal,
@@ -122,29 +125,64 @@ async fn check_pump_fun_liquidity(
     max_pool_age_secs: u64,
     start: Instant,
 ) -> CheckResult {
-    // 1. First verify pool age and freshness: reject immediately if pool is stale or dead
-    if let Err(reason) = verify_pool_freshness_and_transactions(
-        rpc,
-        pool_pk,
-        min_unique_buyers,
-        max_pool_age_secs,
-    )
-    .await
-    {
-        tracing::warn!(
-            mint = %signal.mint,
-            pool = %signal.pool_address,
-            reason = %reason,
-            "Rejecting pool due to pool age / activity check"
-        );
-        return CheckResult {
-            passed: false,
-            reason: Some(reason),
-            duration_ms: start.elapsed().as_millis() as u64,
-        };
+    // 1. Pool age / activity check. "Not enough transactions" is expected right at launch,
+    //    so re-check it throughout the volume-confirmation window instead of failing instantly.
+    //    Any other failure (too old, dormant, ancient) rejects immediately.
+    let freshness_deadline = Instant::now() + Duration::from_secs(volume_confirm_secs);
+    loop {
+        match verify_pool_freshness_and_transactions(
+            rpc,
+            pool_pk,
+            min_unique_buyers,
+            max_pool_age_secs,
+        )
+        .await
+        {
+            Ok(()) => break,
+            Err(reason)
+                if reason.starts_with("Not enough transactions")
+                    && Instant::now() < freshness_deadline =>
+            {
+                tokio::time::sleep(Duration::from_millis(1500)).await;
+                continue;
+            }
+            Err(reason) => {
+                tracing::warn!(
+                    mint = %signal.mint,
+                    pool = %signal.pool_address,
+                    reason = %reason,
+                    "Rejecting pool due to pool age / activity check"
+                );
+                return CheckResult {
+                    passed: false,
+                    reason: Some(reason),
+                    duration_ms: start.elapsed().as_millis() as u64,
+                };
+            }
+        }
     }
 
     let min_lamports = (min_pool_sol.max(0.0) * 1_000_000_000.0) as u64;
+
+    // 1.5 Deployer reputation (serial scammers / bot factories)
+    if let Some(ref data) = context.pool_data {
+        if let Ok(curve) = PumpFunBondingCurve::from_account_data(data, pool_pk, mint_pk) {
+            let max_txs: usize = std::env::var("SOLBOT_MAX_DEPLOYER_RECENT_TXS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(DEFAULT_MAX_DEPLOYER_RECENT_TXS);
+            if let Err(reason) =
+                verify_deployer_reputation(rpc, &curve.creator, max_txs, 6 * 3600).await
+            {
+                tracing::warn!(mint = %signal.mint, reason = %reason, "Rejecting serial deployer");
+                return CheckResult {
+                    passed: false,
+                    reason: Some(reason),
+                    duration_ms: start.elapsed().as_millis() as u64,
+                };
+            }
+        }
+    }
 
     // 2. Check initial curve data from context
     let mut current_real_sol: u64 = 0;
@@ -215,6 +253,46 @@ async fn check_pump_fun_liquidity(
             real_sol_sol, min_pool_sol
         )),
         duration_ms: start.elapsed().as_millis() as u64,
+    }
+}
+
+/// Reject serial deployers: a wallet that signed many transactions recently is almost always a
+/// scam factory / Mayhem-style bot (thousands of created tokens), not an organic launcher.
+async fn verify_deployer_reputation(
+    rpc: &Arc<RpcClient>,
+    creator: &Pubkey,
+    max_recent_txs: usize,
+    window_secs: i64,
+) -> Result<(), String> {
+    use solana_rpc_client::rpc_client::GetConfirmedSignaturesForAddress2Config;
+    if max_recent_txs == 0 {
+        return Ok(());
+    }
+    let cfg = GetConfirmedSignaturesForAddress2Config {
+        before: None,
+        until: None,
+        limit: Some(100),
+        commitment: None,
+    };
+    match rpc.get_signatures_for_address_with_config(creator, cfg).await {
+        Ok(sigs) => {
+            let now = chrono::Utc::now().timestamp();
+            let recent = sigs
+                .iter()
+                .filter(|s| s.block_time.map_or(true, |bt| now - bt <= window_secs))
+                .count();
+            if recent > max_recent_txs {
+                return Err(format!(
+                    "Serial deployer: creator {} has {} txs in last {}s (max {})",
+                    creator, recent, window_secs, max_recent_txs
+                ));
+            }
+            Ok(())
+        }
+        Err(e) => {
+            tracing::warn!(creator = %creator, error = %e, "Deployer history fetch failed - not blocking");
+            Ok(())
+        }
     }
 }
 

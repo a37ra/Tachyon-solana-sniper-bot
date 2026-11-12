@@ -333,13 +333,17 @@ async fn process_control_event(mint: &str, event: ControlEvent, ctx: &mut ActorC
             );
             if activated {
                 if let Some(ref pos) = ctx.active_position.clone() {
-                    tracing::warn!(
-                        "Emergency exit for position {} due to kill switch",
-                        pos.position_id
-                    );
-                    let exit_action = ExitAction::Emergency { reason };
-                    let current_price = pos.entry_price_sol;
-                    let _ = execute_exit_pipeline(ctx, pos, exit_action, current_price).await;
+                    if pos.status != PositionStatus::Closed
+                        && pos.status != PositionStatus::StuckManualInterventionRequired
+                    {
+                        tracing::warn!(
+                            "Emergency exit for position {} due to kill switch",
+                            pos.position_id
+                        );
+                        let exit_action = ExitAction::Emergency { reason };
+                        let current_price = pos.entry_price_sol;
+                        let _ = execute_exit_pipeline(ctx, pos, exit_action, current_price).await;
+                    }
                 }
             }
         }
@@ -1472,6 +1476,9 @@ pub async fn execute_buy_pipeline(
         tracing::info!("Paper trading mode - skipping live router transaction submission");
     }
 
+    // Entry fill must reflect the curve AFTER the volume-confirmation wait, not the creation snapshot
+    refresh_pool_account(ctx).await;
+
     // Compute effective entry_price_sol and raw token units bought using exact virtual curve math
     let (effective_entry_price_sol, tokens_bought) = if ctx.dex_program_id == pump_fun_builder::PUMP_FUN_PROGRAM.to_string() {
         if let Some(ref raw_data) = ctx.raw_pool_account_data {
@@ -1656,6 +1663,35 @@ fn create_placeholder_swap_instructions() -> tx_builder::SwapInstructions {
     }
 }
 
+/// Re-fetch the live bonding-curve account so entry/exit math uses CURRENT reserves
+/// (not the creation-time snapshot). Best-effort: keeps the old snapshot on RPC failure.
+pub async fn refresh_pool_account(ctx: &mut ActorContext) {
+    if ctx.dex_program_id != pump_fun_builder::PUMP_FUN_PROGRAM.to_string() {
+        return;
+    }
+    let Ok(pool_pk) = Pubkey::from_str(&ctx.pool_address) else {
+        return;
+    };
+    let rpc = ctx.risk_gate_config.rpc.clone();
+    match tokio::time::timeout(
+        std::time::Duration::from_millis(2500),
+        rpc.get_account(&pool_pk),
+    )
+    .await
+    {
+        Ok(Ok(acc)) => {
+            tracing::info!(
+                mint = %ctx.mint,
+                bytes = acc.data.len(),
+                "Refreshed live bonding-curve reserves for fill simulation"
+            );
+            ctx.raw_pool_account_data = Some(acc.data);
+        }
+        Ok(Err(e)) => tracing::warn!(mint = %ctx.mint, error = %e, "Curve refresh failed; using stale snapshot"),
+        Err(_) => tracing::warn!(mint = %ctx.mint, "Curve refresh timed out; using stale snapshot"),
+    }
+}
+
 /// Execute the exit pipeline: Exit Tx Builder → Signer → Router.
 pub async fn execute_exit_pipeline(
     ctx: &mut ActorContext,
@@ -1668,6 +1704,9 @@ pub async fn execute_exit_pipeline(
         position.position_id,
         exit_action
     );
+
+    // Use live curve reserves for the simulated sell fill (price impact vs current pool state)
+    refresh_pool_account(ctx).await;
 
     // Fail-closed: ensure critical components are present in Live mode
     if ctx.trading_mode == TradingMode::Live {
