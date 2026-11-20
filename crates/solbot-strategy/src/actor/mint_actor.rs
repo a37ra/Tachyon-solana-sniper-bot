@@ -394,6 +394,17 @@ pub async fn process_market_data_event(mint: &str, event: MarketDataEvent, ctx: 
                 if price_sol > high_water {
                     pos.trailing_high_water_sol = Some(price_sol);
                 }
+                if !pos.trailing_active
+                    && exit::trailing_stop::should_activate_trailing(pos, price_sol)
+                {
+                    pos.trailing_active = true;
+                    tracing::info!(
+                        position_id = %pos.position_id,
+                        price_sol,
+                        entry_price = pos.entry_price_sol,
+                        "Early trailing stop activated"
+                    );
+                }
             }
 
             // Run buy pipeline if no active position exists yet, otherwise evaluate exit
@@ -1476,8 +1487,71 @@ pub async fn execute_buy_pipeline(
         tracing::info!("Paper trading mode - skipping live router transaction submission");
     }
 
+    let pre_refresh_real_sol: u64 = if ctx.dex_program_id == pump_fun_builder::PUMP_FUN_PROGRAM.to_string() {
+        risk_gate::liquidity_gate::get_confirmed_pool_sol(&ctx.pool_address).unwrap_or_else(|| {
+            ctx.raw_pool_account_data
+                .as_deref()
+                .and_then(|d| pump_fun_builder::PumpFunBondingCurve::from_account_data(d, &pool_pubkey, &mint_pubkey).ok())
+                .map(|c| c.real_sol_reserves)
+                .unwrap_or(0)
+        })
+    } else {
+        0
+    };
+
     // Entry fill must reflect the curve AFTER the volume-confirmation wait, not the creation snapshot
     refresh_pool_account(ctx).await;
+
+    // Post-refresh pre-fill guard (Paper / pre-broadcast): reject if pool moved out of allowed bounds or dumped
+    if confirmed_buy_signature.is_none()
+        && ctx.dex_program_id == pump_fun_builder::PUMP_FUN_PROGRAM.to_string()
+    {
+        if let Some(ref raw_data) = ctx.raw_pool_account_data {
+            if let Ok(curve) = pump_fun_builder::PumpFunBondingCurve::from_account_data(
+                raw_data,
+                &pool_pubkey,
+                &mint_pubkey,
+            ) {
+                let min_pool_sol = std::env::var("SOLBOT_MIN_POOL_SOL")
+                    .ok()
+                    .and_then(|v| v.parse::<f64>().ok())
+                    .unwrap_or(ctx.risk_gate_config.min_pool_sol);
+                let max_pool_sol = std::env::var("SOLBOT_MAX_POOL_SOL")
+                    .ok()
+                    .and_then(|v| v.parse::<f64>().ok())
+                    .unwrap_or(risk_gate::liquidity_gate::DEFAULT_MAX_POOL_SOL);
+                let min_lamports = (min_pool_sol.max(0.0) * 1_000_000_000.0) as u64;
+                let max_lamports = if max_pool_sol > 0.0 {
+                    (max_pool_sol * 1_000_000_000.0) as u64
+                } else {
+                    u64::MAX
+                };
+                if curve.complete || !risk_gate::liquidity_gate::is_standard_sol_curve(&curve) {
+                    bail!(
+                        "Post-refresh curve guard rejected buy: complete={} or non-standard curve",
+                        curve.complete
+                    );
+                }
+                if curve.real_sol_reserves < min_lamports || curve.real_sol_reserves > max_lamports {
+                    bail!(
+                        "Post-refresh curve guard rejected buy: real_sol={:.2} SOL outside [{:.2}, {:.2}]",
+                        curve.real_sol_reserves as f64 / 1e9,
+                        min_pool_sol,
+                        max_pool_sol
+                    );
+                }
+                if pre_refresh_real_sol > 0
+                    && curve.real_sol_reserves < (pre_refresh_real_sol * 91 / 100)
+                {
+                    bail!(
+                        "Post-refresh curve guard rejected buy: dumped vs confirmed ({:.2} < {:.2} SOL)",
+                        curve.real_sol_reserves as f64 / 1e9,
+                        pre_refresh_real_sol as f64 / 1e9
+                    );
+                }
+            }
+        }
+    }
 
     // Compute effective entry_price_sol and raw token units bought using exact virtual curve math
     let (effective_entry_price_sol, tokens_bought) = if ctx.dex_program_id == pump_fun_builder::PUMP_FUN_PROGRAM.to_string() {
@@ -1628,7 +1702,7 @@ pub async fn execute_buy_pipeline(
     }
 
     // === Fee & token balance tracking for buy transaction (TZ §4.5) ===
-    if expected_tokens_out > 0 {
+    if (ctx.trading_mode == TradingMode::Live || tokens_bought == 0) && expected_tokens_out > 0 {
         ctx.fee_ledger.set_token_amount(&position.position_id, expected_tokens_out);
     }
     let buy_priority_fee_lamports = ctx.tier_params.emergency_exit.priority_fee_baseline;
@@ -1745,9 +1819,9 @@ pub async fn execute_exit_pipeline(
     let pool_pubkey = Pubkey::from_str(&ctx.pool_address).unwrap_or_else(|_| Pubkey::new_unique());
     let dex_program_pubkey =
         Pubkey::from_str(&ctx.dex_program_id).unwrap_or_else(|_| Pubkey::new_unique());
-    let tracked_tokens = ctx.fee_ledger.get_token_amount(&position.position_id);
-    let amount_in_lamports = if tracked_tokens > 0 {
-        let requested = ((tracked_tokens as f64)
+    let initial_tracked_tokens = ctx.fee_ledger.get_token_amount(&position.position_id);
+    let amount_in_lamports = if initial_tracked_tokens > 0 {
+        let requested = ((initial_tracked_tokens as f64)
             * position.remaining_token_pct.clamp(0.0, 1.0)
             * sell_fraction)
             .round()
@@ -2122,23 +2196,51 @@ pub async fn execute_exit_pipeline(
         let (intermediate_status, final_status, tx_signature) = match &exit_action {
             ExitAction::TakeProfit { level, .. } => match level {
                 exit::TpLevel::Tp1 => {
+                    let tp1_pct = exit::TpLevel::Tp1.sell_pct().min(pos.remaining_token_pct);
+                    let tp_effective_price = calculate_real_curve_exit_price(
+                        &ctx.dex_program_id,
+                        &pos.pool_address,
+                        &pos.mint,
+                        ctx.raw_pool_account_data.as_deref(),
+                        pos.size_sol,
+                        pos.entry_price_sol,
+                        initial_tracked_tokens,
+                        tp1_pct,
+                        current_price,
+                    );
                     pos.realized_pnl_net_sol += pnl::compute_gross_pnl_sol(
                         pos.entry_price_sol,
-                        current_price,
-                        pos.size_sol * 0.30,
+                        tp_effective_price,
+                        pos.size_sol * tp1_pct,
                     );
-                    pos.remaining_token_pct = (pos.remaining_token_pct - 0.30).max(0.0);
+                    pos.remaining_token_pct = (pos.remaining_token_pct - tp1_pct).max(0.0);
                     pos.trailing_active = true;
-                    pos.trailing_high_water_sol = Some(current_price);
+                    pos.trailing_high_water_sol = Some(
+                        pos.trailing_high_water_sol
+                            .unwrap_or(current_price)
+                            .max(current_price),
+                    );
                     (PositionStatus::Tp1Filled, None, None)
                 }
                 exit::TpLevel::Tp2 => {
+                    let tp2_pct = exit::TpLevel::Tp2.sell_pct().min(pos.remaining_token_pct);
+                    let tp_effective_price = calculate_real_curve_exit_price(
+                        &ctx.dex_program_id,
+                        &pos.pool_address,
+                        &pos.mint,
+                        ctx.raw_pool_account_data.as_deref(),
+                        pos.size_sol,
+                        pos.entry_price_sol,
+                        initial_tracked_tokens,
+                        tp2_pct,
+                        current_price,
+                    );
                     pos.realized_pnl_net_sol += pnl::compute_gross_pnl_sol(
                         pos.entry_price_sol,
-                        current_price,
-                        pos.size_sol * 0.30,
+                        tp_effective_price,
+                        pos.size_sol * tp2_pct,
                     );
-                    pos.remaining_token_pct = (pos.remaining_token_pct - 0.30).max(0.0);
+                    pos.remaining_token_pct = (pos.remaining_token_pct - tp2_pct).max(0.0);
                     (PositionStatus::Tp2Filled, None, None)
                 }
                 exit::TpLevel::Tp3 => {
@@ -2180,7 +2282,7 @@ pub async fn execute_exit_pipeline(
                                     position_id: pos.position_id.clone(),
                                     tp_level: "tp1".to_string(),
                                     price_sol: current_price,
-                                    sold_pct: 0.30,
+                                    sold_pct: exit::TpLevel::Tp1.sell_pct(),
                                     remaining_pct: pos.remaining_token_pct,
                                     realized_pnl_sol: pos.realized_pnl_net_sol,
                                 })
@@ -2190,7 +2292,7 @@ pub async fn execute_exit_pipeline(
                                     position_id: pos.position_id.clone(),
                                     tp_level: "tp2".to_string(),
                                     price_sol: current_price,
-                                    sold_pct: 0.30,
+                                    sold_pct: exit::TpLevel::Tp2.sell_pct(),
                                     remaining_pct: pos.remaining_token_pct,
                                     realized_pnl_sol: pos.realized_pnl_net_sol,
                                 })
@@ -2200,7 +2302,7 @@ pub async fn execute_exit_pipeline(
                                     position_id: pos.position_id.clone(),
                                     tp_level: "tp3".to_string(),
                                     price_sol: current_price,
-                                    sold_pct: 0.20,
+                                    sold_pct: exit::TpLevel::Tp3.sell_pct(),
                                     remaining_pct: pos.remaining_token_pct,
                                     realized_pnl_sol: pos.realized_pnl_net_sol,
                                 })
@@ -2280,7 +2382,7 @@ pub async fn execute_exit_pipeline(
                             ctx.raw_pool_account_data.as_deref(),
                             pos.size_sol,
                             pos.entry_price_sol,
-                            ctx.fee_ledger.get_token_amount(&pos.position_id),
+                            initial_tracked_tokens,
                             closing_remaining_pct,
                             current_price,
                         );
@@ -2448,7 +2550,7 @@ pub async fn execute_exit_pipeline(
                     ctx.raw_pool_account_data.as_deref(),
                     pos.size_sol,
                     pos.entry_price_sol,
-                    ctx.fee_ledger.get_token_amount(&pos.position_id),
+                    initial_tracked_tokens,
                     closing_remaining_pct,
                     current_price,
                 );

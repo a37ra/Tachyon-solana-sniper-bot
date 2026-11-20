@@ -24,10 +24,26 @@ pub fn get_momentum_min_impulse_pct() -> f64 {
         .unwrap_or(DEFAULT_MOMENTUM_MIN_IMPULSE_PCT)
 }
 
+pub fn get_early_bleed_secs() -> u64 {
+    std::env::var("SOLBOT_EARLY_BLEED_SECS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(0)
+}
+
+pub fn get_early_bleed_drop_pct() -> f64 {
+    std::env::var("SOLBOT_EARLY_BLEED_DROP_PCT")
+        .ok()
+        .and_then(|s| s.parse::<f64>().ok())
+        .map(|v| if v > 1.0 { v / 100.0 } else { v })
+        .unwrap_or(0.025)
+}
+
 /// Evaluate whether the position should be closed due to lack of initial upward momentum.
 ///
 /// Rule: If the token in the first 30–60s (default 45s) after entry did not give an upward
 /// impulse of at least +15%..+20% (default +15%), close immediately at market in breakeven/micro-loss.
+/// Optional early-bleed guard (`SOLBOT_EARLY_BLEED_SECS > 0`) cuts stagnant bleeders earlier.
 pub fn evaluate_momentum(position: &Position, current_price: f64) -> Option<ExitAction> {
     // Only applies to positions that have not yet taken profit (Open or Opening)
     if position.status != PositionStatus::Open && position.status != PositionStatus::Opening {
@@ -40,6 +56,33 @@ pub fn evaluate_momentum(position: &Position, current_price: f64) -> Option<Exit
 
     let now_utc = chrono::Utc::now().timestamp() as u64;
     let elapsed_secs = now_utc.saturating_sub(position.opened_at_utc);
+    let peak_price = position
+        .trailing_high_water_sol
+        .unwrap_or(current_price)
+        .max(current_price);
+
+    let early_bleed_secs = get_early_bleed_secs();
+    if early_bleed_secs > 0 && elapsed_secs >= early_bleed_secs {
+        let early_bleed_drop_pct = get_early_bleed_drop_pct();
+        if peak_price < position.entry_price_sol * 1.025
+            && current_price <= position.entry_price_sol * (1.0 - early_bleed_drop_pct)
+        {
+            let peak_multiplier = peak_price / position.entry_price_sol;
+            tracing::warn!(
+                position_id = %position.position_id,
+                elapsed_secs,
+                early_bleed_secs,
+                peak_multiplier,
+                current_price,
+                "Early bleed timeout: flat/bleeding launch without impulse — cutting early"
+            );
+            return Some(ExitAction::MomentumTimeout {
+                elapsed_secs,
+                peak_multiplier,
+            });
+        }
+    }
+
     let timeout_secs = get_momentum_timeout_secs();
 
     if elapsed_secs < timeout_secs {
@@ -48,11 +91,6 @@ pub fn evaluate_momentum(position: &Position, current_price: f64) -> Option<Exit
 
     let min_impulse_pct = get_momentum_min_impulse_pct();
     let min_required_peak = position.entry_price_sol * (1.0 + min_impulse_pct);
-
-    let peak_price = position
-        .trailing_high_water_sol
-        .unwrap_or(current_price)
-        .max(current_price);
 
     if peak_price < min_required_peak {
         let peak_multiplier = peak_price / position.entry_price_sol;

@@ -237,7 +237,12 @@ async fn run_logs_loop(
     let is_public_rpc = std::env::var("SOLBOT_PUBLIC_RPC")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(true);
-    let min_signal_gap = Duration::from_millis(if is_public_rpc { 2500 } else { 0 });
+    let default_gap_ms = if is_public_rpc { 600 } else { 0 };
+    let gap_ms = std::env::var("SOLBOT_SIGNAL_GAP_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(default_gap_ms);
+    let min_signal_gap = Duration::from_millis(gap_ms);
     let mut last_signal_emitted = std::time::Instant::now()
         .checked_sub(Duration::from_secs(10))
         .unwrap_or_else(std::time::Instant::now);
@@ -276,9 +281,37 @@ async fn run_logs_loop(
                                         ps.slot,
                                         seen,
                                     ) {
-                                        last_signal_emitted = std::time::Instant::now();
                                         // Restore 1-RTT risk-gate path: attach curve account now.
                                         attach_pool_account(rpc.as_ref(), &mut signal).await;
+                                        if signal.dex_program
+                                            == crate::tx_builder::pump_fun::PUMP_FUN_PROGRAM
+                                                .to_string()
+                                        {
+                                            if let Some(ref raw_data) = signal.raw_pool_account_data {
+                                                if let (Ok(pool_pk), Ok(mint_pk)) = (
+                                                    Pubkey::from_str(&signal.pool_address),
+                                                    Pubkey::from_str(&signal.mint),
+                                                ) {
+                                                    if let Ok(curve) = crate::tx_builder::pump_fun::PumpFunBondingCurve::from_account_data(
+                                                        raw_data,
+                                                        &pool_pk,
+                                                        &mint_pk,
+                                                    ) {
+                                                        if curve.complete
+                                                            || !crate::risk_gate::liquidity_gate::is_standard_sol_curve(&curve)
+                                                        {
+                                                            debug!(
+                                                                mint = %signal.mint,
+                                                                complete = curve.complete,
+                                                                "Skipping non-standard / completed Pump.fun curve early"
+                                                            );
+                                                            continue;
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        last_signal_emitted = std::time::Instant::now();
                                         signal.received_at = chrono::Utc::now().timestamp_millis() as u64;
                                         info!(
                                             mint = %signal.mint,
@@ -643,7 +676,7 @@ async fn attach_pool_account(rpc: &RpcClient, signal: &mut Signal) {
     let Ok(pool_pk) = Pubkey::from_str(&signal.pool_address) else {
         return;
     };
-    for (i, wait_ms) in [0_u64, 80, 200, 400].iter().enumerate() {
+    for (i, wait_ms) in [120_u64, 280].iter().enumerate() {
         if *wait_ms > 0 {
             sleep(Duration::from_millis(*wait_ms)).await;
         }

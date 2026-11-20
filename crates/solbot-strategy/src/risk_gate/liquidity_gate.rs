@@ -113,6 +113,61 @@ pub async fn check_liquidity_and_volume(
     }
 }
 
+/// Default maximum initial real SOL allowed at discovery (t=0) to avoid pre-bundled dev pools.
+pub const DEFAULT_MAX_INITIAL_POOL_SOL: f64 = 14.0;
+
+/// Default maximum real SOL allowed post-inflow at entry to avoid overheated / near-graduation entries.
+pub const DEFAULT_MAX_POOL_SOL: f64 = 22.0;
+
+/// Default minimum net real SOL inflow required after signal discovery before entry.
+pub const DEFAULT_MIN_INFLOW_SOL: f64 = 0.8;
+
+/// Default maximum drawdown from peak real SOL tolerated during confirmation window (5%).
+pub const DEFAULT_MAX_CONFIRM_DROP_PCT: f64 = 0.05;
+
+fn env_f64(key: &str, default: f64) -> f64 {
+    std::env::var(key)
+        .ok()
+        .and_then(|v| v.parse::<f64>().ok())
+        .unwrap_or(default)
+}
+
+fn env_u64_val(key: &str, default: u64) -> u64 {
+    std::env::var(key)
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(default)
+}
+
+fn env_usize_val(key: &str, default: usize) -> usize {
+    std::env::var(key)
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(default)
+}
+
+/// Standard Pump.fun bonding curves start with 30 SOL virtual reserve offset (`virtual = 30 SOL + real`).
+/// Non-standard curves (~4969 SOL virtual base) confuse SOL-denominated liquidity gates.
+pub fn is_standard_sol_curve(curve: &PumpFunBondingCurve) -> bool {
+    let virtual_base = curve.virtual_sol_reserves.saturating_sub(curve.real_sol_reserves);
+    (25_000_000_000..=35_000_000_000).contains(&virtual_base)
+}
+
+static CONFIRMED_POOL_SOL: std::sync::OnceLock<dashmap::DashMap<String, u64>> =
+    std::sync::OnceLock::new();
+
+pub fn record_confirmed_pool_sol(pool_address: &str, real_sol_lamports: u64) {
+    CONFIRMED_POOL_SOL
+        .get_or_init(dashmap::DashMap::new)
+        .insert(pool_address.to_string(), real_sol_lamports);
+}
+
+pub fn get_confirmed_pool_sol(pool_address: &str) -> Option<u64> {
+    CONFIRMED_POOL_SOL
+        .get()
+        .and_then(|m| m.get(pool_address).map(|v| *v))
+}
+
 async fn check_pump_fun_liquidity(
     signal: &Signal,
     context: &PreBuyCheckContext,
@@ -125,25 +180,276 @@ async fn check_pump_fun_liquidity(
     max_pool_age_secs: u64,
     start: Instant,
 ) -> CheckResult {
-    // 1. Pool age / activity check. "Not enough transactions" is expected right at launch,
-    //    so re-check it throughout the volume-confirmation window instead of failing instantly.
-    //    Any other failure (too old, dormant, ancient) rejects immediately.
-    let freshness_deadline = Instant::now() + Duration::from_secs(volume_confirm_secs);
-    loop {
+    // Read live env overrides so .env hot-reload updates risk-gate thresholds without restart.
+    let min_pool_sol = env_f64("SOLBOT_MIN_POOL_SOL", min_pool_sol);
+    let max_initial_pool_sol = env_f64("SOLBOT_MAX_INITIAL_POOL_SOL", DEFAULT_MAX_INITIAL_POOL_SOL);
+    let max_pool_sol = env_f64("SOLBOT_MAX_POOL_SOL", DEFAULT_MAX_POOL_SOL);
+    let min_inflow_sol = env_f64("SOLBOT_MIN_INFLOW_SOL", DEFAULT_MIN_INFLOW_SOL);
+    let max_confirm_drop_pct = env_f64("SOLBOT_MAX_CONFIRM_DROP_PCT", DEFAULT_MAX_CONFIRM_DROP_PCT)
+        .clamp(0.0, 0.99);
+    let volume_confirm_secs = env_u64_val("SOLBOT_VOLUME_CONFIRM_SECS", volume_confirm_secs);
+    let min_unique_buyers = env_usize_val("SOLBOT_MIN_UNIQUE_BUYERS", min_unique_buyers);
+    let max_pool_age_secs = env_u64_val("SOLBOT_MAX_POOL_AGE_SECS", max_pool_age_secs);
+
+    let min_lamports = (min_pool_sol.max(0.0) * 1_000_000_000.0) as u64;
+    let max_initial_lamports = if max_initial_pool_sol > 0.0 {
+        (max_initial_pool_sol * 1_000_000_000.0) as u64
+    } else {
+        u64::MAX
+    };
+    let max_lamports = if max_pool_sol > 0.0 {
+        (max_pool_sol * 1_000_000_000.0) as u64
+    } else {
+        u64::MAX
+    };
+    let min_inflow_lamports = (min_inflow_sol.max(0.0) * 1_000_000_000.0) as u64;
+
+    // 0. Capture initial curve snapshot (from WS context or single RPC fetch) and reject non-standard,
+    //    already-graduated, or overheated initial bundles BEFORE waiting in polling loops.
+    let initial_curve_data = match context.pool_data.clone() {
+        Some(data) => Some(data),
+        None => rpc.get_account(pool_pk).await.ok().map(|a| a.data),
+    };
+
+    let mut initial_real_sol: u64 = 0;
+    if let Some(ref data) = initial_curve_data {
+        if let Ok(curve) = PumpFunBondingCurve::from_account_data(data, pool_pk, mint_pk) {
+            if curve.complete {
+                return CheckResult {
+                    passed: false,
+                    reason: Some("Pool already complete / migrated".to_string()),
+                    duration_ms: start.elapsed().as_millis() as u64,
+                };
+            }
+            if !is_standard_sol_curve(&curve) {
+                let virtual_base_sol =
+                    curve.virtual_sol_reserves.saturating_sub(curve.real_sol_reserves) as f64 / 1e9;
+                return CheckResult {
+                    passed: false,
+                    reason: Some(format!(
+                        "Non-standard virtual SOL base: {:.2} SOL (expected ~30 SOL)",
+                        virtual_base_sol
+                    )),
+                    duration_ms: start.elapsed().as_millis() as u64,
+                };
+            }
+            initial_real_sol = curve.real_sol_reserves;
+            if initial_real_sol > max_initial_lamports {
+                return CheckResult {
+                    passed: false,
+                    reason: Some(format!(
+                        "Overheated initial pool / dev bundle: {:.2} SOL > max initial {:.2} SOL",
+                        initial_real_sol as f64 / 1e9,
+                        max_initial_pool_sol
+                    )),
+                    duration_ms: start.elapsed().as_millis() as u64,
+                };
+            }
+
+            // 1. Deployer reputation (serial scammers / bot factories)
+            let max_txs = env_usize_val("SOLBOT_MAX_DEPLOYER_RECENT_TXS", DEFAULT_MAX_DEPLOYER_RECENT_TXS);
+            if let Err(reason) =
+                verify_deployer_reputation(rpc, &curve.creator, max_txs, 6 * 3600).await
+            {
+                tracing::warn!(mint = %signal.mint, reason = %reason, "Rejecting serial deployer");
+                return CheckResult {
+                    passed: false,
+                    reason: Some(reason),
+                    duration_ms: start.elapsed().as_millis() as u64,
+                };
+            }
+        }
+    }
+
+    // 2. Curve confirmation loop first (lightweight getAccount polls before heavy getSignaturesForAddress).
+    let poll_interval = Duration::from_millis(900);
+    let max_polls = ((volume_confirm_secs.max(3) * 1000) / 900).max(4);
+    let mut current_real_sol: u64 = initial_real_sol;
+    let mut peak_real_sol: u64 = initial_real_sol;
+    let mut prev_real_sol: u64 = initial_real_sol;
+    let mut poll_0_real_sol: Option<u64> = None;
+    let mut rising_ticks: u32 = 0;
+    let mut qualified_ticks: u32 = 0;
+    let mut confirmed = false;
+
+    tracing::info!(
+        mint = %signal.mint,
+        pool = %signal.pool_address,
+        initial_sol = initial_real_sol as f64 / 1e9,
+        min_sol = min_pool_sol,
+        max_sol = max_pool_sol,
+        min_inflow = min_inflow_sol,
+        window_secs = volume_confirm_secs,
+        "Running second-wave organic inflow & anti-dump confirmation"
+    );
+
+    for i in 0..max_polls {
+        tokio::time::sleep(poll_interval).await;
+        if let Ok(acc) = rpc.get_account(pool_pk).await {
+            if let Ok(curve) = PumpFunBondingCurve::from_account_data(&acc.data, pool_pk, mint_pk) {
+                if curve.complete {
+                    return CheckResult {
+                        passed: false,
+                        reason: Some("Pool completed during confirmation window".to_string()),
+                        duration_ms: start.elapsed().as_millis() as u64,
+                    };
+                }
+                if !is_standard_sol_curve(&curve) {
+                    return CheckResult {
+                        passed: false,
+                        reason: Some("Non-standard virtual SOL base".to_string()),
+                        duration_ms: start.elapsed().as_millis() as u64,
+                    };
+                }
+
+                current_real_sol = curve.real_sol_reserves;
+                if i == 0 {
+                    poll_0_real_sol = Some(current_real_sol);
+                }
+
+                if current_real_sol > max_lamports {
+                    return CheckResult {
+                        passed: false,
+                        reason: Some(format!(
+                            "Overheated pool / whale bundle: {:.2} SOL > max {:.2} SOL",
+                            current_real_sol as f64 / 1e9,
+                            max_pool_sol
+                        )),
+                        duration_ms: start.elapsed().as_millis() as u64,
+                    };
+                }
+
+                // Two-tier anti-dump check: allow controlled shakeouts at low SOL, reject heavy dumps or >11% dumps at >= 2x min_pool_sol
+                if peak_real_sol > 0
+                    && (current_real_sol as f64)
+                        < (peak_real_sol as f64) * (1.0 - max_confirm_drop_pct)
+                {
+                    return CheckResult {
+                        passed: false,
+                        reason: Some(format!(
+                            "Early dump detected during confirmation window: {:.2} SOL < {:.2} SOL peak (-{:.1}%)",
+                            current_real_sol as f64 / 1e9,
+                            peak_real_sol as f64 / 1e9,
+                            (1.0 - (current_real_sol as f64 / peak_real_sol as f64)) * 100.0
+                        )),
+                        duration_ms: start.elapsed().as_millis() as u64,
+                    };
+                }
+                if peak_real_sol >= min_lamports.saturating_mul(2)
+                    && (current_real_sol as f64) < (peak_real_sol as f64) * 0.89
+                {
+                    return CheckResult {
+                        passed: false,
+                        reason: Some(format!(
+                            "Early high-liquidity dump detected during confirmation window: {:.2} SOL < {:.2} SOL peak (-{:.1}%)",
+                            current_real_sol as f64 / 1e9,
+                            peak_real_sol as f64 / 1e9,
+                            (1.0 - (current_real_sol as f64 / peak_real_sol as f64)) * 100.0
+                        )),
+                        duration_ms: start.elapsed().as_millis() as u64,
+                    };
+                }
+
+                if current_real_sol > prev_real_sol.saturating_add(40_000_000) {
+                    rising_ticks += 1;
+                }
+
+                peak_real_sol = peak_real_sol.max(current_real_sol);
+                let total_inflow_lamports = current_real_sol.saturating_sub(initial_real_sol);
+                let post_p0_inflow_lamports = poll_0_real_sol
+                    .map(|p0| current_real_sol.saturating_sub(p0))
+                    .unwrap_or(0);
+                let has_second_wave =
+                    i >= 2 && post_p0_inflow_lamports >= (min_inflow_lamports / 2).max(200_000_000);
+                let meets_threshold =
+                    current_real_sol >= min_lamports && total_inflow_lamports >= min_inflow_lamports;
+                let non_decreasing =
+                    current_real_sol >= prev_real_sol.saturating_mul(99) / 100;
+                let near_peak = current_real_sol >= peak_real_sol.saturating_mul(96) / 100;
+
+                if meets_threshold && non_decreasing && near_peak {
+                    qualified_ticks += 1;
+                } else if !meets_threshold
+                    || !near_peak
+                    || current_real_sol < prev_real_sol.saturating_mul(97) / 100
+                {
+                    qualified_ticks = 0;
+                }
+                prev_real_sol = current_real_sol;
+
+                let min_poll_idx =
+                    if initial_real_sol >= 11_000_000_000 || total_inflow_lamports > 5_000_000_000 {
+                        3
+                    } else {
+                        2
+                    };
+                if i >= min_poll_idx
+                    && qualified_ticks >= 2
+                    && rising_ticks >= 2
+                    && has_second_wave
+                {
+                    tracing::info!(
+                        mint = %signal.mint,
+                        initial_sol = initial_real_sol as f64 / 1e9,
+                        poll0_sol = poll_0_real_sol.unwrap_or(0) as f64 / 1e9,
+                        real_sol = current_real_sol as f64 / 1e9,
+                        inflow_sol = total_inflow_lamports as f64 / 1e9,
+                        post_p0_inflow_sol = post_p0_inflow_lamports as f64 / 1e9,
+                        poll_idx = i,
+                        qualified_ticks = qualified_ticks,
+                        rising_ticks = rising_ticks,
+                        "Curve second-wave organic inflow & anti-dump confirmed — running tx/freshness check"
+                    );
+                    confirmed = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    if !confirmed {
+        let real_sol_sol = current_real_sol as f64 / 1_000_000_000.0;
+        let inflow_sol_actual =
+            current_real_sol.saturating_sub(initial_real_sol) as f64 / 1_000_000_000.0;
+        tracing::warn!(
+            mint = %signal.mint,
+            pool = %signal.pool_address,
+            real_sol = real_sol_sol,
+            inflow_sol = inflow_sol_actual,
+            min_required = min_pool_sol,
+            min_inflow = min_inflow_sol,
+            "Rejecting pool due to insufficient real liquidity or organic inflow"
+        );
+
+        return CheckResult {
+            passed: false,
+            reason: Some(format!(
+                "Insufficient organic inflow/liquidity: real={:.2} SOL (min {:.2}), inflow={:.2} SOL (min {:.2})",
+                real_sol_sol, min_pool_sol, inflow_sol_actual, min_inflow_sol
+            )),
+            duration_ms: start.elapsed().as_millis() as u64,
+        };
+    }
+
+    // 3. Pool age / multi-slot transaction check AFTER organic SOL inflow is confirmed
+    //    (saves getSignaturesForAddress RPC quota and allows 2 retries of 600ms if still indexing).
+    let required_buyers = if current_real_sol >= 12_000_000_000 {
+        min_unique_buyers.max(5)
+    } else {
+        min_unique_buyers
+    };
+    for attempt in 0..3_u8 {
         match verify_pool_freshness_and_transactions(
             rpc,
             pool_pk,
-            min_unique_buyers,
+            required_buyers,
             max_pool_age_secs,
         )
         .await
         {
             Ok(()) => break,
-            Err(reason)
-                if reason.starts_with("Not enough transactions")
-                    && Instant::now() < freshness_deadline =>
-            {
-                tokio::time::sleep(Duration::from_millis(1500)).await;
+            Err(reason) if reason.starts_with("Not enough transactions") && attempt < 2 => {
+                tokio::time::sleep(Duration::from_millis(600)).await;
                 continue;
             }
             Err(reason) => {
@@ -162,96 +468,53 @@ async fn check_pump_fun_liquidity(
         }
     }
 
-    let min_lamports = (min_pool_sol.max(0.0) * 1_000_000_000.0) as u64;
-
-    // 1.5 Deployer reputation (serial scammers / bot factories)
-    if let Some(ref data) = context.pool_data {
-        if let Ok(curve) = PumpFunBondingCurve::from_account_data(data, pool_pk, mint_pk) {
-            let max_txs: usize = std::env::var("SOLBOT_MAX_DEPLOYER_RECENT_TXS")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(DEFAULT_MAX_DEPLOYER_RECENT_TXS);
-            if let Err(reason) =
-                verify_deployer_reputation(rpc, &curve.creator, max_txs, 6 * 3600).await
-            {
-                tracing::warn!(mint = %signal.mint, reason = %reason, "Rejecting serial deployer");
+    // Final curve check after freshness/signature call to make sure pool didn't dump or overheat meanwhile
+    let mut final_real_sol = current_real_sol;
+    if let Ok(acc) = rpc.get_account(pool_pk).await {
+        if let Ok(curve) = PumpFunBondingCurve::from_account_data(&acc.data, pool_pk, mint_pk) {
+            if curve.complete || !is_standard_sol_curve(&curve) {
                 return CheckResult {
                     passed: false,
-                    reason: Some(reason),
+                    reason: Some("Pool completed or became non-standard after freshness check".to_string()),
                     duration_ms: start.elapsed().as_millis() as u64,
                 };
             }
-        }
-    }
-
-    // 2. Check initial curve data from context
-    let mut current_real_sol: u64 = 0;
-    if let Some(ref data) = context.pool_data {
-        if let Ok(curve) = PumpFunBondingCurve::from_account_data(data, pool_pk, mint_pk) {
-            current_real_sol = curve.real_sol_reserves;
-        }
-    }
-
-    // If initial liquidity already meets the threshold
-    if current_real_sol >= min_lamports {
-        return CheckResult {
-            passed: true,
-            reason: None,
-            duration_ms: start.elapsed().as_millis() as u64,
-        };
-    }
-
-    // 3. If below threshold and volume confirmation window is active, poll for incoming volume spike
-    if volume_confirm_secs > 0 {
-        let poll_interval = Duration::from_millis(1500);
-        let max_polls = (volume_confirm_secs.max(1) * 1000 / 1500).max(1);
-
-        tracing::info!(
-            mint = %signal.mint,
-            pool = %signal.pool_address,
-            current_sol = current_real_sol as f64 / 1e9,
-            required_sol = min_pool_sol,
-            window_secs = volume_confirm_secs,
-            "Awaiting volume spike / liquidity threshold before entry"
-        );
-
-        for _ in 0..max_polls {
-            tokio::time::sleep(poll_interval).await;
-            if let Ok(acc) = rpc.get_account(pool_pk).await {
-                if let Ok(curve) = PumpFunBondingCurve::from_account_data(&acc.data, pool_pk, mint_pk) {
-                    current_real_sol = curve.real_sol_reserves;
-                    if current_real_sol >= min_lamports {
-                        tracing::info!(
-                            mint = %signal.mint,
-                            real_sol = current_real_sol as f64 / 1e9,
-                            "Volume spike confirmed - liquidity threshold met"
-                        );
-                        return CheckResult {
-                            passed: true,
-                            reason: None,
-                            duration_ms: start.elapsed().as_millis() as u64,
-                        };
-                    }
-                }
+            if curve.real_sol_reserves > max_lamports {
+                return CheckResult {
+                    passed: false,
+                    reason: Some(format!(
+                        "Overheated pool after freshness check: {:.2} SOL > max {:.2} SOL",
+                        curve.real_sol_reserves as f64 / 1e9,
+                        max_pool_sol
+                    )),
+                    duration_ms: start.elapsed().as_millis() as u64,
+                };
             }
+            if curve.real_sol_reserves < current_real_sol.saturating_mul(91) / 100 {
+                return CheckResult {
+                    passed: false,
+                    reason: Some(format!(
+                        "Pool dumped after freshness check: {:.2} < {:.2} SOL",
+                        curve.real_sol_reserves as f64 / 1e9,
+                        current_real_sol as f64 / 1e9
+                    )),
+                    duration_ms: start.elapsed().as_millis() as u64,
+                };
+            }
+            final_real_sol = curve.real_sol_reserves;
         }
     }
 
-    let real_sol_sol = current_real_sol as f64 / 1_000_000_000.0;
-    tracing::warn!(
+    record_confirmed_pool_sol(&signal.pool_address, final_real_sol);
+    tracing::info!(
         mint = %signal.mint,
-        pool = %signal.pool_address,
-        real_sol = real_sol_sol,
-        min_required = min_pool_sol,
-        "Rejecting pool due to insufficient real liquidity / volume spike (dead/wash pool)"
+        initial_sol = initial_real_sol as f64 / 1e9,
+        final_real_sol = final_real_sol as f64 / 1e9,
+        "Organic inflow & freshness confirmed"
     );
-
     CheckResult {
-        passed: false,
-        reason: Some(format!(
-            "Insufficient real liquidity: {:.2} SOL in curve < {:.2} SOL required (dead pool / Mayhem wash bot)",
-            real_sol_sol, min_pool_sol
-        )),
+        passed: true,
+        reason: None,
         duration_ms: start.elapsed().as_millis() as u64,
     }
 }
@@ -296,26 +559,56 @@ async fn verify_deployer_reputation(
     }
 }
 
-/// Verify that the pool is fresh (not an old/zombie token), active, and has sufficient buyers
+/// Verify that the pool is fresh (not an old/zombie token), active across multiple slots, and has sufficient buyers
 async fn verify_pool_freshness_and_transactions(
     rpc: &Arc<RpcClient>,
     pool_pk: &Pubkey,
     min_txs: usize,
     max_pool_age_secs: u64,
 ) -> Result<(), String> {
-    match rpc.get_signatures_for_address(pool_pk).await {
+    use solana_rpc_client::rpc_client::GetConfirmedSignaturesForAddress2Config;
+    let make_cfg = || GetConfirmedSignaturesForAddress2Config {
+        before: None,
+        until: None,
+        limit: Some(100),
+        commitment: None,
+    };
+    let sigs_res = match rpc.get_signatures_for_address_with_config(pool_pk, make_cfg()).await {
+        Ok(s) => Ok(s),
+        Err(_) => {
+            tokio::time::sleep(Duration::from_millis(350)).await;
+            rpc.get_signatures_for_address_with_config(pool_pk, make_cfg()).await
+        }
+    };
+    match sigs_res {
         Ok(sigs) => {
-            // If the pool already has 1000+ transactions, it is definitely not a brand new launch
-            if sigs.len() >= 1000 {
-                return Err("Pool is ancient (≥1000 transactions history)".to_string());
-            }
-
-            if sigs.len() < min_txs {
+            let ok_sigs: Vec<_> = sigs.iter().filter(|s| s.err.is_none()).collect();
+            if ok_sigs.len() < min_txs {
                 return Err(format!(
                     "Not enough transactions: {} < {} required",
-                    sigs.len(),
+                    ok_sigs.len(),
                     min_txs
                 ));
+            }
+
+            if sigs.len() >= 10 && ok_sigs.len() * 2 < sigs.len() {
+                return Err(format!(
+                    "Bot spam / high failed-tx ratio on pool: {} ok of {} total txs",
+                    ok_sigs.len(),
+                    sigs.len()
+                ));
+            }
+
+            if !ok_sigs.is_empty() {
+                let min_slot = ok_sigs.iter().map(|s| s.slot).min().unwrap_or(0);
+                let max_slot = ok_sigs.iter().map(|s| s.slot).max().unwrap_or(0);
+                if max_slot <= min_slot {
+                    return Err(format!(
+                        "Not enough transactions across multiple slots: all {} txs in slot {}",
+                        ok_sigs.len(),
+                        min_slot
+                    ));
+                }
             }
 
             let now_ts = chrono::Utc::now().timestamp();
@@ -326,7 +619,7 @@ async fn verify_pool_freshness_and_transactions(
                     let age = now_ts.saturating_sub(bt);
                     if age > max_pool_age_secs as i64 {
                         return Err(format!(
-                            "Pool is too old: created {}s ago (max allowed: {}s)",
+                            "Pool is too old: created/active {}s ago (max allowed: {}s)",
                             age, max_pool_age_secs
                         ));
                     }
@@ -334,7 +627,7 @@ async fn verify_pool_freshness_and_transactions(
             }
 
             // Latest signature indicates recent trading activity
-            if let Some(latest_sig) = sigs.first() {
+            if let Some(latest_sig) = ok_sigs.first() {
                 if let Some(bt) = latest_sig.block_time {
                     let dormancy = now_ts.saturating_sub(bt);
                     if dormancy > 60 {
@@ -348,14 +641,7 @@ async fn verify_pool_freshness_and_transactions(
 
             Ok(())
         }
-        Err(e) => {
-            tracing::warn!(
-                pool = %pool_pk,
-                error = %e,
-                "Failed to fetch signatures for address - allowing if SOL threshold passed"
-            );
-            Ok(())
-        }
+        Err(e) => Err(format!("Failed to fetch signatures for pool: {}", e)),
     }
 }
 

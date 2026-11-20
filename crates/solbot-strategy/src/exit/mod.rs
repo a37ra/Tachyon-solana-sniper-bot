@@ -18,22 +18,32 @@ pub enum TpLevel {
 }
 
 impl TpLevel {
-    /// Returns the percentage of the *original* position to sell at this TP level.
+    /// Returns the percentage of the *original* position to sell at this TP level (with live env override).
     pub fn sell_pct(&self) -> f64 {
-        match self {
-            TpLevel::Tp1 => 0.30,
-            TpLevel::Tp2 => 0.30,
-            TpLevel::Tp3 => 0.20,
-        }
+        let (key, default) = match self {
+            TpLevel::Tp1 => ("SOLBOT_TP1_SELL_PCT", 0.30),
+            TpLevel::Tp2 => ("SOLBOT_TP2_SELL_PCT", 0.30),
+            TpLevel::Tp3 => ("SOLBOT_TP3_SELL_PCT", 0.20),
+        };
+        std::env::var(key)
+            .ok()
+            .and_then(|v| v.parse::<f64>().ok())
+            .filter(|&x| x > 0.0 && x <= 1.0)
+            .unwrap_or(default)
     }
 
-    /// Returns the profit trigger multiplier (e.g., 1.5 for +50%).
+    /// Returns the profit trigger multiplier (e.g., 1.5 for +50%), with live env override.
     pub fn trigger_multiplier(&self) -> f64 {
-        match self {
-            TpLevel::Tp1 => 1.5,
-            TpLevel::Tp2 => 2.0,
-            TpLevel::Tp3 => 3.0,
-        }
+        let (key, default) = match self {
+            TpLevel::Tp1 => ("SOLBOT_TP1_MULT", 1.5),
+            TpLevel::Tp2 => ("SOLBOT_TP2_MULT", 2.0),
+            TpLevel::Tp3 => ("SOLBOT_TP3_MULT", 3.0),
+        };
+        std::env::var(key)
+            .ok()
+            .and_then(|v| v.parse::<f64>().ok())
+            .filter(|&x| x > 1.0)
+            .unwrap_or(default)
     }
 }
 

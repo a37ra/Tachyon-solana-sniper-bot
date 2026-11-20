@@ -1,25 +1,46 @@
 use solbot_common::types::position::Position;
 
-/// The percentage drop from high water mark that triggers the trailing stop.
+/// The default percentage drop from high water mark that triggers the trailing stop.
 /// 25% trailing distance means we sell if price drops to 75% of the high water mark.
 const TRAILING_STOP_DISTANCE_PCT: f64 = 0.25;
+
+fn env_pct(key: &str, default: f64) -> f64 {
+    std::env::var(key)
+        .ok()
+        .and_then(|v| v.parse::<f64>().ok())
+        .map(|v| if v > 1.0 { v / 100.0 } else { v })
+        .unwrap_or(default)
+}
+
+pub fn get_trailing_distance_pct() -> f64 {
+    env_pct("SOLBOT_TRAILING_DISTANCE_PCT", TRAILING_STOP_DISTANCE_PCT).clamp(0.01, 0.90)
+}
+
+pub fn get_trailing_breakeven_floor_pct() -> f64 {
+    env_pct("SOLBOT_TRAILING_BREAKEVEN_FLOOR_PCT", 0.0).max(0.0)
+}
+
+pub fn get_trailing_activation_pct() -> f64 {
+    env_pct("SOLBOT_TRAILING_ACTIVATION_PCT", 0.50).max(0.01)
+}
 
 /// Evaluate whether the trailing stop should trigger for the given position.
 ///
 /// Trailing stop behavior (from ТЗ 4.4):
-/// - **Activation**: When TP1 fires (+50%), trailing_active is set to true
-/// - **Trail distance**: 25% from the high water mark
+/// - **Activation**: When TP1 fires (+50%) or early activation threshold is reached
+/// - **Trail distance**: configurable from the high water mark (default 25%)
+/// - **Breakeven floor**: optional floor above entry once trailing is active
 /// - **Applies to**: Remaining position after TP ladder fills
 ///
 /// Returns `Some(trigger_price)` if the trailing stop should fire,
-/// meaning `current_price <= high_water_mark * (1 - trail_distance)`.
+/// meaning `current_price <= trigger_price`.
 /// Returns `None` if the trailing stop is not triggered.
 ///
 /// # Note
 /// This function does NOT update the high water mark — that should be done
 /// by the caller (mint_actor) on every PriceTick when trailing is active.
 pub fn evaluate_trailing(position: &Position, current_price: f64) -> Option<f64> {
-    // Trailing must be active (set when TP1 fires)
+    // Trailing must be active (set when TP1 fires or early activation hits)
     if !position.trailing_active {
         return None;
     }
@@ -29,7 +50,13 @@ pub fn evaluate_trailing(position: &Position, current_price: f64) -> Option<f64>
         _ => return None, // No high water mark yet
     };
 
-    let trigger_price = high_water * (1.0 - TRAILING_STOP_DISTANCE_PCT);
+    let raw_trigger = high_water * (1.0 - get_trailing_distance_pct());
+    let floor_pct = get_trailing_breakeven_floor_pct();
+    let trigger_price = if floor_pct > 0.0 && position.entry_price_sol > 0.0 {
+        raw_trigger.max(position.entry_price_sol * (1.0 + floor_pct))
+    } else {
+        raw_trigger
+    };
 
     if current_price <= trigger_price {
         Some(trigger_price)
@@ -50,19 +77,19 @@ pub fn update_high_water(current_high_water: Option<f64>, current_price: f64) ->
 }
 
 /// Check whether trailing stop should be activated based on position status
-/// and current price. Trailing stop activates when TP1 fires.
+/// and current price. Trailing stop activates when TP1 fires or early activation threshold is reached.
 pub fn should_activate_trailing(position: &Position, current_price: f64) -> bool {
     // Don't activate if already active
     if position.trailing_active {
         return false;
     }
 
-    // Activate when price first reaches TP1 level (+50% from entry)
+    // Activate when price reaches activation threshold (default +50%, overridable via SOLBOT_TRAILING_ACTIVATION_PCT)
     if position.entry_price_sol <= 0.0 {
         return false;
     }
 
-    current_price >= position.entry_price_sol * 1.5
+    current_price >= position.entry_price_sol * (1.0 + get_trailing_activation_pct())
 }
 
 #[cfg(test)]

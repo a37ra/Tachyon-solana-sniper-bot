@@ -392,16 +392,60 @@ async fn main() -> anyhow::Result<()> {
             anyhow::anyhow!("pump Global fee_recipient load failed (refusing start): {e}")
         })?;
 
-    // Spawn background MarketDataLane PriceTick feed for open positions so TP/SL/Trailing Stop trigger in runtime
+    // Live .env hot-reloader: reloads SOLBOT_* parameters every 5s without restarting.
+    {
+        let cb_reload = circuit_breaker.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(5));
+            let mut last_reset_val = String::new();
+            loop {
+                interval.tick().await;
+                let Ok(contents) = tokio::fs::read_to_string(".env").await else {
+                    continue;
+                };
+                for raw_line in contents.lines() {
+                    let line = raw_line.trim();
+                    if line.is_empty() || line.starts_with('#') {
+                        continue;
+                    }
+                    let Some((k, v)) = line.split_once('=') else {
+                        continue;
+                    };
+                    let key = k.trim();
+                    let val = v.trim();
+                    if key == "SOLBOT_RESET_CB" {
+                        if val == "1" && last_reset_val != "1" {
+                            cb_reload.reset_daily();
+                            std::env::set_var("SOLBOT_RESET_CB", "0");
+                            tracing::warn!("Circuit breaker daily losses reset via .env hot-reload");
+                        }
+                        last_reset_val = val.to_string();
+                        continue;
+                    }
+                    if key.starts_with("SOLBOT_") {
+                        let current = std::env::var(key).ok();
+                        if current.as_deref() != Some(val) {
+                            std::env::set_var(key, val);
+                            tracing::info!(key, val, "Hot-reloaded strategy parameter from .env");
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    // Spawn background MarketDataLane PriceTick feed for open positions using 100% real on-chain prices
     if let Some(ref pos_repo) = positions_repo {
         let pos_repo_tick = pos_repo.clone();
         let actors_tick = actor_registry.clone();
         let rpc_tick = shared_rpc.clone();
-        let paper_tick_mode = is_paper;
+        let tick_ms: u64 = env::var("SOLBOT_PRICE_TICK_MS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .filter(|&ms| ms >= 250)
+            .unwrap_or(1000);
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(Duration::from_millis(3000));
-            let mut tick_step: std::collections::HashMap<String, u32> =
-                std::collections::HashMap::new();
+            let mut interval = tokio::time::interval(Duration::from_millis(tick_ms));
             loop {
                 interval.tick().await;
                 let Ok(open_positions) = pos_repo_tick.get_open_positions().await else {
@@ -436,11 +480,6 @@ async fn main() -> anyhow::Result<()> {
                 for (idx, (pos, handle, pool_pk, mint_pk)) in
                     valid_positions.into_iter().take(50).enumerate()
                 {
-                    let step = tick_step
-                        .entry(pos.position_id.clone())
-                        .and_modify(|s| *s += 1)
-                        .or_insert(1);
-
                     let mut spot_price = None;
                     if let Some(ref accs) = accounts_opt {
                         if let Some(Some(acc)) = accs.get(idx) {
@@ -450,7 +489,7 @@ async fn main() -> anyhow::Result<()> {
                                 &mint_pk,
                                 &acc.data,
                             );
-                            if spot_price.is_none() && !paper_tick_mode {
+                            if spot_price.is_none() {
                                 spot_price = mint_actor::fetch_pool_spot_price_sol(
                                     rpc_tick.as_ref(),
                                     &pos.dex_program_id,
@@ -463,53 +502,8 @@ async fn main() -> anyhow::Result<()> {
                         }
                     }
 
-                    // In Paper mode, if the newly-created bonding curve is illiquid/flat on-chain,
-                    // apply deterministic paper market trajectory so TP/SL/TrailingStop execute realistically.
-                    let entry = pos.entry_price_sol.max(1e-9);
-                    let price_sol = match spot_price {
-                        Some(p) if (p - entry).abs() / entry > 0.03 => p,
-                        _ if paper_tick_mode => {
-                            let hash_seed = pos
-                                .mint
-                                .bytes()
-                                .fold(0u64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u64));
-                            let profile = hash_seed % 10;
-                            let mult = if profile == 0 {
-                                // Flat / stagnant curve: hovers around 0.98..1.01 without +15% impulse -> triggers MomentumTimeout at 45s
-                                match *step {
-                                    1..=5 => 1.01,
-                                    6..=10 => 0.99,
-                                    _ => 0.98,
-                                }
-                            } else if profile < 4 {
-                                // Strong runner: climbs through TP1 (1.5x) -> TP2 (2.0x) -> TP3 (3.0x) or Trailing Stop
-                                match *step {
-                                    1..=3 => 1.0 + (*step as f64) * 0.12,
-                                    4..=6 => 1.55,
-                                    7..=9 => 2.10,
-                                    10..=12 => 3.15,
-                                    _ => 1.60,
-                                }
-                            } else if profile < 7 {
-                                // Moderate runner: hits TP1 (1.5x), peaks at 1.85x, then triggers Trailing Stop (-20% from HWM = 1.44x)
-                                match *step {
-                                    1..=3 => 1.0 + (*step as f64) * 0.14,
-                                    4..=6 => 1.56,
-                                    7..=8 => 1.85,
-                                    _ => 1.42,
-                                }
-                            } else {
-                                // Rug / dump after launch: drops below tightened -25% Hard Stop-Loss (<= 0.75x)
-                                match *step {
-                                    1..=2 => 0.92,
-                                    3..=4 => 0.82,
-                                    _ => 0.70,
-                                }
-                            };
-                            entry * mult
-                        }
-                        Some(p) => p,
-                        None => continue,
+                    let Some(price_sol) = spot_price else {
+                        continue;
                     };
 
                     let ts = chrono::Utc::now().timestamp_millis() as u64;
