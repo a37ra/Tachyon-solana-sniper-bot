@@ -44,12 +44,12 @@ pub async fn subscribe_create_ix_signals(
     let ws_url = std::env::var("HELIUS_WS_URL")
         .unwrap_or_else(|_| format!("wss://mainnet.helius-rpc.com/?api-key={}", api_key));
 
-    // When running on free/public RPC (where WS may return 503 Service Unavailable),
-    // spawn a gentle HTTP RPC poller in parallel so live Mainnet signals always flow.
-    let is_public_rpc = std::env::var("SOLBOT_PUBLIC_RPC")
+    // Optional HTTP RPC fallback poller — disabled by default when WebSocket is active
+    // because polling getSignaturesForAddress + 10x getTransaction every 6s burns ~66k Helius credits/hr.
+    let enable_http_poller = std::env::var("SOLBOT_ENABLE_HTTP_POLLER")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(true);
-    if is_public_rpc {
+        .unwrap_or(false);
+    if enable_http_poller {
         let rpc_http = rpc.clone();
         let tx_http = tx.clone();
         let seen_http = seen.clone();
@@ -248,12 +248,21 @@ async fn run_logs_loop(
         .unwrap_or_else(std::time::Instant::now);
 
     let mut ping = interval(Duration::from_secs(30));
+    let mut last_ws_msg = std::time::Instant::now();
     loop {
         tokio::select! {
             _ = ping.tick() => {
-                let _ = write.send(Message::Ping(vec![])).await;
+                if last_ws_msg.elapsed() > Duration::from_secs(90) {
+                    warn!("create-ix WS silent for >90s — forcing reconnect");
+                    anyhow::bail!("websocket silent timeout");
+                }
+                if let Err(e) = write.send(Message::Ping(vec![])).await {
+                    warn!(error = %e, "create-ix WS ping failed — forcing reconnect");
+                    anyhow::bail!("websocket ping failed: {e}");
+                }
             }
             msg = read.next() => {
+                last_ws_msg = std::time::Instant::now();
                 match msg {
                     Some(Ok(Message::Text(text))) => {
                         if !min_signal_gap.is_zero() && last_signal_emitted.elapsed() < min_signal_gap {

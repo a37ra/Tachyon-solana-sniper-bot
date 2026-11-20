@@ -556,21 +556,28 @@ async fn main() -> anyhow::Result<()> {
 
     if use_create_ix {
         use solana_pubkey::Pubkey;
-        let programs = vec![
-            Pubkey::from_str("675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8")?,
-            Pubkey::from_str("CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C")?,
-            Pubkey::from_str("CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK")?,
-            Pubkey::from_str("LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo")?,
-            Pubkey::from_str("cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG")?,
-            Pubkey::from_str("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P")?,
-        ];
+        let pump_only_ws = env::var("SOLBOT_PUMP_ONLY_WS")
+            .map(|v| !(v == "0" || v.eq_ignore_ascii_case("false")))
+            .unwrap_or(true);
+        let programs = if pump_only_ws {
+            vec![Pubkey::from_str("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P")?]
+        } else {
+            vec![
+                Pubkey::from_str("675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8")?,
+                Pubkey::from_str("CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C")?,
+                Pubkey::from_str("CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK")?,
+                Pubkey::from_str("LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo")?,
+                Pubkey::from_str("cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG")?,
+                Pubkey::from_str("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P")?,
+            ]
+        };
         let create_rx = solbot_strategy::signal::create_ix_source::subscribe_create_ix_signals(
             programs,
             shared_rpc.clone(),
         )
         .await?;
         signal_rxs.push((create_rx, "create_ix_logs"));
-        tracing::info!("create-ix logsSubscribe source enabled");
+        tracing::info!(pump_only_ws, "create-ix logsSubscribe source enabled");
     }
 
     if signal_rxs.is_empty() {

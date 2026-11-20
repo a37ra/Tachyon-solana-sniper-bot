@@ -212,6 +212,9 @@ async fn check_pump_fun_liquidity(
     };
 
     let mut initial_real_sol: u64 = 0;
+    let mut deferred_creator: Option<Pubkey> = None;
+    let max_deployer_txs =
+        env_usize_val("SOLBOT_MAX_DEPLOYER_RECENT_TXS", DEFAULT_MAX_DEPLOYER_RECENT_TXS);
     if let Some(ref data) = initial_curve_data {
         if let Ok(curve) = PumpFunBondingCurve::from_account_data(data, pool_pk, mint_pk) {
             if curve.complete {
@@ -246,17 +249,31 @@ async fn check_pump_fun_liquidity(
                 };
             }
 
-            // 1. Deployer reputation (serial scammers / bot factories)
-            let max_txs = env_usize_val("SOLBOT_MAX_DEPLOYER_RECENT_TXS", DEFAULT_MAX_DEPLOYER_RECENT_TXS);
-            if let Err(reason) =
-                verify_deployer_reputation(rpc, &curve.creator, max_txs, 6 * 3600).await
-            {
-                tracing::warn!(mint = %signal.mint, reason = %reason, "Rejecting serial deployer");
+            // 1. Deployer reputation (serial scammers / bot factories):
+            //    Always reject cached repeat scammers at t=0 with 0 RPC calls.
+            //    For tiny < 2 SOL launches not in cache, defer RPC check until after curve confirmation
+            //    so dead 0.01 SOL tokens don't burn 10 Helius credits each on getSignaturesForAddress.
+            if let Some(reason) = check_cached_serial_deployer(&curve.creator) {
+                tracing::warn!(mint = %signal.mint, reason = %reason, "Rejecting cached serial deployer");
                 return CheckResult {
                     passed: false,
                     reason: Some(reason),
                     duration_ms: start.elapsed().as_millis() as u64,
                 };
+            }
+            if initial_real_sol >= 2_000_000_000 {
+                if let Err(reason) =
+                    verify_deployer_reputation(rpc, &curve.creator, max_deployer_txs, 6 * 3600).await
+                {
+                    tracing::warn!(mint = %signal.mint, reason = %reason, "Rejecting serial deployer");
+                    return CheckResult {
+                        passed: false,
+                        reason: Some(reason),
+                        duration_ms: start.elapsed().as_millis() as u64,
+                    };
+                }
+            } else {
+                deferred_creator = Some(curve.creator);
             }
         }
     }
@@ -403,6 +420,16 @@ async fn check_pump_fun_liquidity(
                     confirmed = true;
                     break;
                 }
+
+                // Credit-saving early exit: if after 3 polls (~2.7s) a dead pool is still < 1.5 SOL
+                // with < 0.25 SOL inflow while we require >= 5 SOL, stop polling early.
+                if i == 2
+                    && min_lamports >= 5_000_000_000
+                    && current_real_sol < 1_500_000_000
+                    && total_inflow_lamports < 250_000_000
+                {
+                    break;
+                }
             }
         }
     }
@@ -429,6 +456,20 @@ async fn check_pump_fun_liquidity(
             )),
             duration_ms: start.elapsed().as_millis() as u64,
         };
+    }
+
+    // Complete deferred deployer reputation check for launches that started < 2 SOL and surged.
+    if let Some(creator) = deferred_creator {
+        if let Err(reason) =
+            verify_deployer_reputation(rpc, &creator, max_deployer_txs, 6 * 3600).await
+        {
+            tracing::warn!(mint = %signal.mint, reason = %reason, "Rejecting serial deployer (deferred)");
+            return CheckResult {
+                passed: false,
+                reason: Some(reason),
+                duration_ms: start.elapsed().as_millis() as u64,
+            };
+        }
     }
 
     // 3. Pool age / multi-slot transaction check AFTER organic SOL inflow is confirmed
@@ -519,6 +560,21 @@ async fn check_pump_fun_liquidity(
     }
 }
 
+static DEPLOYER_REPUTATION_CACHE: std::sync::OnceLock<dashmap::DashMap<Pubkey, (Option<String>, Instant)>> =
+    std::sync::OnceLock::new();
+
+fn check_cached_serial_deployer(creator: &Pubkey) -> Option<String> {
+    let cache = DEPLOYER_REPUTATION_CACHE.get()?;
+    let entry = cache.get(creator)?;
+    let (reason_opt, cached_at) = entry.value();
+    if let Some(reason) = reason_opt {
+        if cached_at.elapsed() < Duration::from_secs(3600) {
+            return Some(reason.clone());
+        }
+    }
+    None
+}
+
 /// Reject serial deployers: a wallet that signed many transactions recently is almost always a
 /// scam factory / Mayhem-style bot (thousands of created tokens), not an organic launcher.
 async fn verify_deployer_reputation(
@@ -530,6 +586,19 @@ async fn verify_deployer_reputation(
     use solana_rpc_client::rpc_client::GetConfirmedSignaturesForAddress2Config;
     if max_recent_txs == 0 {
         return Ok(());
+    }
+    let cache = DEPLOYER_REPUTATION_CACHE.get_or_init(dashmap::DashMap::new);
+    if let Some(entry) = cache.get(creator) {
+        let (reason_opt, cached_at) = entry.value();
+        match reason_opt {
+            Some(reason) if cached_at.elapsed() < Duration::from_secs(3600) => {
+                return Err(reason.clone());
+            }
+            None if cached_at.elapsed() < Duration::from_secs(600) => {
+                return Ok(());
+            }
+            _ => {}
+        }
     }
     let cfg = GetConfirmedSignaturesForAddress2Config {
         before: None,
@@ -545,11 +614,14 @@ async fn verify_deployer_reputation(
                 .filter(|s| s.block_time.map_or(true, |bt| now - bt <= window_secs))
                 .count();
             if recent > max_recent_txs {
-                return Err(format!(
+                let reason = format!(
                     "Serial deployer: creator {} has {} txs in last {}s (max {})",
                     creator, recent, window_secs, max_recent_txs
-                ));
+                );
+                cache.insert(*creator, (Some(reason.clone()), Instant::now()));
+                return Err(reason);
             }
+            cache.insert(*creator, (None, Instant::now()));
             Ok(())
         }
         Err(e) => {
