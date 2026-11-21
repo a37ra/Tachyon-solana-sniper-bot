@@ -39,17 +39,20 @@ pub fn get_early_bleed_drop_pct() -> f64 {
         .unwrap_or(0.025)
 }
 
-/// Evaluate whether the position should be closed due to lack of initial upward momentum.
+pub fn get_max_hold_secs() -> u64 {
+    std::env::var("SOLBOT_MAX_HOLD_SECS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(0)
+}
+
+/// Evaluate whether the position should be closed due to lack of initial upward momentum
+/// or reaching the maximum hold time (`SOLBOT_MAX_HOLD_SECS`).
 ///
 /// Rule: If the token in the first 30–60s (default 45s) after entry did not give an upward
 /// impulse of at least +15%..+20% (default +15%), close immediately at market in breakeven/micro-loss.
 /// Optional early-bleed guard (`SOLBOT_EARLY_BLEED_SECS > 0`) cuts stagnant bleeders earlier.
 pub fn evaluate_momentum(position: &Position, current_price: f64) -> Option<ExitAction> {
-    // Only applies to positions that have not yet taken profit (Open or Opening)
-    if position.status != PositionStatus::Open && position.status != PositionStatus::Opening {
-        return None;
-    }
-
     if position.entry_price_sol <= 0.0 || position.opened_at_utc == 0 {
         return None;
     }
@@ -60,6 +63,40 @@ pub fn evaluate_momentum(position: &Position, current_price: f64) -> Option<Exit
         .trailing_high_water_sol
         .unwrap_or(current_price)
         .max(current_price);
+
+    let max_hold_secs = get_max_hold_secs();
+    if max_hold_secs > 0
+        && elapsed_secs >= max_hold_secs
+        && matches!(
+            position.status,
+            PositionStatus::Open
+                | PositionStatus::Opening
+                | PositionStatus::Tp1Filled
+                | PositionStatus::Tp2Filled
+                | PositionStatus::Tp3Filled
+        )
+    {
+        let peak_multiplier = peak_price / position.entry_price_sol;
+        tracing::info!(
+            position_id = %position.position_id,
+            elapsed_secs,
+            max_hold_secs,
+            peak_multiplier,
+            current_price,
+            "Max hold time reached ({}s >= {}s) — exiting position",
+            elapsed_secs,
+            max_hold_secs
+        );
+        return Some(ExitAction::MomentumTimeout {
+            elapsed_secs,
+            peak_multiplier,
+        });
+    }
+
+    // Momentum stall check only applies to positions that have not yet taken profit (Open or Opening)
+    if position.status != PositionStatus::Open && position.status != PositionStatus::Opening {
+        return None;
+    }
 
     let early_bleed_secs = get_early_bleed_secs();
     if early_bleed_secs > 0 && elapsed_secs >= early_bleed_secs {

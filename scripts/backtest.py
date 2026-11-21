@@ -27,6 +27,8 @@ from collections import defaultdict
 
 LAMPORTS = 1_000_000_000
 INIT_VSOL = 30 * LAMPORTS
+K0 = 30_000_000_000 * 1_073_000_000_000_000
+MAYHEM_BOT = "BwWK17cbHxwWBKZkUYvzxLcNQ1YVyaFezduWbtm2de6s"
 FEE = 0.0125          # conservative: pump.fun protocol+creator fee per side
 PRIO_FEE_SOL = 0.0002 # per side (priority + jito tip), paper approximation
 SIZE_SOL = 0.5
@@ -71,9 +73,11 @@ def load(csv_dir):
     for tk in toks.values():
         if not tk.t:
             continue
-        # standard curve only, and we must have seen its very first trade
+        # strictly standard 30-SOL curve (k = 30e9 * 1.073e15 invariant, no Mayhem virtual-reserve mutation)
         pre = tk.vsol[0] - (tk.sol[0] if tk.buy[0] else -tk.sol[0])
         if abs(pre - INIT_VSOL) > 0.05 * LAMPORTS:
+            continue
+        if any(u == MAYHEM_BOT or abs(vs * vt - K0) / K0 > 0.005 for u, vs, vt in zip(tk.user, tk.vsol, tk.vtok)):
             continue
         out.append(tk)
     out.sort(key=lambda x: x.born)

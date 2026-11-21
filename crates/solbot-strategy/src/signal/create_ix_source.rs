@@ -266,6 +266,53 @@ async fn run_logs_loop(
                 match msg {
                     Some(Ok(Message::Text(text))) => {
                         crate::signal::trade_recorder::record_raw(&text);
+                        for snap in crate::signal::trade_recorder::take_ready_breakout_signals() {
+                            if let Some(mut signal) = finalize_signal(
+                                snap.mint.clone(),
+                                snap.pool.clone(),
+                                crate::tx_builder::pump_fun::PUMP_FUN_PROGRAM.to_string(),
+                                snap.last_slot,
+                                seen,
+                            ) {
+                                attach_pool_account(rpc.as_ref(), &mut signal).await;
+                                if let Some(ref raw_data) = signal.raw_pool_account_data {
+                                    if let (Ok(pool_pk), Ok(mint_pk)) = (
+                                        Pubkey::from_str(&signal.pool_address),
+                                        Pubkey::from_str(&signal.mint),
+                                    ) {
+                                        if let Ok(curve) = crate::tx_builder::pump_fun::PumpFunBondingCurve::from_account_data(
+                                            raw_data,
+                                            &pool_pk,
+                                            &mint_pk,
+                                        ) {
+                                            if curve.complete
+                                                || !crate::risk_gate::liquidity_gate::is_standard_sol_curve(&curve)
+                                            {
+                                                continue;
+                                            }
+                                        }
+                                    }
+                                }
+                                last_signal_emitted = std::time::Instant::now();
+                                signal.received_at = chrono::Utc::now().timestamp_millis() as u64;
+                                info!(
+                                    mint = %signal.mint,
+                                    pool = %signal.pool_address,
+                                    real_sol = snap.real_sol,
+                                    buyers = snap.unique_buyers,
+                                    sell_ratio = snap.sell_ratio,
+                                    age_secs = snap.age_secs,
+                                    has_raw_pool = signal.raw_pool_account_data.is_some(),
+                                    "S3 WS crowd-breakout signal"
+                                );
+                                if tx.send(signal).await.is_err() {
+                                    return Ok(());
+                                }
+                            }
+                        }
+                        if crate::signal::trade_recorder::ws_breakout_trigger_enabled() {
+                            continue;
+                        }
                         if !min_signal_gap.is_zero() && last_signal_emitted.elapsed() < min_signal_gap {
                             continue;
                         }

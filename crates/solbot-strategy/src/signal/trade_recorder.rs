@@ -1,29 +1,132 @@
-//! Passive Pump.fun trade recorder for offline backtesting.
+//! Passive Pump.fun trade recorder + real-time S3 crowd-breakout flow tracker.
 //!
 //! Taps the already-open `logsSubscribe` stream (zero extra RPC credits),
-//! decodes Pump.fun `CreateEvent` / `TradeEvent` from `Program data:` logs and
-//! appends compact CSV rows to `logs/trades/YYYY-MM-DD-HH.csv`.
-//!
-//! Only trades of mints whose Create we observed (and only during the first
-//! `SOLBOT_RECORD_WINDOW_SECS`, default 1200s, of their life) are recorded, to
-//! keep disk usage bounded.
+//! decodes Pump.fun `CreateEvent` / `TradeEvent` from `Program data:` logs,
+//! appends compact CSV rows to `logs/trades/YYYY-MM-DD-HH.csv` when
+//! `SOLBOT_RECORD_TRADES=true`, and tracks per-mint crowd flow in memory:
+//! - unique buyer wallets (`buyers.len()`)
+//! - buy / sell counts & `sell_ratio = n_sells / n_buys`
+//! - `creator_sold` flag & repeat creator session launch count
+//! - pure standard curve invariant (`k = 30e9 * 1.073e15`, no Mayhem `BwWK17cb...` virtual-reserve mutation)
+//! - rolling inflow window (`inflow_win_sol`) and peak real SOL drawdown (`drawdown_pct`)
 //!
 //! Row formats:
 //! `C,recv_ms,slot,mint,creator,0,0,0,0,0`
 //! `T,recv_ms,slot,mint,user,is_buy,sol_lamports,token_amount,vsol,vtok`
-//!
-//! Enabled with `SOLBOT_RECORD_TRADES=true`. Never blocks the caller: rows are
-//! handed to a background writer thread over an unbounded channel.
 
 use base64::Engine;
+use dashmap::DashMap;
 use solana_pubkey::Pubkey;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::Write;
+use std::str::FromStr;
 use std::sync::mpsc::{channel, Sender};
 use std::sync::{Mutex, OnceLock};
 
 const CREATE_DISC: [u8; 8] = [27, 114, 169, 77, 222, 235, 99, 118];
 const TRADE_DISC: [u8; 8] = [189, 219, 127, 211, 78, 230, 97, 238];
+const MAYHEM_BOT_STR: &str = "BwWK17cbHxwWBKZkUYvzxLcNQ1YVyaFezduWbtm2de6s";
+const INIT_VSOL_LAMPORTS: u64 = 30_000_000_000;
+const K0_INVARIANT: f64 = 30_000_000_000.0 * 1_073_000_000_000_000.0;
+
+#[derive(Debug, Clone)]
+pub struct MintFlowSnapshot {
+    pub mint: String,
+    pub pool: String,
+    pub creator: Pubkey,
+    pub creator_launch_num: u32,
+    pub age_secs: f64,
+    pub unique_buyers: usize,
+    pub n_buys: u32,
+    pub n_sells: u32,
+    pub sell_ratio: f64,
+    pub creator_sold: bool,
+    pub mayhem_or_nonstd: bool,
+    pub real_sol: f64,
+    pub peak_real_sol: f64,
+    pub drawdown_pct: f64,
+    pub inflow_win_sol: f64,
+    pub latest_vsol: u64,
+    pub latest_vtok: u64,
+    pub last_slot: u64,
+}
+
+struct MintFlowState {
+    mint: String,
+    pool: String,
+    creator: Pubkey,
+    creator_launch_num: u32,
+    born_ms: i64,
+    last_slot: u64,
+    buyers: HashSet<Pubkey>,
+    n_buys: u32,
+    n_sells: u32,
+    creator_sold: bool,
+    mayhem_or_nonstd: bool,
+    peak_real_sol: f64,
+    latest_real_sol: f64,
+    latest_vsol: u64,
+    latest_vtok: u64,
+    flows: VecDeque<(i64, i64)>,
+    signal_emitted: bool,
+}
+
+struct FlowTracker {
+    mints: DashMap<Pubkey, MintFlowState>,
+    by_str: DashMap<String, MintFlowSnapshot>,
+    creator_launches: DashMap<Pubkey, u32>,
+    ready_signals: Mutex<Vec<MintFlowSnapshot>>,
+    mayhem_pk: Option<Pubkey>,
+}
+
+static FLOW_TRACKER: OnceLock<FlowTracker> = OnceLock::new();
+
+fn flow_tracker() -> &'static FlowTracker {
+    FLOW_TRACKER.get_or_init(|| FlowTracker {
+        mints: DashMap::new(),
+        by_str: DashMap::new(),
+        creator_launches: DashMap::new(),
+        ready_signals: Mutex::new(Vec::new()),
+        mayhem_pk: Pubkey::from_str(MAYHEM_BOT_STR).ok(),
+    })
+}
+
+fn env_f64(key: &str, default: f64) -> f64 {
+    std::env::var(key)
+        .ok()
+        .and_then(|v| v.parse::<f64>().ok())
+        .unwrap_or(default)
+}
+
+fn env_usize(key: &str, default: usize) -> usize {
+    std::env::var(key)
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(default)
+}
+
+fn env_bool(key: &str, default: bool) -> bool {
+    std::env::var(key)
+        .ok()
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(default)
+}
+
+pub fn ws_breakout_trigger_enabled() -> bool {
+    env_bool("SOLBOT_WS_BREAKOUT_TRIGGER", true)
+}
+
+pub fn get_mint_flow_snapshot(mint: &str) -> Option<MintFlowSnapshot> {
+    flow_tracker().by_str.get(mint).map(|r| r.value().clone())
+}
+
+pub fn take_ready_breakout_signals() -> Vec<MintFlowSnapshot> {
+    if let Ok(mut q) = flow_tracker().ready_signals.lock() {
+        std::mem::take(&mut *q)
+    } else {
+        Vec::new()
+    }
+}
 
 struct Recorder {
     tx: Sender<String>,
@@ -120,12 +223,13 @@ fn skip_str(b: &[u8], o: usize) -> Option<usize> {
     Some(o + 4 + len)
 }
 
-/// Feed one raw `logsNotification` JSON text. Cheap no-op when disabled.
+/// Feed one raw `logsNotification` JSON text. Updates in-memory S3 flow tracker and CSV recorder.
 pub fn record_raw(text: &str) {
-    let Some(rec) = recorder() else { return };
     if !text.contains("Program data: ") {
         return;
     }
+    let rec_opt = recorder();
+    let ft = flow_tracker();
     let Ok(v) = serde_json::from_str::<serde_json::Value>(text) else { return };
     let res = &v["params"]["result"];
     let value = &res["value"];
@@ -135,6 +239,17 @@ pub fn record_raw(text: &str) {
     let slot = res["context"]["slot"].as_u64().unwrap_or(0);
     let Some(logs) = value["logs"].as_array() else { return };
     let now_ms = chrono::Utc::now().timestamp_millis();
+
+    let min_age_secs = env_f64("SOLBOT_MIN_POOL_AGE_SECS", 2.0);
+    let max_age_secs = env_f64("SOLBOT_MAX_POOL_AGE_SECS", 90.0);
+    let min_pool_sol = env_f64("SOLBOT_MIN_POOL_SOL", 25.0);
+    let max_pool_sol = env_f64("SOLBOT_MAX_POOL_SOL", 40.0);
+    let min_unique_buyers = env_usize("SOLBOT_MIN_UNIQUE_BUYERS", 20);
+    let inflow_win_ms = (env_f64("SOLBOT_INFLOW_WIN_SECS", 10.0) * 1000.0) as i64;
+    let min_inflow_sol = env_f64("SOLBOT_MIN_INFLOW_SOL", 1.0);
+    let max_dd_pct = env_f64("SOLBOT_MAX_CONFIRM_DROP_PCT", 0.08);
+    let max_sell_ratio = env_f64("SOLBOT_MAX_SELL_RATIO", 0.35);
+    let no_creator_sell = env_bool("SOLBOT_NO_CREATOR_SELL", true);
 
     for l in logs {
         let Some(s) = l.as_str() else { continue };
@@ -162,32 +277,62 @@ pub fn record_raw(text: &str) {
             if !ok {
                 continue;
             }
-            let (Some(mint), Some(user)) = (rd_pk(&bytes, o), rd_pk(&bytes, o + 64)) else {
+            let (Some(mint), Some(pool), Some(user)) =
+                (rd_pk(&bytes, o), rd_pk(&bytes, o + 32), rd_pk(&bytes, o + 64))
+            else {
                 continue;
             };
-            if let Ok(mut born) = rec.born.lock() {
-                born.insert(mint, now_ms);
-                if born.len() > 20_000 {
-                    let w = rec.window_ms;
-                    born.retain(|_, t| now_ms - *t < w);
+
+            let launch_num = {
+                let mut entry = ft.creator_launches.entry(user).or_insert(0);
+                *entry += 1;
+                *entry
+            };
+
+            let mint_str = mint.to_string();
+            let pool_str = pool.to_string();
+            ft.mints.insert(
+                mint,
+                MintFlowState {
+                    mint: mint_str,
+                    pool: pool_str,
+                    creator: user,
+                    creator_launch_num: launch_num,
+                    born_ms: now_ms,
+                    last_slot: slot,
+                    buyers: HashSet::new(),
+                    n_buys: 0,
+                    n_sells: 0,
+                    creator_sold: false,
+                    mayhem_or_nonstd: false,
+                    peak_real_sol: 0.0,
+                    latest_real_sol: 0.0,
+                    latest_vsol: INIT_VSOL_LAMPORTS,
+                    latest_vtok: 1_073_000_000_000_000,
+                    flows: VecDeque::new(),
+                    signal_emitted: false,
+                },
+            );
+            if ft.mints.len() > 8_000 {
+                ft.mints.retain(|_, st| now_ms - st.born_ms < 300_000);
+                ft.by_str.retain(|_, sn| sn.age_secs < 300.0);
+            }
+
+            if let Some(rec) = rec_opt {
+                if let Ok(mut born) = rec.born.lock() {
+                    born.insert(mint, now_ms);
+                    if born.len() > 20_000 {
+                        let w = rec.window_ms;
+                        born.retain(|_, t| now_ms - *t < w);
+                    }
                 }
+                let _ = rec
+                    .tx
+                    .send(format!("C,{now_ms},{slot},{mint},{user},0,0,0,0,0\n"));
             }
-            let _ = rec
-                .tx
-                .send(format!("C,{now_ms},{slot},{mint},{user},0,0,0,0,0\n"));
         } else if disc == TRADE_DISC {
-            // mint, sol_amount, token_amount, is_buy, user, timestamp, vsol, vtok
+            // mint, sol_amount, token_amount, is_buy, user, timestamp, vsol, vtok[, rsol, rtok]
             let Some(mint) = rd_pk(&bytes, 8) else { continue };
-            let tracked = rec
-                .born
-                .lock()
-                .ok()
-                .and_then(|b| b.get(&mint).copied())
-                .map(|t| now_ms - t < rec.window_ms)
-                .unwrap_or(false);
-            if !tracked {
-                continue;
-            }
             let (Some(sol), Some(tok)) = (rd_u64(&bytes, 40), rd_u64(&bytes, 48)) else {
                 continue;
             };
@@ -196,10 +341,120 @@ pub fn record_raw(text: &str) {
             let (Some(vsol), Some(vtok)) = (rd_u64(&bytes, 97), rd_u64(&bytes, 105)) else {
                 continue;
             };
-            let _ = rec.tx.send(format!(
-                "T,{now_ms},{slot},{mint},{user},{},{sol},{tok},{vsol},{vtok}\n",
-                is_buy as u8
-            ));
+
+            if let Some(mut st) = ft.mints.get_mut(&mint) {
+                let age_secs = ((now_ms - st.born_ms).max(0) as f64) / 1000.0;
+                st.last_slot = slot;
+                st.latest_vsol = vsol;
+                st.latest_vtok = vtok;
+
+                let k_now = (vsol as f64) * (vtok as f64);
+                let k_dev = (k_now - K0_INVARIANT).abs() / K0_INVARIANT;
+                if ft.mayhem_pk == Some(user) || k_dev > 0.005 || vsol < INIT_VSOL_LAMPORTS {
+                    st.mayhem_or_nonstd = true;
+                }
+                if let Some(rsol) = rd_u64(&bytes, 113) {
+                    let vbase = vsol.saturating_sub(rsol);
+                    if !(29_950_000_000..=30_050_000_000).contains(&vbase) {
+                        st.mayhem_or_nonstd = true;
+                    }
+                }
+
+                if is_buy {
+                    st.n_buys += 1;
+                    st.buyers.insert(user);
+                } else {
+                    st.n_sells += 1;
+                    if user == st.creator {
+                        st.creator_sold = true;
+                    }
+                }
+
+                let signed = if is_buy { sol as i64 } else { -(sol as i64) };
+                st.flows.push_back((now_ms, signed));
+                while let Some(&(t0, _)) = st.flows.front() {
+                    if t0 < now_ms - inflow_win_ms {
+                        st.flows.pop_front();
+                    } else {
+                        break;
+                    }
+                }
+                let inflow_win_sol =
+                    st.flows.iter().map(|&(_, s)| s as f64).sum::<f64>() / 1_000_000_000.0;
+                let real_sol = (vsol.saturating_sub(INIT_VSOL_LAMPORTS) as f64) / 1_000_000_000.0;
+                st.latest_real_sol = real_sol;
+                if real_sol > st.peak_real_sol {
+                    st.peak_real_sol = real_sol;
+                }
+                let drawdown_pct = if st.peak_real_sol > 0.0 {
+                    (st.peak_real_sol - real_sol) / st.peak_real_sol
+                } else {
+                    0.0
+                };
+                let sell_ratio = if st.n_buys > 0 {
+                    (st.n_sells as f64) / (st.n_buys as f64)
+                } else {
+                    999.0
+                };
+                let unique_buyers = st.buyers.len();
+
+                let snap = MintFlowSnapshot {
+                    mint: st.mint.clone(),
+                    pool: st.pool.clone(),
+                    creator: st.creator,
+                    creator_launch_num: st.creator_launch_num,
+                    age_secs,
+                    unique_buyers,
+                    n_buys: st.n_buys,
+                    n_sells: st.n_sells,
+                    sell_ratio,
+                    creator_sold: st.creator_sold,
+                    mayhem_or_nonstd: st.mayhem_or_nonstd,
+                    real_sol,
+                    peak_real_sol: st.peak_real_sol,
+                    drawdown_pct,
+                    inflow_win_sol,
+                    latest_vsol: vsol,
+                    latest_vtok: vtok,
+                    last_slot: slot,
+                };
+                ft.by_str.insert(st.mint.clone(), snap.clone());
+
+                if !st.signal_emitted
+                    && !st.mayhem_or_nonstd
+                    && st.creator_launch_num == 1
+                    && !(no_creator_sell && st.creator_sold)
+                    && age_secs >= min_age_secs
+                    && age_secs <= max_age_secs
+                    && real_sol >= min_pool_sol
+                    && real_sol <= max_pool_sol
+                    && unique_buyers >= min_unique_buyers
+                    && inflow_win_sol >= min_inflow_sol
+                    && drawdown_pct <= max_dd_pct
+                    && sell_ratio <= max_sell_ratio
+                {
+                    st.signal_emitted = true;
+                    if let Ok(mut q) = ft.ready_signals.lock() {
+                        q.push(snap);
+                    }
+                }
+            }
+
+            if let Some(rec) = rec_opt {
+                let tracked = rec
+                    .born
+                    .lock()
+                    .ok()
+                    .and_then(|b| b.get(&mint).copied())
+                    .map(|t| now_ms - t < rec.window_ms)
+                    .unwrap_or(false);
+                if tracked {
+                    let _ = rec.tx.send(format!(
+                        "T,{now_ms},{slot},{mint},{user},{},{sol},{tok},{vsol},{vtok}\n",
+                        is_buy as u8
+                    ));
+                }
+            }
         }
     }
 }

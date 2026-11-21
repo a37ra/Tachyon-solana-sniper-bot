@@ -150,7 +150,7 @@ fn env_usize_val(key: &str, default: usize) -> usize {
 /// Non-standard curves (~4969 SOL virtual base) confuse SOL-denominated liquidity gates.
 pub fn is_standard_sol_curve(curve: &PumpFunBondingCurve) -> bool {
     let virtual_base = curve.virtual_sol_reserves.saturating_sub(curve.real_sol_reserves);
-    (25_000_000_000..=35_000_000_000).contains(&virtual_base)
+    (29_950_000_000..=30_050_000_000).contains(&virtual_base)
 }
 
 static CONFIRMED_POOL_SOL: std::sync::OnceLock<dashmap::DashMap<String, u64>> =
@@ -203,6 +203,118 @@ async fn check_pump_fun_liquidity(
         u64::MAX
     };
     let min_inflow_lamports = (min_inflow_sol.max(0.0) * 1_000_000_000.0) as u64;
+    let max_sell_ratio = env_f64("SOLBOT_MAX_SELL_RATIO", 0.35);
+    let no_creator_sell = std::env::var("SOLBOT_NO_CREATOR_SELL")
+        .ok()
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(true);
+    let max_deployer_txs =
+        env_usize_val("SOLBOT_MAX_DEPLOYER_RECENT_TXS", DEFAULT_MAX_DEPLOYER_RECENT_TXS);
+
+    // Fast path: S3 WebSocket TradeEvent crowd-breakout flow tracker already confirmed
+    // unique_buyers, real_sol, inflow_win, drawdown, sell_ratio, and no_creator_sell.
+    if let Some(snap) = crate::signal::trade_recorder::get_mint_flow_snapshot(&signal.mint) {
+        if snap.mayhem_or_nonstd {
+            return CheckResult {
+                passed: false,
+                reason: Some("Mayhem / non-standard dynamic virtual reserve curve".to_string()),
+                duration_ms: start.elapsed().as_millis() as u64,
+            };
+        }
+        if snap.creator_launch_num > 1 {
+            return CheckResult {
+                passed: false,
+                reason: Some(format!(
+                    "Repeat session creator: launch #{} by {}",
+                    snap.creator_launch_num, snap.creator
+                )),
+                duration_ms: start.elapsed().as_millis() as u64,
+            };
+        }
+        if no_creator_sell && snap.creator_sold {
+            return CheckResult {
+                passed: false,
+                reason: Some("Creator already sold tokens before entry".to_string()),
+                duration_ms: start.elapsed().as_millis() as u64,
+            };
+        }
+        if snap.unique_buyers >= min_unique_buyers
+            && snap.real_sol >= min_pool_sol
+            && snap.real_sol <= max_pool_sol
+            && snap.inflow_win_sol >= min_inflow_sol
+            && snap.drawdown_pct <= max_confirm_drop_pct
+            && snap.sell_ratio <= max_sell_ratio
+        {
+            if let Some(reason) = check_cached_serial_deployer(&snap.creator) {
+                return CheckResult {
+                    passed: false,
+                    reason: Some(reason),
+                    duration_ms: start.elapsed().as_millis() as u64,
+                };
+            }
+            if let Err(reason) =
+                verify_deployer_reputation(rpc, &snap.creator, max_deployer_txs, 6 * 3600).await
+            {
+                return CheckResult {
+                    passed: false,
+                    reason: Some(reason),
+                    duration_ms: start.elapsed().as_millis() as u64,
+                };
+            }
+            let curve_data = match context.pool_data.clone() {
+                Some(d) => Some(d),
+                None => rpc.get_account(pool_pk).await.ok().map(|a| a.data),
+            };
+            if let Some(ref data) = curve_data {
+                if let Ok(curve) = PumpFunBondingCurve::from_account_data(data, pool_pk, mint_pk) {
+                    if curve.complete || !is_standard_sol_curve(&curve) {
+                        return CheckResult {
+                            passed: false,
+                            reason: Some("Pool completed or non-standard on-chain".to_string()),
+                            duration_ms: start.elapsed().as_millis() as u64,
+                        };
+                    }
+                    if curve.real_sol_reserves > max_lamports.saturating_mul(105) / 100 {
+                        return CheckResult {
+                            passed: false,
+                            reason: Some(format!(
+                                "Pool overheated on-chain: {:.2} > {:.2} SOL",
+                                curve.real_sol_reserves as f64 / 1e9,
+                                max_pool_sol
+                            )),
+                            duration_ms: start.elapsed().as_millis() as u64,
+                        };
+                    }
+                    if curve.real_sol_reserves < min_lamports.saturating_mul(92) / 100 {
+                        return CheckResult {
+                            passed: false,
+                            reason: Some(format!(
+                                "Pool dumped on-chain before entry: {:.2} < {:.2} SOL",
+                                curve.real_sol_reserves as f64 / 1e9,
+                                min_pool_sol * 0.92
+                            )),
+                            duration_ms: start.elapsed().as_millis() as u64,
+                        };
+                    }
+                    record_confirmed_pool_sol(&signal.pool_address, curve.real_sol_reserves);
+                    tracing::info!(
+                        mint = %signal.mint,
+                        real_sol = curve.real_sol_reserves as f64 / 1e9,
+                        buyers = snap.unique_buyers,
+                        sell_ratio = snap.sell_ratio,
+                        inflow_win_sol = snap.inflow_win_sol,
+                        age_secs = snap.age_secs,
+                        "S3 crowd-breakout confirmed on-chain"
+                    );
+                    return CheckResult {
+                        passed: true,
+                        reason: None,
+                        duration_ms: start.elapsed().as_millis() as u64,
+                    };
+                }
+            }
+        }
+    }
 
     // 0. Capture initial curve snapshot (from WS context or single RPC fetch) and reject non-standard,
     //    already-graduated, or overheated initial bundles BEFORE waiting in polling loops.
