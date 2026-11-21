@@ -1,18 +1,17 @@
-//! Passive Pump.fun trade recorder + real-time S3 crowd-breakout flow tracker.
+//! Passive Pump.fun trade recorder + real-time S4 anti-sybil crowd-breakout flow tracker.
 //!
-//! Taps the already-open `logsSubscribe` stream (zero extra RPC credits),
-//! decodes Pump.fun `CreateEvent` / `TradeEvent` from `Program data:` logs,
-//! appends compact CSV rows to `logs/trades/YYYY-MM-DD-HH.csv` when
-//! `SOLBOT_RECORD_TRADES=true`, and tracks per-mint crowd flow in memory:
-//! - unique buyer wallets (`buyers.len()`)
-//! - buy / sell counts & `sell_ratio = n_sells / n_buys`
+//! Taps the already-open `logsSubscribe` stream (zero extra RPC credits, and zero Helius
+//! credits when `HELIUS_WS_URL=wss://api.mainnet-beta.solana.com`), decodes Pump.fun
+//! `CreateEvent` / `TradeEvent` from `Program data:` logs, appends compact CSV rows to
+//! `logs/trades/YYYY-MM-DD-HH.csv` when `SOLBOT_RECORD_TRADES=true`, and tracks per-mint
+//! anti-sybil crowd flow in memory:
+//! - `slot0_sol`: max real SOL accumulated in `slot <= birth_slot + 1` (Jito creation bundle)
+//! - `organic_sol = real_sol - slot0_sol`: genuine post-creation SOL inflow
+//! - `organic_buyers`: distinct wallets buying `>= 0.05 SOL` AFTER `slot > birth_slot + 1`
+//!   (filters out both creation-slot bundle sybils and `0.01 SOL` dust-spam bots)
+//! - `organic_sell_ratio = organic_sells / organic_buys`
 //! - `creator_sold` flag & repeat creator session launch count
 //! - pure standard curve invariant (`k = 30e9 * 1.073e15`, no Mayhem `BwWK17cb...` virtual-reserve mutation)
-//! - rolling inflow window (`inflow_win_sol`) and peak real SOL drawdown (`drawdown_pct`)
-//!
-//! Row formats:
-//! `C,recv_ms,slot,mint,creator,0,0,0,0,0`
-//! `T,recv_ms,slot,mint,user,is_buy,sol_lamports,token_amount,vsol,vtok`
 
 use base64::Engine;
 use dashmap::DashMap;
@@ -28,6 +27,7 @@ const TRADE_DISC: [u8; 8] = [189, 219, 127, 211, 78, 230, 97, 238];
 const MAYHEM_BOT_STR: &str = "BwWK17cbHxwWBKZkUYvzxLcNQ1YVyaFezduWbtm2de6s";
 const INIT_VSOL_LAMPORTS: u64 = 30_000_000_000;
 const K0_INVARIANT: f64 = 30_000_000_000.0 * 1_073_000_000_000_000.0;
+const MIN_ORGANIC_BUY_LAMPORTS: u64 = 50_000_000; // 0.05 SOL minimum to count as a real buyer (ignores 0.01 SOL dust bots)
 
 #[derive(Debug, Clone)]
 pub struct MintFlowSnapshot {
@@ -37,18 +37,24 @@ pub struct MintFlowSnapshot {
     pub creator_launch_num: u32,
     pub age_secs: f64,
     pub unique_buyers: usize,
+    pub organic_buyers: usize,
     pub n_buys: u32,
     pub n_sells: u32,
     pub sell_ratio: f64,
+    pub organic_sell_ratio: f64,
     pub creator_sold: bool,
     pub mayhem_or_nonstd: bool,
+    pub slot0_sol: f64,
+    pub organic_sol: f64,
     pub real_sol: f64,
     pub peak_real_sol: f64,
     pub drawdown_pct: f64,
     pub inflow_win_sol: f64,
     pub latest_vsol: u64,
     pub latest_vtok: u64,
+    pub spot_price_sol: f64,
     pub last_slot: u64,
+    pub last_update_ms: i64,
 }
 
 struct MintFlowState {
@@ -57,12 +63,18 @@ struct MintFlowState {
     creator: Pubkey,
     creator_launch_num: u32,
     born_ms: i64,
+    birth_slot: u64,
     last_slot: u64,
+    last_update_ms: i64,
     buyers: HashSet<Pubkey>,
+    organic_buyers: HashSet<Pubkey>,
     n_buys: u32,
     n_sells: u32,
+    organic_buys: u32,
+    organic_sells: u32,
     creator_sold: bool,
     mayhem_or_nonstd: bool,
+    slot0_sol: f64,
     peak_real_sol: f64,
     latest_real_sol: f64,
     latest_vsol: u64,
@@ -223,7 +235,7 @@ fn skip_str(b: &[u8], o: usize) -> Option<usize> {
     Some(o + 4 + len)
 }
 
-/// Feed one raw `logsNotification` JSON text. Updates in-memory S3 flow tracker and CSV recorder.
+/// Feed one raw `logsNotification` JSON text. Updates in-memory S4 flow tracker and CSV recorder.
 pub fn record_raw(text: &str) {
     if !text.contains("Program data: ") {
         return;
@@ -240,15 +252,17 @@ pub fn record_raw(text: &str) {
     let Some(logs) = value["logs"].as_array() else { return };
     let now_ms = chrono::Utc::now().timestamp_millis();
 
-    let min_age_secs = env_f64("SOLBOT_MIN_POOL_AGE_SECS", 2.0);
+    let min_age_secs = env_f64("SOLBOT_MIN_POOL_AGE_SECS", 5.0);
     let max_age_secs = env_f64("SOLBOT_MAX_POOL_AGE_SECS", 90.0);
-    let min_pool_sol = env_f64("SOLBOT_MIN_POOL_SOL", 25.0);
+    let min_pool_sol = env_f64("SOLBOT_MIN_POOL_SOL", 24.0);
     let max_pool_sol = env_f64("SOLBOT_MAX_POOL_SOL", 40.0);
-    let min_unique_buyers = env_usize("SOLBOT_MIN_UNIQUE_BUYERS", 20);
+    let max_slot0_sol = env_f64("SOLBOT_MAX_INITIAL_POOL_SOL", 19.0);
+    let min_organic_sol = env_f64("SOLBOT_MIN_ORGANIC_SOL", 9.0);
+    let min_unique_buyers = env_usize("SOLBOT_MIN_UNIQUE_BUYERS", 18);
     let inflow_win_ms = (env_f64("SOLBOT_INFLOW_WIN_SECS", 10.0) * 1000.0) as i64;
-    let min_inflow_sol = env_f64("SOLBOT_MIN_INFLOW_SOL", 1.0);
+    let min_inflow_sol = env_f64("SOLBOT_MIN_INFLOW_SOL", 1.5);
     let max_dd_pct = env_f64("SOLBOT_MAX_CONFIRM_DROP_PCT", 0.08);
-    let max_sell_ratio = env_f64("SOLBOT_MAX_SELL_RATIO", 0.35);
+    let max_sell_ratio = env_f64("SOLBOT_MAX_SELL_RATIO", 0.30);
     let no_creator_sell = env_bool("SOLBOT_NO_CREATOR_SELL", true);
 
     for l in logs {
@@ -299,12 +313,18 @@ pub fn record_raw(text: &str) {
                     creator: user,
                     creator_launch_num: launch_num,
                     born_ms: now_ms,
+                    birth_slot: slot,
                     last_slot: slot,
+                    last_update_ms: now_ms,
                     buyers: HashSet::new(),
+                    organic_buyers: HashSet::new(),
                     n_buys: 0,
                     n_sells: 0,
+                    organic_buys: 0,
+                    organic_sells: 0,
                     creator_sold: false,
                     mayhem_or_nonstd: false,
+                    slot0_sol: 0.0,
                     peak_real_sol: 0.0,
                     latest_real_sol: 0.0,
                     latest_vsol: INIT_VSOL_LAMPORTS,
@@ -315,7 +335,7 @@ pub fn record_raw(text: &str) {
             );
             if ft.mints.len() > 8_000 {
                 ft.mints.retain(|_, st| now_ms - st.born_ms < 300_000);
-                ft.by_str.retain(|_, sn| sn.age_secs < 300.0);
+                ft.by_str.retain(|_, sn| now_ms - sn.last_update_ms < 300_000);
             }
 
             if let Some(rec) = rec_opt {
@@ -345,6 +365,7 @@ pub fn record_raw(text: &str) {
             if let Some(mut st) = ft.mints.get_mut(&mint) {
                 let age_secs = ((now_ms - st.born_ms).max(0) as f64) / 1000.0;
                 st.last_slot = slot;
+                st.last_update_ms = now_ms;
                 st.latest_vsol = vsol;
                 st.latest_vtok = vtok;
 
@@ -360,18 +381,43 @@ pub fn record_raw(text: &str) {
                     }
                 }
 
+                let real_sol = (vsol.saturating_sub(INIT_VSOL_LAMPORTS) as f64) / 1_000_000_000.0;
+                st.latest_real_sol = real_sol;
+                if real_sol > st.peak_real_sol {
+                    st.peak_real_sol = real_sol;
+                }
+
+                let is_bundle_slot = slot <= st.birth_slot.saturating_add(1);
+                if is_bundle_slot {
+                    if real_sol > st.slot0_sol {
+                        st.slot0_sol = real_sol;
+                    }
+                    if !is_buy && user == st.creator {
+                        st.creator_sold = true;
+                    }
+                } else {
+                    if is_buy {
+                        if sol >= MIN_ORGANIC_BUY_LAMPORTS {
+                            st.organic_buyers.insert(user);
+                            st.organic_buys += 1;
+                        }
+                    } else {
+                        st.organic_sells += 1;
+                        if user == st.creator {
+                            st.creator_sold = true;
+                        }
+                    }
+                    let signed = if is_buy { sol as i64 } else { -(sol as i64) };
+                    st.flows.push_back((now_ms, signed));
+                }
+
                 if is_buy {
                     st.n_buys += 1;
                     st.buyers.insert(user);
                 } else {
                     st.n_sells += 1;
-                    if user == st.creator {
-                        st.creator_sold = true;
-                    }
                 }
 
-                let signed = if is_buy { sol as i64 } else { -(sol as i64) };
-                st.flows.push_back((now_ms, signed));
                 while let Some(&(t0, _)) = st.flows.front() {
                     if t0 < now_ms - inflow_win_ms {
                         st.flows.pop_front();
@@ -381,11 +427,7 @@ pub fn record_raw(text: &str) {
                 }
                 let inflow_win_sol =
                     st.flows.iter().map(|&(_, s)| s as f64).sum::<f64>() / 1_000_000_000.0;
-                let real_sol = (vsol.saturating_sub(INIT_VSOL_LAMPORTS) as f64) / 1_000_000_000.0;
-                st.latest_real_sol = real_sol;
-                if real_sol > st.peak_real_sol {
-                    st.peak_real_sol = real_sol;
-                }
+                let organic_sol = (real_sol - st.slot0_sol).max(0.0);
                 let drawdown_pct = if st.peak_real_sol > 0.0 {
                     (st.peak_real_sol - real_sol) / st.peak_real_sol
                 } else {
@@ -396,7 +438,18 @@ pub fn record_raw(text: &str) {
                 } else {
                     999.0
                 };
+                let organic_sell_ratio = if st.organic_buys > 0 {
+                    (st.organic_sells as f64) / (st.organic_buys as f64)
+                } else {
+                    999.0
+                };
                 let unique_buyers = st.buyers.len();
+                let organic_buyers = st.organic_buyers.len();
+                let spot_price_sol = if vtok > 0 {
+                    (vsol as f64 / 1_000_000_000.0) / (vtok as f64 / 1_000_000.0)
+                } else {
+                    0.0
+                };
 
                 let snap = MintFlowSnapshot {
                     mint: st.mint.clone(),
@@ -405,18 +458,24 @@ pub fn record_raw(text: &str) {
                     creator_launch_num: st.creator_launch_num,
                     age_secs,
                     unique_buyers,
+                    organic_buyers,
                     n_buys: st.n_buys,
                     n_sells: st.n_sells,
                     sell_ratio,
+                    organic_sell_ratio,
                     creator_sold: st.creator_sold,
                     mayhem_or_nonstd: st.mayhem_or_nonstd,
+                    slot0_sol: st.slot0_sol,
+                    organic_sol,
                     real_sol,
                     peak_real_sol: st.peak_real_sol,
                     drawdown_pct,
                     inflow_win_sol,
                     latest_vsol: vsol,
                     latest_vtok: vtok,
+                    spot_price_sol,
                     last_slot: slot,
+                    last_update_ms: now_ms,
                 };
                 ft.by_str.insert(st.mint.clone(), snap.clone());
 
@@ -424,14 +483,17 @@ pub fn record_raw(text: &str) {
                     && !st.mayhem_or_nonstd
                     && st.creator_launch_num == 1
                     && !(no_creator_sell && st.creator_sold)
+                    && !is_bundle_slot
+                    && st.slot0_sol <= max_slot0_sol
+                    && organic_sol >= min_organic_sol
                     && age_secs >= min_age_secs
                     && age_secs <= max_age_secs
                     && real_sol >= min_pool_sol
                     && real_sol <= max_pool_sol
-                    && unique_buyers >= min_unique_buyers
+                    && organic_buyers >= min_unique_buyers
                     && inflow_win_sol >= min_inflow_sol
                     && drawdown_pct <= max_dd_pct
-                    && sell_ratio <= max_sell_ratio
+                    && organic_sell_ratio <= max_sell_ratio
                 {
                     st.signal_emitted = true;
                     if let Ok(mut q) = ft.ready_signals.lock() {

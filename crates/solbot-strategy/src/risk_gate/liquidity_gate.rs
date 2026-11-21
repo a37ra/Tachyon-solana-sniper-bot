@@ -203,7 +203,8 @@ async fn check_pump_fun_liquidity(
         u64::MAX
     };
     let min_inflow_lamports = (min_inflow_sol.max(0.0) * 1_000_000_000.0) as u64;
-    let max_sell_ratio = env_f64("SOLBOT_MAX_SELL_RATIO", 0.35);
+    let min_organic_sol = env_f64("SOLBOT_MIN_ORGANIC_SOL", 9.0);
+    let max_sell_ratio = env_f64("SOLBOT_MAX_SELL_RATIO", 0.30);
     let no_creator_sell = std::env::var("SOLBOT_NO_CREATOR_SELL")
         .ok()
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
@@ -211,8 +212,9 @@ async fn check_pump_fun_liquidity(
     let max_deployer_txs =
         env_usize_val("SOLBOT_MAX_DEPLOYER_RECENT_TXS", DEFAULT_MAX_DEPLOYER_RECENT_TXS);
 
-    // Fast path: S3 WebSocket TradeEvent crowd-breakout flow tracker already confirmed
-    // unique_buyers, real_sol, inflow_win, drawdown, sell_ratio, and no_creator_sell.
+    // Fast path: S4 WebSocket TradeEvent anti-sybil crowd-breakout flow tracker already confirmed
+    // slot0_sol, organic_sol, organic_buyers (>=0.05 SOL post-slot0), inflow_win, drawdown,
+    // organic_sell_ratio, and no_creator_sell.
     if let Some(snap) = crate::signal::trade_recorder::get_mint_flow_snapshot(&signal.mint) {
         if snap.mayhem_or_nonstd {
             return CheckResult {
@@ -238,12 +240,23 @@ async fn check_pump_fun_liquidity(
                 duration_ms: start.elapsed().as_millis() as u64,
             };
         }
-        if snap.unique_buyers >= min_unique_buyers
+        if max_initial_pool_sol > 0.0 && snap.slot0_sol > max_initial_pool_sol {
+            return CheckResult {
+                passed: false,
+                reason: Some(format!(
+                    "Jito creation-slot bundle too large: {:.2} SOL > max {:.2} SOL",
+                    snap.slot0_sol, max_initial_pool_sol
+                )),
+                duration_ms: start.elapsed().as_millis() as u64,
+            };
+        }
+        if snap.organic_buyers >= min_unique_buyers
+            && snap.organic_sol >= min_organic_sol
             && snap.real_sol >= min_pool_sol
             && snap.real_sol <= max_pool_sol
             && snap.inflow_win_sol >= min_inflow_sol
             && snap.drawdown_pct <= max_confirm_drop_pct
-            && snap.sell_ratio <= max_sell_ratio
+            && snap.organic_sell_ratio <= max_sell_ratio
         {
             if let Some(reason) = check_cached_serial_deployer(&snap.creator) {
                 return CheckResult {

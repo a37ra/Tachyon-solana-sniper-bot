@@ -60,13 +60,24 @@ pub async fn subscribe_create_ix_signals(
 
     tokio::spawn(async move {
         let mut attempts = 0u32;
+        let fallback_ws = std::env::var("SOLBOT_FALLBACK_WS_URL").ok();
         loop {
-            match run_logs_loop(&ws_url, &program_ids, rpc.clone(), &tx, &seen).await {
+            let active_ws = if attempts >= 2 {
+                fallback_ws.as_deref().unwrap_or(&ws_url)
+            } else {
+                &ws_url
+            };
+            let t0 = std::time::Instant::now();
+            match run_logs_loop(active_ws, &program_ids, rpc.clone(), &tx, &seen).await {
                 Ok(()) => return,
                 Err(e) => {
-                    attempts = attempts.saturating_add(1);
-                    let backoff = Duration::from_secs((1u64 << attempts.min(5)).min(60));
-                    error!(error = %e, attempt = attempts, ?backoff, "create-ix WS reconnect");
+                    if t0.elapsed() > Duration::from_secs(60) {
+                        attempts = 0;
+                    } else {
+                        attempts = attempts.saturating_add(1);
+                    }
+                    let backoff = Duration::from_secs((1u64 << attempts.min(4)).min(16));
+                    error!(error = %e, attempt = attempts, ws = active_ws, ?backoff, "create-ix WS reconnect");
                     sleep(backoff).await;
                 }
             }
@@ -299,11 +310,13 @@ async fn run_logs_loop(
                                     mint = %signal.mint,
                                     pool = %signal.pool_address,
                                     real_sol = snap.real_sol,
-                                    buyers = snap.unique_buyers,
-                                    sell_ratio = snap.sell_ratio,
+                                    slot0_sol = snap.slot0_sol,
+                                    organic_sol = snap.organic_sol,
+                                    organic_buyers = snap.organic_buyers,
+                                    organic_sr = snap.organic_sell_ratio,
                                     age_secs = snap.age_secs,
                                     has_raw_pool = signal.raw_pool_account_data.is_some(),
-                                    "S3 WS crowd-breakout signal"
+                                    "S4 WS anti-sybil crowd-breakout signal"
                                 );
                                 if tx.send(signal).await.is_err() {
                                     return Ok(());
