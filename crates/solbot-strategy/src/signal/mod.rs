@@ -8,4 +8,5 @@ pub mod logs_parser;
 pub mod pipeline_stats;
 pub mod pool_signal;
 pub mod signal_validator;
+pub mod trade_recorder;
 pub mod ws_listener;

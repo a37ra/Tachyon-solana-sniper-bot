@@ -265,6 +265,7 @@ async fn run_logs_loop(
                 last_ws_msg = std::time::Instant::now();
                 match msg {
                     Some(Ok(Message::Text(text))) => {
+                        crate::signal::trade_recorder::record_raw(&text);
                         if !min_signal_gap.is_zero() && last_signal_emitted.elapsed() < min_signal_gap {
                             continue;
                         }
