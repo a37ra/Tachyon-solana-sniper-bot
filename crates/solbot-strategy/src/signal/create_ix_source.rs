@@ -60,9 +60,11 @@ pub async fn subscribe_create_ix_signals(
 
     tokio::spawn(async move {
         let mut attempts = 0u32;
-        let fallback_ws = std::env::var("SOLBOT_FALLBACK_WS_URL").ok();
+        let fallback_ws = std::env::var("SOLBOT_FALLBACK_WS_URL")
+            .ok()
+            .filter(|s| !s.trim().is_empty());
         loop {
-            let active_ws = if attempts >= 2 {
+            let active_ws = if attempts >= 5 {
                 fallback_ws.as_deref().unwrap_or(&ws_url)
             } else {
                 &ws_url
@@ -71,14 +73,16 @@ pub async fn subscribe_create_ix_signals(
             match run_logs_loop(active_ws, &program_ids, rpc.clone(), &tx, &seen).await {
                 Ok(()) => return,
                 Err(e) => {
-                    if t0.elapsed() > Duration::from_secs(60) {
+                    if t0.elapsed() >= Duration::from_secs(10) {
                         attempts = 0;
+                        debug!(error = %e, ws = active_ws, elapsed_s = t0.elapsed().as_secs(), "Public WS session rotated — fast reconnecting");
+                        sleep(Duration::from_millis(150)).await;
                     } else {
                         attempts = attempts.saturating_add(1);
+                        let backoff = Duration::from_secs((1u64 << attempts.min(4)).min(16));
+                        error!(error = %e, attempt = attempts, ws = active_ws, ?backoff, "create-ix WS reconnect");
+                        sleep(backoff).await;
                     }
-                    let backoff = Duration::from_secs((1u64 << attempts.min(4)).min(16));
-                    error!(error = %e, attempt = attempts, ws = active_ws, ?backoff, "create-ix WS reconnect");
-                    sleep(backoff).await;
                 }
             }
         }
