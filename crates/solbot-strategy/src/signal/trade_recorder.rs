@@ -297,6 +297,10 @@ pub fn record_raw(text: &str) {
                 continue;
             };
 
+            if ft.mints.contains_key(&mint) {
+                continue;
+            }
+
             let launch_num = {
                 let mut entry = ft.creator_launches.entry(user).or_insert(0);
                 *entry += 1;
@@ -363,6 +367,9 @@ pub fn record_raw(text: &str) {
             };
 
             if let Some(mut st) = ft.mints.get_mut(&mint) {
+                if st.latest_vsol == vsol && st.latest_vtok == vtok {
+                    continue;
+                }
                 let age_secs = ((now_ms - st.born_ms).max(0) as f64) / 1000.0;
                 st.last_slot = slot;
                 st.last_update_ms = now_ms;
@@ -373,12 +380,6 @@ pub fn record_raw(text: &str) {
                 let k_dev = (k_now - K0_INVARIANT).abs() / K0_INVARIANT;
                 if ft.mayhem_pk == Some(user) || k_dev > 0.005 || vsol < INIT_VSOL_LAMPORTS {
                     st.mayhem_or_nonstd = true;
-                }
-                if let Some(rsol) = rd_u64(&bytes, 113) {
-                    let vbase = vsol.saturating_sub(rsol);
-                    if !(29_950_000_000..=30_050_000_000).contains(&vbase) {
-                        st.mayhem_or_nonstd = true;
-                    }
                 }
 
                 let real_sol = (vsol.saturating_sub(INIT_VSOL_LAMPORTS) as f64) / 1_000_000_000.0;
