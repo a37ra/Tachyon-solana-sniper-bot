@@ -56,6 +56,7 @@ fn recorder() -> Option<&'static Recorder> {
                     let mut cur_name = String::new();
                     let mut file: Option<std::io::BufWriter<std::fs::File>> = None;
                     let mut since_flush = 0usize;
+                    let mut last_flush = std::time::Instant::now();
                     loop {
                         let row = match rx.recv_timeout(std::time::Duration::from_secs(2)) {
                             Ok(r) => Some(r),
@@ -83,7 +84,8 @@ fn recorder() -> Option<&'static Recorder> {
                                 since_flush += 1;
                             }
                         }
-                        if !got_row || since_flush >= 500 {
+                        if !got_row || since_flush >= 500 || last_flush.elapsed().as_secs() >= 2 {
+                            last_flush = std::time::Instant::now();
                             if let Some(f) = file.as_mut() {
                                 let _ = f.flush();
                             }
