@@ -346,35 +346,69 @@ async fn handle_telegram_command(cmd: &str, pool: Option<&SqlitePool>) -> Option
             let Some(p) = pool else {
                 return Some("⚠️ База данных SQLite не подключена.".to_string());
             };
-            let total_pnl: f64 = sqlx::query_scalar(
-                "SELECT COALESCE(SUM(realized_pnl_net_sol), 0.0) FROM positions WHERE status = 'closed'",
+            let s4_pnl: f64 = sqlx::query_scalar(
+                "SELECT COALESCE(SUM(realized_pnl_net_sol), 0.0) FROM positions WHERE status = 'closed' AND opened_at_utc >= 1795284120",
             )
             .fetch_one(p)
             .await
             .unwrap_or(0.0);
-            let wins: i64 = sqlx::query_scalar(
-                "SELECT COUNT(*) FROM positions WHERE status = 'closed' AND realized_pnl_net_sol > 0.0",
+            let s4_wins: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM positions WHERE status = 'closed' AND opened_at_utc >= 1795284120 AND realized_pnl_net_sol > 0.0",
             )
             .fetch_one(p)
             .await
             .unwrap_or(0);
-            let total_closed: i64 = sqlx::query_scalar(
-                "SELECT COUNT(*) FROM positions WHERE status = 'closed'",
+            let s4_closed: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM positions WHERE status = 'closed' AND opened_at_utc >= 1795284120",
             )
             .fetch_one(p)
             .await
             .unwrap_or(0);
-            let winrate = if total_closed > 0 {
-                (wins as f64 / total_closed as f64) * 100.0
+            let s4_wr = if s4_closed > 0 {
+                (s4_wins as f64 / s4_closed as f64) * 100.0
             } else {
                 0.0
             };
+
+            let mut s5_line = String::new();
+            if let Ok(p5) = SqlitePool::connect("sqlite:/home/azureuser/solanabot-s5/solbot_s5.db?mode=ro").await {
+                let s5_pnl: f64 = sqlx::query_scalar(
+                    "SELECT COALESCE(SUM(realized_pnl_net_sol), 0.0) FROM positions WHERE status = 'closed'",
+                )
+                .fetch_one(&p5)
+                .await
+                .unwrap_or(0.0);
+                let s5_wins: i64 = sqlx::query_scalar(
+                    "SELECT COUNT(*) FROM positions WHERE status = 'closed' AND realized_pnl_net_sol > 0.0",
+                )
+                .fetch_one(&p5)
+                .await
+                .unwrap_or(0);
+                let s5_closed: i64 = sqlx::query_scalar(
+                    "SELECT COUNT(*) FROM positions WHERE status = 'closed'",
+                )
+                .fetch_one(&p5)
+                .await
+                .unwrap_or(0);
+                let s5_wr = if s5_closed > 0 {
+                    (s5_wins as f64 / s5_closed as f64) * 100.0
+                } else {
+                    0.0
+                };
+                s5_line = format!(
+                    "\n\n🤖 Бот #2 (S5 Anti-Whale Crowd):\n\
+                     • Чистый PnL: {:+.4} SOL\n\
+                     • Сделок: {} (WR: {:.1}%, {} побед)",
+                    s5_pnl, s5_closed, s5_wr, s5_wins
+                );
+            }
+
             Some(format!(
-                "💰 Сводка PnL:\n\
-                 • Чистый PnL: {:+.6} SOL\n\
-                 • Закрыто сделок: {}\n\
-                 • Winrate: {:.1}% ({} побед)",
-                total_pnl, total_closed, winrate, wins
+                "💰 Сводка A/B теста стратегий:\n\n\
+                 🤖 Бот #1 (S4.1 Crowd Breakout):\n\
+                 • Чистый PnL: {:+.4} SOL\n\
+                 • Сделок: {} (WR: {:.1}%, {} побед){}",
+                s4_pnl, s4_closed, s4_wr, s4_wins, s5_line
             ))
         }
         "/kill_switch" => {

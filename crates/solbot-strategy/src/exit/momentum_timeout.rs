@@ -64,6 +64,34 @@ pub fn evaluate_momentum(position: &Position, current_price: f64) -> Option<Exit
         .unwrap_or(current_price)
         .max(current_price);
 
+    // Pre-graduation bonding curve ceiling guard: on a standard 30-SOL Pump.fun curve
+    // (k = 30e9 * 1.073e15), real_sol = 77.7 SOL corresponds to spot price 3.60e-7 SOL/token
+    // (85 SOL migration freeze is at 4.11e-7). Always close 100% before curve.complete freezes swaps.
+    if position.entry_price_sol < 3.0e-7
+        && current_price >= 3.60e-7
+        && matches!(
+            position.status,
+            PositionStatus::Open
+                | PositionStatus::Opening
+                | PositionStatus::Tp1Filled
+                | PositionStatus::Tp2Filled
+                | PositionStatus::Tp3Filled
+        )
+    {
+        let peak_multiplier = peak_price / position.entry_price_sol;
+        tracing::info!(
+            position_id = %position.position_id,
+            elapsed_secs,
+            peak_multiplier,
+            current_price,
+            "Pre-graduation ceiling (~78 SOL) reached — exiting before 85 SOL curve freeze"
+        );
+        return Some(ExitAction::MomentumTimeout {
+            elapsed_secs,
+            peak_multiplier,
+        });
+    }
+
     let max_hold_secs = get_max_hold_secs();
     if max_hold_secs > 0
         && elapsed_secs >= max_hold_secs

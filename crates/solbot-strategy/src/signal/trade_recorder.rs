@@ -46,6 +46,9 @@ pub struct MintFlowSnapshot {
     pub mayhem_or_nonstd: bool,
     pub slot0_sol: f64,
     pub organic_sol: f64,
+    pub max_single_org_buy_sol: f64,
+    pub max_wallet_cum_sol: f64,
+    pub max_slot_inflow_sol: f64,
     pub real_sol: f64,
     pub peak_real_sol: f64,
     pub drawdown_pct: f64,
@@ -77,6 +80,12 @@ struct MintFlowState {
     creator_sold: bool,
     mayhem_or_nonstd: bool,
     slot0_sol: f64,
+    max_single_org_buy_sol: f64,
+    wallet_cum_sol: HashMap<Pubkey, f64>,
+    max_wallet_cum_sol: f64,
+    cur_inflow_slot: u64,
+    cur_slot_inflow_sol: f64,
+    max_slot_inflow_sol: f64,
     peak_real_sol: f64,
     latest_real_sol: f64,
     latest_vsol: u64,
@@ -266,6 +275,9 @@ pub fn record_raw(text: &str) {
     let max_dd_pct = env_f64("SOLBOT_MAX_CONFIRM_DROP_PCT", 0.08);
     let max_sell_ratio = env_f64("SOLBOT_MAX_SELL_RATIO", 0.30);
     let no_creator_sell = env_bool("SOLBOT_NO_CREATOR_SELL", true);
+    let max_single_buy_sol = env_f64("SOLBOT_MAX_SINGLE_BUY_SOL", 0.0);
+    let max_wallet_cum_limit = env_f64("SOLBOT_MAX_WALLET_CUM_SOL", 0.0);
+    let max_slot_inflow_limit = env_f64("SOLBOT_MAX_SLOT_INFLOW_SOL", 0.0);
 
     for l in logs {
         let Some(s) = l.as_str() else { continue };
@@ -332,6 +344,12 @@ pub fn record_raw(text: &str) {
                     creator_sold: false,
                     mayhem_or_nonstd: false,
                     slot0_sol: 0.0,
+                    max_single_org_buy_sol: 0.0,
+                    wallet_cum_sol: HashMap::new(),
+                    max_wallet_cum_sol: 0.0,
+                    cur_inflow_slot: slot,
+                    cur_slot_inflow_sol: 0.0,
+                    max_slot_inflow_sol: 0.0,
                     peak_real_sol: 0.0,
                     latest_real_sol: 0.0,
                     latest_vsol: INIT_VSOL_LAMPORTS,
@@ -401,10 +419,28 @@ pub fn record_raw(text: &str) {
                         st.creator_sold = true;
                     }
                 } else {
+                    let sol_f = (sol as f64) / 1_000_000_000.0;
                     if is_buy {
                         if sol >= MIN_ORGANIC_BUY_LAMPORTS {
                             st.organic_buyers.insert(user);
                             st.organic_buys += 1;
+                        }
+                        if sol_f > st.max_single_org_buy_sol {
+                            st.max_single_org_buy_sol = sol_f;
+                        }
+                        let cum = st.wallet_cum_sol.entry(user).or_insert(0.0);
+                        *cum += sol_f;
+                        if *cum > st.max_wallet_cum_sol {
+                            st.max_wallet_cum_sol = *cum;
+                        }
+                        if slot == st.cur_inflow_slot {
+                            st.cur_slot_inflow_sol += sol_f;
+                        } else {
+                            st.cur_inflow_slot = slot;
+                            st.cur_slot_inflow_sol = sol_f;
+                        }
+                        if st.cur_slot_inflow_sol > st.max_slot_inflow_sol {
+                            st.max_slot_inflow_sol = st.cur_slot_inflow_sol;
                         }
                     } else {
                         st.organic_sells += 1;
@@ -456,6 +492,13 @@ pub fn record_raw(text: &str) {
                     0.0
                 };
 
+                let anti_whale_ok = (max_single_buy_sol <= 0.0
+                    || st.max_single_org_buy_sol <= max_single_buy_sol)
+                    && (max_wallet_cum_limit <= 0.0
+                        || st.max_wallet_cum_sol <= max_wallet_cum_limit)
+                    && (max_slot_inflow_limit <= 0.0
+                        || st.max_slot_inflow_sol <= max_slot_inflow_limit);
+
                 let will_emit = !st.signal_emitted
                     && !st.mayhem_or_nonstd
                     && st.creator_launch_num == 1
@@ -463,6 +506,7 @@ pub fn record_raw(text: &str) {
                     && !is_bundle_slot
                     && st.slot0_sol <= max_slot0_sol
                     && organic_sol >= min_organic_sol
+                    && anti_whale_ok
                     && age_secs >= min_age_secs
                     && age_secs <= max_age_secs
                     && real_sol >= min_pool_sol
@@ -492,6 +536,9 @@ pub fn record_raw(text: &str) {
                     mayhem_or_nonstd: st.mayhem_or_nonstd,
                     slot0_sol: st.slot0_sol,
                     organic_sol,
+                    max_single_org_buy_sol: st.max_single_org_buy_sol,
+                    max_wallet_cum_sol: st.max_wallet_cum_sol,
+                    max_slot_inflow_sol: st.max_slot_inflow_sol,
                     real_sol,
                     peak_real_sol: st.peak_real_sol,
                     drawdown_pct,
