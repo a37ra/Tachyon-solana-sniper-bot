@@ -58,6 +58,65 @@ pub async fn subscribe_create_ix_signals(
         });
     }
 
+    let relay_tx: Option<tokio::sync::broadcast::Sender<String>> =
+        if let Ok(bind_addr) = std::env::var("SOLBOT_WS_RELAY_BIND") {
+            let bind_addr = bind_addr.trim().to_string();
+            if !bind_addr.is_empty() {
+                let (btx, _) = tokio::sync::broadcast::channel::<String>(2048);
+                let btx_srv = btx.clone();
+                tokio::spawn(async move {
+                    match tokio::net::TcpListener::bind(&bind_addr).await {
+                        Ok(listener) => {
+                            info!(bind = %bind_addr, "Local WS fan-out relay listening for secondary bot instances");
+                            while let Ok((stream, peer)) = listener.accept().await {
+                                let mut brx = btx_srv.subscribe();
+                                tokio::spawn(async move {
+                                    let Ok(ws) = tokio_tungstenite::accept_async(stream).await else {
+                                        return;
+                                    };
+                                    info!(?peer, "Local WS fan-out client connected");
+                                    let (mut w, mut r) = ws.split();
+                                    loop {
+                                        tokio::select! {
+                                             biased;
+                                            frame = brx.recv() => {
+                                                match frame {
+                                                    Ok(txt) => {
+                                                        if w.send(Message::Text(txt)).await.is_err() {
+                                                            break;
+                                                        }
+                                                    }
+                                                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                                                    Err(_) => break,
+                                                }
+                                            }
+                                            inc = r.next() => {
+                                                match inc {
+                                                    Some(Ok(Message::Ping(p))) => {
+                                                        if w.send(Message::Pong(p)).await.is_err() {
+                                                            break;
+                                                        }
+                                                    }
+                                                    Some(Ok(_)) => {}
+                                                    _ => break,
+                                                }
+                                            }
+                                        }
+                                    }
+                                });
+                            }
+                        }
+                        Err(e) => warn!(bind = %bind_addr, error = %e, "Failed to bind local WS fan-out relay"),
+                    }
+                });
+                Some(btx)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
     tokio::spawn(async move {
         let mut attempts = 0u32;
         let fallback_ws = std::env::var("SOLBOT_FALLBACK_WS_URL")
@@ -70,7 +129,7 @@ pub async fn subscribe_create_ix_signals(
                 &ws_url
             };
             let t0 = std::time::Instant::now();
-            match run_logs_loop(active_ws, &program_ids, rpc.clone(), &tx, &seen).await {
+            match run_logs_loop(active_ws, &program_ids, rpc.clone(), &tx, &seen, relay_tx.as_ref()).await {
                 Ok(()) => return,
                 Err(e) => {
                     if t0.elapsed() >= Duration::from_secs(10) {
@@ -231,6 +290,7 @@ async fn run_logs_loop(
     rpc: Arc<RpcClient>,
     tx: &mpsc::Sender<Signal>,
     seen: &SeenPools,
+    relay_tx: Option<&tokio::sync::broadcast::Sender<String>>,
 ) -> Result<()> {
     let (ws_stream, _) = tokio_tungstenite::connect_async(ws_url).await?;
     let (mut write, mut read) = ws_stream.split();
@@ -280,6 +340,9 @@ async fn run_logs_loop(
                 last_ws_msg = std::time::Instant::now();
                 match msg {
                     Some(Ok(Message::Text(text))) => {
+                        if let Some(rtx) = relay_tx {
+                            let _ = rtx.send(text.clone());
+                        }
                         crate::signal::trade_recorder::record_raw(&text);
                         for snap in crate::signal::trade_recorder::take_ready_breakout_signals() {
                             if let Some(mut signal) = finalize_signal(
