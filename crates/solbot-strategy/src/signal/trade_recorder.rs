@@ -55,6 +55,7 @@ pub struct MintFlowSnapshot {
     pub spot_price_sol: f64,
     pub last_slot: u64,
     pub last_update_ms: i64,
+    pub breakout_triggered: bool,
 }
 
 struct MintFlowState {
@@ -66,6 +67,7 @@ struct MintFlowState {
     birth_slot: u64,
     last_slot: u64,
     last_update_ms: i64,
+    seen_reserves: HashSet<(u64, u64)>,
     buyers: HashSet<Pubkey>,
     organic_buyers: HashSet<Pubkey>,
     n_buys: u32,
@@ -320,6 +322,7 @@ pub fn record_raw(text: &str) {
                     birth_slot: slot,
                     last_slot: slot,
                     last_update_ms: now_ms,
+                    seen_reserves: HashSet::new(),
                     buyers: HashSet::new(),
                     organic_buyers: HashSet::new(),
                     n_buys: 0,
@@ -367,7 +370,8 @@ pub fn record_raw(text: &str) {
             };
 
             if let Some(mut st) = ft.mints.get_mut(&mint) {
-                if st.latest_vsol == vsol && st.latest_vtok == vtok {
+                // Reject out-of-order stale slots and multi-node batch echoes from public Solana WS cluster
+                if slot < st.last_slot || !st.seen_reserves.insert((vsol, vtok)) {
                     continue;
                 }
                 let age_secs = ((now_ms - st.born_ms).max(0) as f64) / 1000.0;
@@ -452,6 +456,26 @@ pub fn record_raw(text: &str) {
                     0.0
                 };
 
+                let will_emit = !st.signal_emitted
+                    && !st.mayhem_or_nonstd
+                    && st.creator_launch_num == 1
+                    && !(no_creator_sell && st.creator_sold)
+                    && !is_bundle_slot
+                    && st.slot0_sol <= max_slot0_sol
+                    && organic_sol >= min_organic_sol
+                    && age_secs >= min_age_secs
+                    && age_secs <= max_age_secs
+                    && real_sol >= min_pool_sol
+                    && real_sol <= max_pool_sol
+                    && organic_buyers >= min_unique_buyers
+                    && inflow_win_sol >= min_inflow_sol
+                    && drawdown_pct <= max_dd_pct
+                    && organic_sell_ratio <= max_sell_ratio;
+
+                if will_emit {
+                    st.signal_emitted = true;
+                }
+
                 let snap = MintFlowSnapshot {
                     mint: st.mint.clone(),
                     pool: st.pool.clone(),
@@ -477,26 +501,11 @@ pub fn record_raw(text: &str) {
                     spot_price_sol,
                     last_slot: slot,
                     last_update_ms: now_ms,
+                    breakout_triggered: st.signal_emitted,
                 };
                 ft.by_str.insert(st.mint.clone(), snap.clone());
 
-                if !st.signal_emitted
-                    && !st.mayhem_or_nonstd
-                    && st.creator_launch_num == 1
-                    && !(no_creator_sell && st.creator_sold)
-                    && !is_bundle_slot
-                    && st.slot0_sol <= max_slot0_sol
-                    && organic_sol >= min_organic_sol
-                    && age_secs >= min_age_secs
-                    && age_secs <= max_age_secs
-                    && real_sol >= min_pool_sol
-                    && real_sol <= max_pool_sol
-                    && organic_buyers >= min_unique_buyers
-                    && inflow_win_sol >= min_inflow_sol
-                    && drawdown_pct <= max_dd_pct
-                    && organic_sell_ratio <= max_sell_ratio
-                {
-                    st.signal_emitted = true;
+                if will_emit {
                     if let Ok(mut q) = ft.ready_signals.lock() {
                         q.push(snap);
                     }

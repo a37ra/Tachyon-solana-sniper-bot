@@ -250,13 +250,14 @@ async fn check_pump_fun_liquidity(
                 duration_ms: start.elapsed().as_millis() as u64,
             };
         }
-        if snap.organic_buyers >= min_unique_buyers
-            && snap.organic_sol >= min_organic_sol
-            && snap.real_sol >= min_pool_sol
-            && snap.real_sol <= max_pool_sol
-            && snap.inflow_win_sol >= min_inflow_sol
-            && snap.drawdown_pct <= max_confirm_drop_pct
-            && snap.organic_sell_ratio <= max_sell_ratio
+        if snap.breakout_triggered
+            || (snap.organic_buyers >= min_unique_buyers
+                && snap.organic_sol >= min_organic_sol
+                && snap.real_sol >= min_pool_sol
+                && snap.real_sol <= max_pool_sol
+                && snap.inflow_win_sol >= min_inflow_sol
+                && snap.drawdown_pct <= max_confirm_drop_pct
+                && snap.organic_sell_ratio <= max_sell_ratio)
         {
             if let Some(reason) = check_cached_serial_deployer(&snap.creator) {
                 return CheckResult {
@@ -287,13 +288,13 @@ async fn check_pump_fun_liquidity(
                             duration_ms: start.elapsed().as_millis() as u64,
                         };
                     }
-                    if curve.real_sol_reserves > max_lamports.saturating_mul(105) / 100 {
+                    if curve.real_sol_reserves > max_lamports.saturating_mul(125) / 100 {
                         return CheckResult {
                             passed: false,
                             reason: Some(format!(
                                 "Pool overheated on-chain: {:.2} > {:.2} SOL",
                                 curve.real_sol_reserves as f64 / 1e9,
-                                max_pool_sol
+                                max_pool_sol * 1.25
                             )),
                             duration_ms: start.elapsed().as_millis() as u64,
                         };
@@ -313,11 +314,13 @@ async fn check_pump_fun_liquidity(
                     tracing::info!(
                         mint = %signal.mint,
                         real_sol = curve.real_sol_reserves as f64 / 1e9,
-                        buyers = snap.unique_buyers,
-                        sell_ratio = snap.sell_ratio,
+                        slot0_sol = snap.slot0_sol,
+                        organic_sol = snap.organic_sol,
+                        organic_buyers = snap.organic_buyers,
+                        organic_sr = snap.organic_sell_ratio,
                         inflow_win_sol = snap.inflow_win_sol,
                         age_secs = snap.age_secs,
-                        "S3 crowd-breakout confirmed on-chain"
+                        "S4 anti-sybil crowd-breakout confirmed on-chain"
                     );
                     return CheckResult {
                         passed: true,
@@ -326,6 +329,18 @@ async fn check_pump_fun_liquidity(
                     };
                 }
             }
+            return CheckResult {
+                passed: false,
+                reason: Some("Failed to fetch on-chain curve data for S4 breakout".to_string()),
+                duration_ms: start.elapsed().as_millis() as u64,
+            };
+        }
+        if crate::signal::trade_recorder::ws_breakout_trigger_enabled() {
+            return CheckResult {
+                passed: false,
+                reason: Some("S4 breakout criteria not satisfied".to_string()),
+                duration_ms: start.elapsed().as_millis() as u64,
+            };
         }
     }
 

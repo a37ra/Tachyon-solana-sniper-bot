@@ -455,28 +455,15 @@ async fn main() -> anyhow::Result<()> {
                     continue;
                 }
 
-                // Prefer zero-credit live WebSocket TradeEvent spot prices when fresh (<= 1.5s old);
-                // only fall back to RPC get_multiple_accounts for positions without recent WS trades.
-                let now_ms = chrono::Utc::now().timestamp_millis();
+                // Always use authoritative on-chain get_multiple_accounts (processed commitment)
+                // for open position exit PriceTicks (~20 credits/hr total) so out-of-order public WS
+                // echoes can never trigger false stop-losses.
                 let mut valid_positions = Vec::new();
                 let mut pool_pks = Vec::new();
                 for pos in open_positions {
                     let Some(handle) = actors_tick.get(&pos.mint) else {
                         continue;
                     };
-                    if let Some(snap) =
-                        solbot_strategy::signal::trade_recorder::get_mint_flow_snapshot(&pos.mint)
-                    {
-                        if now_ms - snap.last_update_ms <= 1500 && snap.spot_price_sol > 0.0 {
-                            let _ = handle.market_data_tx.try_send(MarketDataEvent::PriceTick {
-                                mint: pos.mint.clone(),
-                                pool_address: pos.pool_address.clone(),
-                                price_sol: snap.spot_price_sol,
-                                timestamp: now_ms as u64,
-                            });
-                            continue;
-                        }
-                    }
                     let Ok(pool_pk) = solana_pubkey::Pubkey::from_str(&pos.pool_address) else {
                         continue;
                     };
