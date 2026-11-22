@@ -428,10 +428,13 @@ pub fn record_raw(text: &str) {
                         if sol_f > st.max_single_org_buy_sol {
                             st.max_single_org_buy_sol = sol_f;
                         }
-                        let cum = st.wallet_cum_sol.entry(user).or_insert(0.0);
-                        *cum += sol_f;
-                        if *cum > st.max_wallet_cum_sol {
-                            st.max_wallet_cum_sol = *cum;
+                        let cum_val = {
+                            let cum = st.wallet_cum_sol.entry(user).or_insert(0.0);
+                            *cum += sol_f;
+                            *cum
+                        };
+                        if cum_val > st.max_wallet_cum_sol {
+                            st.max_wallet_cum_sol = cum_val;
                         }
                         if slot == st.cur_inflow_slot {
                             st.cur_slot_inflow_sol += sol_f;
