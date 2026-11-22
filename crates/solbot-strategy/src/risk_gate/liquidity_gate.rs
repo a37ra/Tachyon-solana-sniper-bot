@@ -341,10 +341,32 @@ async fn check_pump_fun_liquidity(
                             duration_ms: start.elapsed().as_millis() as u64,
                         };
                     }
+                    let chain_real_sol = curve.real_sol_reserves as f64 / 1e9;
+                    let ws_chain_div = (chain_real_sol - snap.real_sol).abs();
+                    let max_div = env_f64("SOLBOT_MAX_WS_CHAIN_DIVERGENCE_SOL", 0.0);
+                    if max_div > 0.0 && ws_chain_div > max_div {
+                        tracing::warn!(
+                            mint = %signal.mint,
+                            ws_real_sol = snap.real_sol,
+                            chain_real_sol,
+                            ws_chain_div,
+                            "WS/chain divergence guard: unstable feed or whipsaw — skipping entry"
+                        );
+                        return CheckResult {
+                            passed: false,
+                            reason: Some(format!(
+                                "WS/chain divergence {:.2} SOL > max {:.2} SOL (whipsaw / unreliable feed)",
+                                ws_chain_div, max_div
+                            )),
+                            duration_ms: start.elapsed().as_millis() as u64,
+                        };
+                    }
                     record_confirmed_pool_sol(&signal.pool_address, curve.real_sol_reserves);
                     tracing::info!(
                         mint = %signal.mint,
                         real_sol = curve.real_sol_reserves as f64 / 1e9,
+                        ws_real_sol = snap.real_sol,
+                        ws_chain_div,
                         slot0_sol = snap.slot0_sol,
                         organic_sol = snap.organic_sol,
                         organic_buyers = snap.organic_buyers,
