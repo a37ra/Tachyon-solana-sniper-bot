@@ -122,23 +122,63 @@ pub async fn subscribe_create_ix_signals(
         let fallback_ws = std::env::var("SOLBOT_FALLBACK_WS_URL")
             .ok()
             .filter(|s| !s.trim().is_empty());
+        // Budget for paid fallback WS (Helius) so an outage cannot burn credits: max secs per hour.
+        let fallback_budget_secs: u64 = std::env::var("SOLBOT_FALLBACK_BUDGET_SECS_PER_HOUR")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(600);
+        let fallback_session_cap = Duration::from_secs(90);
+        let mut budget_window_start = std::time::Instant::now();
+        let mut fallback_used_secs: u64 = 0;
+        let jitter_ms = |max: u64| -> u64 {
+            (std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.subsec_nanos() as u64)
+                .unwrap_or(0))
+                % max.max(1)
+        };
         loop {
-            let active_ws = if attempts >= 5 {
+            if budget_window_start.elapsed() >= Duration::from_secs(3600) {
+                budget_window_start = std::time::Instant::now();
+                fallback_used_secs = 0;
+            }
+            let use_fallback = attempts >= 5
+                && fallback_ws.is_some()
+                && fallback_used_secs < fallback_budget_secs;
+            let active_ws = if use_fallback {
                 fallback_ws.as_deref().unwrap_or(&ws_url)
             } else {
                 &ws_url
             };
             let t0 = std::time::Instant::now();
-            match run_logs_loop(active_ws, &program_ids, rpc.clone(), &tx, &seen, relay_tx.as_ref()).await {
+            let run = run_logs_loop(active_ws, &program_ids, rpc.clone(), &tx, &seen, relay_tx.as_ref());
+            let res = if use_fallback {
+                warn!(ws = active_ws, cap_s = fallback_session_cap.as_secs(), "Primary WS failing — using budgeted fallback WS");
+                match tokio::time::timeout(fallback_session_cap, run).await {
+                    Ok(r) => r,
+                    Err(_) => Err(anyhow!("fallback session cap reached — returning to primary")),
+                }
+            } else {
+                run.await
+            };
+            if use_fallback {
+                fallback_used_secs += t0.elapsed().as_secs();
+                attempts = 0;
+            }
+            match res {
                 Ok(()) => return,
                 Err(e) => {
-                    if t0.elapsed() >= Duration::from_secs(10) {
+                    if use_fallback {
+                        sleep(Duration::from_millis(300)).await;
+                    } else if t0.elapsed() >= Duration::from_secs(10) {
                         attempts = 0;
-                        debug!(error = %e, ws = active_ws, elapsed_s = t0.elapsed().as_secs(), "Public WS session rotated — fast reconnecting");
-                        sleep(Duration::from_millis(150)).await;
+                        debug!(error = %e, ws = active_ws, elapsed_s = t0.elapsed().as_secs(), "Public WS session rotated — reconnecting");
+                        sleep(Duration::from_millis(300 + jitter_ms(700))).await;
                     } else {
                         attempts = attempts.saturating_add(1);
-                        let backoff = Duration::from_secs((1u64 << attempts.min(4)).min(16));
+                        // Jittered backoff 2s..10s; public node rate-limits tight reconnect loops (HTTP 413).
+                        let base = (2u64 << attempts.min(3)).min(10);
+                        let backoff = Duration::from_millis(base * 1000 + jitter_ms(1500));
                         error!(error = %e, attempt = attempts, ws = active_ws, ?backoff, "create-ix WS reconnect");
                         sleep(backoff).await;
                     }
