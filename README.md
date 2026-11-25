@@ -1,370 +1,217 @@
 <div align="center">
 
-<img src="./bannertachyon.jpg" width="100%" alt="Tachyon banner" />
+<img src="./bannertachyon.jpg" width="100%" alt="Tachyon" />
 
-# ⚡ Tachyon — Solana Sniper Bot
+# Tachyon
 
-**Experimental · Paper-first · Rust workspace**
+**Low-overhead Solana DEX execution engine, on-chain flow filter, and paper/live sniper workspace in Rust.**
 
-*Экспериментальный · Paper-first · Rust workspace*
+![Rust](https://img.shields.io/badge/rust-stable-b7410e?style=flat-square&logo=rust&logoColor=white)
+![Solana](https://img.shields.io/badge/solana-mainnet-9945FF?style=flat-square&logo=solana&logoColor=white)
+![Mode](https://img.shields.io/badge/default-paper--first-1f6feb?style=flat-square)
+![Status](https://img.shields.io/badge/status-research%20%2F%20alpha-d29922?style=flat-square)
 
-![Status](https://img.shields.io/badge/status-experimental-orange?style=for-the-badge)
-![Mode](https://img.shields.io/badge/mode-paper--first-blue?style=for-the-badge)
-![Language](https://img.shields.io/badge/rust-stable-b7410e?style=for-the-badge&logo=rust&logoColor=white)
-![Chain](https://img.shields.io/badge/chain-Solana-9945FF?style=for-the-badge&logo=solana&logoColor=white)
-
-[Overview](#-overview--обзор) •
-[Architecture](#-architecture--архитектура) •
-[Quick Start](#-quick-start--быстрый-старт) •
-[Configuration](#-configuration--конфигурация) •
-[Security](#-signer--security-model--signer-и-модель-безопасности) •
-[Limitations](#-known-limitations--известные-ограничения)
+[Architecture](#architecture) | [What Makes It Different](#what-makes-it-different) | [Quick Start](#quick-start) | [Configuration](#configuration) | [Backtesting](#tick-recorder-and-backtesting) | [Signer Isolation](#signer-isolation)
 
 </div>
 
 ---
 
 > [!WARNING]
-> **Project status: experimental / paper-first.**
-> This repository is a research Rust workspace for validating an execution pipeline / sniping approach on Solana.
-> It is **not a finished product**, **not a production-ready bot**, **not a profit guarantee**, and **not financial advice**.
->
-> **🇷🇺 Статус проекта: experimental / paper-first.**
-> Этот репозиторий — исследовательский Rust workspace для проверки execution pipeline / sniper-подхода в Solana.
-> Это **не завершённый продукт**, **не production-ready бот**, **не гарантия прибыли** и **не финансовая рекомендация**.
-
----
-
-## 📖 Overview / Обзор
-
-### What it is
-
-The project explores the following chain:
-
-1. Detection of pool / curve creation events and related create-events.
-2. Technical pre-buy checks (**risk-gate**).
-3. Building unsigned swap transactions for several DEXes.
-4. Paper execution (dry-run) with journaling.
-5. Isolated signing through a separate signer process over a Unix socket (gRPC over UDS).
-
-### What it is NOT
-
-- ❌ Not a "money button".
-- ❌ Makes no promise of a sustainable edge.
-- ❌ Not a finished production live loop.
-- ❌ Does not remove infrastructure risks from the operator (RPC, latency, degraded signal sources, slippage, etc.).
+> **Research software - paper-first by default.**
+> Tachyon is an engineering workspace built to test on-chain microstructure hypotheses on Solana without burning capital on blind assumptions. Live execution is gated behind strict fail-closed checks and requires an isolated signer daemon. Nothing here is financial advice or a guaranteed edge.
 
 <details>
-<summary><b>🇷🇺 Русский</b></summary>
+<summary><b>Кратко на русском (RU)</b></summary>
 
-### Что это
+**Tachyon** - модульный Rust-движок для анализа микроструктуры запусков на Solana (в первую очередь кривых Pump.fun, а также парсеров/билдеров под Raydium и Meteora), записи полного тикового потока и торговли в paper/live режимах.
 
-Проект исследует связку:
-
-1. детекция событий создания пулов/кривых и related create-событий;
-2. технические pre-buy проверки (**risk-gate**);
-3. сборка неподписанных swap-транзакций для нескольких DEX;
-4. paper execution (dry-run) и журналирование;
-5. изолированное подписание через отдельный signer-процесс по Unix socket (gRPC over UDS).
-
-### Чего это НЕ делает
-
-- ❌ не является «кнопкой денег»;
-- ❌ не обещает устойчивый edge;
-- ❌ не предоставляет завершённый production live-контур;
-- ❌ не снимает с оператора риски инфраструктуры (RPC, задержки, деградации источников сигналов, проскальзывания и т.д.).
+Ключевые особенности:
+- Декодирование сырых бинарных событий `CreateEvent` / `TradeEvent` прямо из `logsSubscribe` за доли миллисекунды (`0.1-0.4 мс` на расчёт фильтров и сборку транзакции в Rust).
+- Защита от фейкового объёма: отделение Jito-бандлов нулевого слота (`slot0`) от реального органического притока, отсев пылевых кошельков (`< 0.05 SOL`), детектор мутаций виртуальных резервов (`Mayhem`), проверка истории деплоера и фильтр рассинхрона `WS vs on-chain`.
+- Честная математика `x * y = k`: учёт комиссий протокола/автора, собственного price impact, многоступенчатых тейков (`TP1/TP2/TP3`), трейлинга, таймаута флэта и принудительного выхода на `~77.7 SOL` до заморозки кривой при миграции на `85 SOL`.
+- Экономный сетевой контур: локальный WebSocket ретранслятор (`127.0.0.1:18900`) для запуска нескольких стратегий (A/B тестов) поверх одного внешнего соединения + лимитированный фоллбэк на резервный WS.
+- Изолированный подписант `solbot-signer` в отдельном процессе по Unix socket (gRPC over UDS) с защитой от реплеев, лимитами позиции и `mlock` / `zeroize`.
 
 </details>
 
 ---
 
-## 🧭 Current Status & Boundaries / Текущий статус и границы
+## Why This Exists
 
-- Main implementation focus: `solbot-strategy` + `solbot-signer`.
-- Runtime is **paper-first** by default (`SOLBOT_PAPER_TRADING=true` unless live is explicitly enabled).
-- Live mode has fail-closed guards (e.g. refuses to start with an unsafe RPC profile or when `simulate_sell` is disabled).
-- Some code areas are partial or placeholders (especially several debug binaries and some signal paths).
-- `solbot-cli`, `solbot-notify`, parts of ops/deploy and the alpha layer are at different maturity levels — some are scaffolding.
+Most open-source Solana "sniper bots" fail for three predictable reasons:
+1. They buy `Create` at `t=0` over public WebSockets (`500-900ms` late) and become exit liquidity for `0-slot` Jito bundles.
+2. Their paper mode fakes fills at flat mid-price without curve impact, fees, or exit latency, making losing strategies look profitable.
+3. They keep private keys inside the same process that parses untrusted RPC payloads.
 
-<details>
-<summary><b>🇷🇺 Русский</b></summary>
-
-- Основной фокус реализации: `solbot-strategy` + `solbot-signer`.
-- По умолчанию runtime ориентирован на **paper-first** (`SOLBOT_PAPER_TRADING=true`, если явно не включать live).
-- В live есть fail-closed ограничения (например, отказ старта при unsafe профиле RPC / отключённом `simulate_sell`).
-- В коде есть частично реализованные и/или placeholder-зоны (особенно в ряде debug/binary и некоторых signal path).
-- `solbot-cli`, `solbot-notify`, часть ops/deploy и alpha-слой — на разных стадиях зрелости, местами это заготовки.
-
-</details>
+Tachyon was built from the opposite end: record every raw tick first, model exact constant-product curve fills with real latency and fees, filter out sybil/bundle flow before touching an actor, and isolate key material behind a separate UDS gRPC boundary.
 
 ---
 
-## 🏗 Architecture / Архитектура
+## What Makes It Different
 
-The workspace (`Cargo.toml`) contains 6 crates:
+- **Raw Borsh log decoding (`trade_recorder`)** - decodes Pump.fun `CreateEvent` and `TradeEvent` payloads straight out of `Program data:` frames without extra `getTransaction` calls. Hot-path filtering and unsigned swap construction take `~0.1-0.4ms`.
+- **Anti-sybil microstructure filters** - separates creation-slot Jito bundle volume (`slot <= birth_slot + 1`) from post-launch organic flow, ignores `< 0.05 SOL` sybil dust wallets, rejects dynamic virtual-reserve curves (`Mayhem`), checks 6h deployer history on-chain, and drops entries when lagging WebSocket state diverges from on-chain reserves (`SOLBOT_MAX_WS_CHAIN_DIVERGENCE_SOL`).
+- **Exact bonding-curve physics** - paper fills and live sizing compute real `x * y = k` reserve math, protocol + creator fees, own price impact, multi-tranche exits (`TP1 / TP2 / TP3`), trailing high-water stops, early momentum timeouts, and a pre-graduation ceiling guard (`~77.7 SOL`) before the `85 SOL` migration freeze.
+- **Zero-bloat multi-bot A/B testing** - primary node can expose a localhost WebSocket fan-out relay (`SOLBOT_WS_RELAY_BIND=127.0.0.1:18900`) so secondary strategy processes run side-by-side on the exact same tick stream without hitting per-IP RPC limits or burning paid WebSocket credits.
+- **Crash recovery & state hydration** - open positions, state transitions, and circuit-breaker counters persist in SQLite (`WAL` mode) and rehydrate on restart.
 
-| Crate | Description / Описание |
+---
+
+## Architecture
+
+The workspace splits responsibilities across 6 crates:
+
+| Crate | Role |
 |---|---|
-| 🧩 `solbot-common` | Shared types, errors, config structs, OTel init/spans. / Общие типы, ошибки, конфиг-структуры, OTel init/spans. |
-| 🎯 `solbot-strategy` | Core pipeline: signal intake, dedup/filter, risk-gate, actor loop, tx building, routing, paper logging, state/hydration. / Основной pipeline: приём сигналов, dedup/фильтры, risk-gate, actor loop, сборка tx, роутинг, paper-логи, state/hydration. |
-| 🔐 `solbot-signer` | Standalone signer service (gRPC over Unix socket), anti-replay ledger, audit log, intent validation, signing. / Отдельный signer-сервис (gRPC over Unix socket), anti-replay ledger, audit log, валидация intent, подпись. |
-| 📣 `solbot-notify` | Event bus + notification events. / Event bus и события уведомлений. |
-| 💬 `solbot-telegram` | Telegram delivery + SMTP fallback for critical alerts. / Отправка в Telegram + SMTP fallback для critical alerts. |
-| 🛠 `solbot-cli` | Admin CLI (currently mostly logging / scaffold commands). / Административный CLI (сейчас в основном логирующие / каркасные команды). |
-
-### Execution flow: signal → decision → tx / Поток выполнения
+| `solbot-common` | Shared domain types, position state machine, YAML config loaders, OpenTelemetry setup. |
+| `solbot-strategy` | Signal ingestion, flow tracker, tick recorder, pre-buy risk gate, per-mint actors, DEX tx builders, router, SQLite state. |
+| `solbot-signer` | Isolated signing daemon (gRPC over Unix Domain Socket), monotonic sequence ledger, intent policy checks, audit log. |
+| `solbot-notify` | Internal broadcast event bus for lifecycle and risk alerts. |
+| `solbot-telegram` | Per-instance Telegram bot (`/status`, `/positions`, `/pnl`, `/kill_switch`, `/resume`) + SMTP fallback. |
+| `solbot-cli` | Operator / diagnostic CLI utilities. |
 
 ```mermaid
 flowchart LR
-    A["Signal source<br/>create-ix logs / ws / geyser"] --> B["Dedup + queue guards"]
-    B --> C["Risk Gate<br/>freeze / lp / token2022 / simulate"]
-    C -->|Reject| D["Paper reject log + stats"]
-    C -->|Accept| E["Actor per mint"]
-    E --> F["Tx builder<br/>unsigned tx base64"]
-    F --> G["Signer IPC over UDS"]
-    G -->|Accepted| H["Router / Jito / RPC path"]
-    G -->|Rejected| I["Audit + reject reason"]
+    WS["logsSubscribe / Geyser<br/>(+ optional localhost WS relay)"] --> TR["Flow Tracker & Dedup<br/>slot0 split / sybil & mayhem filter"]
+    TR --> RG["Pre-Buy Risk Gate<br/>authorities / deployer / WS-chain div"]
+    RG -->|Accept| ACT["Per-Mint Actor<br/>sizing / TP1-3 / trail / ceiling 78S"]
+    ACT --> TX["Unsigned Swap Builder<br/>Pump.fun / Raydium / Meteora"]
+    TX -->|Paper| SIM["Exact x*y=k Fill Sim<br/>+ SQLite & Telegram"]
+    TX -->|Live| SIG["solbot-signer (UDS gRPC)<br/>policy + anti-replay"]
+    SIG --> RTR["Router<br/>Jito / RPC"]
 ```
 
-> **Key idea:** the buy path inside the actor runs only after `RiskGateVerdict::Accept`.
-> **🇷🇺 Ключевая идея:** buy path в actor идёт только после `RiskGateVerdict::Accept`.
+### Supported DEX Parsers & Builders
+- **Pump.fun** - primary battle-tested path (bonding curve math, flow tracker, graduation ceiling guard, tick recorder).
+- **Raydium** - AMM v4, CPMM, CLMM swap builders and account parsers.
+- **Meteora** - DLMM and Dynamic AMM v2 builders.
+
+*(Note: Raydium and Meteora modules provide builders/parsers, while the active microstructure research loop is focused on Pump.fun).*
 
 ---
 
-## 📡 Signal Sources & DEXes / Источники сигналов и DEX
+## Quick Start
 
-### Signal sources / Источники сигналов
+### Prerequisites
+- Rust stable (`rust-toolchain.toml`)
+- `protoc` (for `proto/signer.proto` in `build.rs`)
+- SQLite3 development libraries
 
-| `SIGNAL_SOURCE` | Description / Описание |
-|---|---|
-| `helius_logs` *(default / дефолт)* | Create-ix via `logsSubscribe`. / create-ix через `logsSubscribe`. |
-| `helius_ws` | Account-update stream via Helius WS. / Поток account updates через Helius WS. |
-| `geyser_grpc` | Account-update stream via Geyser. / Поток account updates через Geyser. |
-| `both` / `helius_both` | Combined mode. / Комбинированный режим. |
-
-Override: `SOLBOT_CREATE_IX=true` forces the create-ix source on. / Override `SOLBOT_CREATE_IX=true` принудительно включает create-ix источник.
-
-### DEXes / programs with parsers & builders / DEX и программы с парсингом и билдерами
-
-- 🟢 Pump.fun
-- 🟣 Raydium — AMM v4 / CPMM / CLMM
-- 🔵 Meteora — DLMM / DAMM v2 (dynamic)
-
-> [!NOTE]
-> A module/builder existing in the code does **not** mean "production-ready execution".
-> *Наличие модуля/билдера в коде не равно «production-ready исполнению».*
-
----
-
-## 🛡 Risk Gate
-
-The risk-gate performs pre-buy checks (with timeout / fail-closed behavior):
-
-- ✅ mint / freeze authority checks;
-- ✅ LP lock checks (for supported programs / formats);
-- ✅ Token-2022 extension checks;
-- ✅ `simulate_sell` checks.
-
-Parameters depend on the RPC profile:
-
-| Setting | Meaning / Значение |
-|---|---|
-| `SOLBOT_PUBLIC_RPC=true` | Softer timeouts (paper/debug profile). / Более «мягкие» таймауты (paper/debug профиль). |
-| `SOLBOT_PUBLIC_RPC=false` | Private/fast RPC profile expected for live. / Ожидается private/fast RPC профиль для live. |
-
-Live start is **blocked** if the configuration is unsafe (e.g. `SOLBOT_SKIP_SIMULATE_SELL=true` or a public RPC profile).
-
-<details>
-<summary><b>🇷🇺 Русский</b></summary>
-
-Risk-gate выполняет pre-buy проверки (включая timeout / fail-closed поведение):
-
-- проверки mint/freeze authority;
-- проверки LP lock (по поддерживаемым программам/форматам);
-- проверки расширений Token-2022;
-- проверки `simulate_sell`.
-
-Параметры чувствительны к RPC-профилю (см. таблицу выше). Live-старт блокируется, если конфигурация небезопасна (например, `SOLBOT_SKIP_SIMULATE_SELL=true` или public RPC профиль).
-
-</details>
-
----
-
-## 🧪 Paper Mode vs Live Mode / Paper и Live режимы
-
-| | 📝 Paper *(primary / основной)* | 🔴 Live *(limited, not ready / ограниченно, не готов)* |
-|---|---|---|
-| **Enable / Включение** | `--paper` or `SOLBOT_PAPER_TRADING=true` | `SOLBOT_PAPER_TRADING=false` |
-| **Signer IPC** | Not required to start / Не нужен для старта | Required (`SOLBOT_SIGNER_SOCKET`) + key material / Нужен + ключевой материал |
-| **RPC profile** | Any / Любой | Strict: `SOLBOT_PUBLIC_RPC=false` |
-| **Output / Вывод** | `logs/paper_trades_YYYYMMDD.log` (or / или `SOLBOT_PAPER_TRADE_LOG_DIR`) | Real transactions / Реальные транзакции |
-| **Maturity / Зрелость** | Main working mode / Основной рабочий режим | Ops / routing still under development / Операционка и роутинг в разработке |
-
----
-
-## 🔐 Signer & Security Model / Signer и модель безопасности
-
-`solbot-signer` runs as a separate process and accepts intents over a Unix socket (default: `/tmp/solbot-signer.sock`):
-
-- 🔁 anti-replay via `ipc_sequence_ledger`;
-- 📜 audit trail via `signer_audit_log`;
-- ✔️ intent validation: program allowlist, intent age, size / slippage limits, destination checks, sequence monotonicity;
-- 📈 rate anomaly detection;
-- 🧠 key-material protection attempts (mlock / core-dump restrictions / zeroize on relevant paths).
-
-Key material can be loaded from:
-
-- an encrypted file (`SOLBOT_KEYPAIR_PATH` + `SOLBOT_KEYPAIR_PASSWORD`);
-- dev/test env (`SOLBOT_KEYPAIR_JSON`, `SOLBOT_KEYPAIR_BASE58`, `SOLBOT_KEYPAIR_FILE`).
-
-> [!CAUTION]
-> **Never commit secrets or keys to the repository.**
-> *Никогда не коммитьте секреты и ключи в репозиторий.*
-
-<details>
-<summary><b>🇷🇺 Русский</b></summary>
-
-`solbot-signer` запускается отдельным процессом и принимает intent’ы по Unix socket (`/tmp/solbot-signer.sock` по умолчанию):
-
-- anti-replay через `ipc_sequence_ledger`;
-- audit trail через `signer_audit_log`;
-- валидация intent (program allowlist, возраст intent, лимиты размера/слиппеджа, destination checks, монотонность sequence);
-- детекция аномальной скорости подписания;
-- попытки защиты key material (mlock / ограничения core dump / zeroize в соответствующих путях).
-
-Ключевой материал может быть загружен из:
-
-- зашифрованного файла (`SOLBOT_KEYPAIR_PATH` + `SOLBOT_KEYPAIR_PASSWORD`);
-- dev/test env (`SOLBOT_KEYPAIR_JSON`, `SOLBOT_KEYPAIR_BASE58`, `SOLBOT_KEYPAIR_FILE`).
-
-</details>
-
----
-
-## 🗂 Repository Structure / Структура репозитория
-
-```text
-.
-├── Cargo.toml
-├── proto/
-│   └── signer.proto
-├── migrations/
-├── config/
-├── crates/
-│   ├── solbot-common/
-│   ├── solbot-strategy/
-│   ├── solbot-signer/
-│   ├── solbot-notify/
-│   ├── solbot-telegram/
-│   └── solbot-cli/
-├── tests/
-│   ├── simulate/
-│   ├── property/
-│   └── chaos/
-├── deploy/
-└── scripts/
-```
-
----
-
-## 🚀 Quick Start / Быстрый старт
-
-### Requirements / Требования
-
-- Rust stable (see / см. `rust-toolchain.toml`)
-- `protoc` (used in `build.rs` for gRPC/proto / используется в `build.rs`)
-- SQLite dev libs (for / для `sqlx/sqlite`)
-
-### Run in paper mode / Запуск в paper-режиме
+### Build & Run (Paper Mode)
 
 ```bash
-# from the repository root / в корне репозитория
-cargo build -p solbot-strategy --release
-cargo run -p solbot-strategy --release -- --paper
+cargo build --release --bin solbot-strategy --bin solbot-telegram
 ```
+
+Create a minimal `.env` in the working directory:
+
+```ini
+SIGNAL_SOURCE=helius_logs
+HELIUS_WS_URL=wss://api.mainnet-beta.solana.com
+SOLBOT_FALLBACK_WS_URL=wss://mainnet.helius-rpc.com/?api-key=YOUR_KEY
+SOLBOT_FALLBACK_BUDGET_SECS_PER_HOUR=600
+SOLBOT_RPC_URL=https://mainnet.helius-rpc.com/?api-key=YOUR_KEY
+
+SOLBOT_PAPER_TRADING=true
+SOLBOT_PUBLIC_RPC=true
+SOLBOT_SKIP_SIMULATE_SELL=true
+DATABASE_URL=sqlite:solbot.db?mode=rwc
+
+# Example strategy profile (Late-Stage Graduation Magnet)
+SOLBOT_WS_BREAKOUT_TRIGGER=true
+SOLBOT_MIN_POOL_SOL=38.0
+SOLBOT_MAX_POOL_SOL=55.0
+SOLBOT_MAX_INITIAL_POOL_SOL=25.0
+SOLBOT_MIN_ORGANIC_SOL=12.0
+SOLBOT_MIN_UNIQUE_BUYERS=20
+SOLBOT_MAX_SELL_RATIO=0.50
+SOLBOT_MAX_CONFIRM_DROP_PCT=0.06
+SOLBOT_MIN_POOL_AGE_SECS=8
+SOLBOT_MAX_POOL_AGE_SECS=300
+SOLBOT_MAX_WS_CHAIN_DIVERGENCE_SOL=2.5
+
+SOLBOT_POSITION_SIZE_SOL=0.5
+SOLBOT_HARD_SL_PCT=0.12
+SOLBOT_TP1_MULT=1.45
+SOLBOT_TP1_SELL_PCT=0.65
+SOLBOT_TP2_MULT=1.80
+SOLBOT_TP2_SELL_PCT=0.25
+SOLBOT_TP3_MULT=2.30
+SOLBOT_TP3_SELL_PCT=0.10
+SOLBOT_TRAILING_ACTIVATION_PCT=0.14
+SOLBOT_TRAILING_DISTANCE_PCT=0.04
+SOLBOT_MOMENTUM_TIMEOUT_SECS=20
+SOLBOT_MOMENTUM_MIN_IMPULSE_PCT=0.03
+SOLBOT_MAX_HOLD_SECS=90
+```
+
+Launch the strategy engine (and optional Telegram bot):
+
+```bash
+./target/release/solbot-strategy --paper
+./target/release/solbot-telegram
+```
+
+### Running Parallel A/B Instances on One Host
+
+To run a second strategy without opening a second upstream `logsSubscribe` stream:
+1. Add `SOLBOT_WS_RELAY_BIND=127.0.0.1:18900` to Bot #1's `.env`.
+2. Point Bot #2's `.env` to `HELIUS_WS_URL=ws://127.0.0.1:18900`, set `SOLBOT_RECORD_TRADES=false`, a separate `DATABASE_URL`, `METRICS_PORT=9091`, and a separate `TELEGRAM_BOT_TOKEN`.
 
 ---
 
-## ⚙️ Configuration / Конфигурация
+## Configuration
 
-There is currently **no** `.env.example` in the repository. Create a `.env` manually and set only the values needed for your scenario.
+Key environment variables grouped by subsystem:
 
-*На текущий момент в репозитории **нет** `.env.example`. Создайте `.env` вручную и указывайте только нужные значения для вашего сценария.*
-
-### Minimum for paper / Минимум для paper
-
-| Variable | Purpose / Назначение | Status / Статус |
+| Group | Variables | Notes |
 |---|---|---|
-| `SIGNAL_SOURCE` | Signal source (`helius_logs`, etc.) / Источник сигналов | Required (set explicitly) / Обязательна (явно) |
-| `HELIUS_API_KEY` | Helius key for WS/logs and/or RPC fallback / Ключ Helius | Conditionally required / Условно обязательна |
-| `SOLBOT_RPC_URL` | RPC URL for strategy / risk-gate | Required for meaningful work / Обязательна для осмысленной работы |
-| `SOLBOT_PAPER_TRADING` | Paper mode (`true`/`false`) / Paper режим | Required (set explicitly) / Обязательна (явно) |
-| `SOLBOT_PUBLIC_RPC` | Public/private RPC profile / Профиль RPC | Optional / Опциональна |
-
-### Live / signer (experimental / экспериментально)
-
-| Variable | Purpose / Назначение | Status / Статус |
-|---|---|---|
-| `SOLBOT_SIGNER_SOCKET` | Signer UDS socket path / Путь к UDS socket | Required for live / Обязательна для live |
-| `SOLBOT_KEYPAIR_JSON` / `SOLBOT_KEYPAIR_PATH` + `SOLBOT_KEYPAIR_PASSWORD` / `SOLBOT_KEYPAIR_FILE` / `SOLBOT_KEYPAIR_BASE58` | Signer key source / Источник ключа signer | Required for signer / Обязательна для signer |
-| `SOLBOT_MAX_SIZE_LAMPORTS` | Absolute intent size limit / Абсолютный лимит размера intent | Optional / Опциональна |
-| `SOLBOT_HARD_CAP_BPS_LIMIT` | Hard-cap bps limit in signer / Лимит hard cap bps | Optional / Опциональна |
-| `SOLBOT_DEST_WHITELIST` | Destination address whitelist / Whitelist destination-адресов | Optional / Опциональна |
-| `SOLBOT_SIGNING_RATE_THRESHOLD` | Anomalous signing-rate threshold / Порог аномальной скорости подписания | Optional / Опциональна |
-| `SOLBOT_ALLOW_SYSTEM_PROGRAM` | Allow System Program (test flag) / Разрешить System Program (тестовый флаг) | Experimental / Экспериментальная |
-
-### Common runtime / debug variables / Часто используемые runtime/debug переменные
-
-| Variable | Purpose / Назначение | Status / Статус |
-|---|---|---|
-| `DATABASE_URL` | SQLite URL for strategy (`sqlite:solbot.db`) | Optional / Опциональна |
-| `SOLBOT_DB_PATH` | DB path for signer (`sqlite:../../solbot.db`) | Optional / Опциональна |
-| `METRICS_PORT` | `/metrics` port / Порт `/metrics` | Optional / Опциональна |
-| `SOLBOT_PRE_BUY_RPC_TIMEOUT_MS` | Pre-buy RPC timeout / Timeout pre-buy RPC | Optional / Опциональна |
-| `SOLBOT_MAX_SIGNAL_AGE_MS` | Stale-signal cutoff by age / Stale cutoff по возрасту сигнала | Optional / Опциональна |
-| `SOLBOT_MAX_CONCURRENT_SIGNALS` | Concurrent processing limit / Лимит параллельной обработки | Optional / Опциональна |
-| `SOLBOT_MAX_QUEUE_DEPTH` | Queue backlog limit / Ограничение backlog очереди | Optional / Опциональна |
-| `SOLBOT_SKIP_SIMULATE_SELL` | Disable `simulate_sell` (paper/debug only) | ⚠️ Unsafe for live / Unsafe для live |
-| `SOLBOT_CREATE_IX` | Force-enable create-ix source / Принудительно включить create-ix | Optional / Опциональна |
-| `SOLBOT_SIGNAL_WARMUP_SECS` | Seen-cache warmup for create-ix source | Optional / Опциональна |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | OTel export endpoint / Endpoint OTel экспорта | Optional / Опциональна |
-
-### Telegram / alerts
-
-| Variable | Purpose / Назначение | Status / Статус |
-|---|---|---|
-| `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | Telegram alerts | Optional / Опциональны |
-| `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `ALERT_RECIPIENT_EMAIL` | SMTP fallback for critical alerts / SMTP fallback для critical alerts | Optional / Опциональны |
+| **Connectivity** | `SIGNAL_SOURCE`, `HELIUS_WS_URL`, `SOLBOT_FALLBACK_WS_URL`, `SOLBOT_FALLBACK_BUDGET_SECS_PER_HOUR`, `SOLBOT_RPC_URL`, `SOLBOT_WS_RELAY_BIND` | Budgeted fallback caps paid WS usage per hour during public node hiccups. |
+| **Entry & Anti-Sybil** | `SOLBOT_MIN_POOL_SOL`, `SOLBOT_MAX_POOL_SOL`, `SOLBOT_MAX_INITIAL_POOL_SOL`, `SOLBOT_MIN_ORGANIC_SOL`, `SOLBOT_MIN_UNIQUE_BUYERS`, `SOLBOT_MAX_SINGLE_BUY_SOL`, `SOLBOT_MAX_WALLET_CUM_SOL`, `SOLBOT_MAX_SLOT_INFLOW_SOL`, `SOLBOT_MAX_WS_CHAIN_DIVERGENCE_SOL` | Controls `slot0` bundle cap, anti-whale split-bundle limits, and WS/chain lag guard. |
+| **Exits & Sizing** | `SOLBOT_POSITION_SIZE_SOL`, `SOLBOT_HARD_SL_PCT`, `SOLBOT_TP1_MULT`..`TP3_MULT`, `SOLBOT_TRAILING_ACTIVATION_PCT`, `SOLBOT_TRAILING_DISTANCE_PCT`, `SOLBOT_MOMENTUM_TIMEOUT_SECS`, `SOLBOT_MAX_HOLD_SECS` | Standard 30-SOL curves also enforce an automatic `~77.7 SOL` ceiling exit before migration freeze. |
+| **Safety & Ops** | `SOLBOT_PAPER_TRADING`, `SOLBOT_PUBLIC_RPC`, `SOLBOT_SKIP_SIMULATE_SELL`, `SOLBOT_KILL_SWITCH_PATH`, `DATABASE_URL`, `METRICS_PORT`, `SOLBOT_BOT_LABEL` | Live mode refuses to boot if `SOLBOT_PUBLIC_RPC=true` or `SOLBOT_SKIP_SIMULATE_SELL=true`. |
+| **Telegram** | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `SMTP_*` | Interactive commands + real-time trade lifecycle alerts. |
 
 ---
 
-## 🖥 Commands / Команды запуска и проверки
+## Tick Recorder and Backtesting
 
-### Main binaries / Основные бинарники
+Enable passive CSV tick recording on the primary instance:
 
-```bash
-cargo run -p solbot-strategy --release -- --paper
-cargo run -p solbot-signer --release
-cargo run -p solbot-telegram --release
-cargo run -p solbot-cli --release -- --help
+```ini
+SOLBOT_RECORD_TRADES=true
+SOLBOT_RECORD_DIR=logs/trades
+SOLBOT_RECORD_WINDOW_SECS=1200
 ```
 
-### Useful strategy bins / Полезные strategy bins
+This writes hourly files (`logs/trades/YYYY-MM-DD-HH.csv`) containing raw `Create` (`C`) and `Trade` (`T`) events with exact virtual reserves (`vsol`, `vtok`) and slot numbers.
+
+Evaluate hypotheses offline with realistic entry/exit latency and fees using `scripts/backtest.py`:
 
 ```bash
-cargo run -p solbot-strategy --release --bin paper_pipeline_e2e
-cargo run -p solbot-strategy --release --bin solbot-benchmark
-cargo run -p solbot-strategy --release --bin performance_benchmark
-cargo run -p solbot-strategy --release --bin stage_1_2_check
-cargo run -p solbot-strategy --release --bin helius_ws_debug
-cargo run -p solbot-strategy --release --bin helius_logs_debug
+python3 scripts/backtest.py load logs/trades
+python3 scripts/backtest.py search logs/trades 200 42
 ```
 
-`crates/solbot-strategy/src/bin/` contains additional service/debug binaries (`dex_listener_debug`, `queue_depth_diagnostic`, `test_*`, `e2e_devnet_test`, `devnet_roundtrip`, etc.) — treat them as engineering tools, **not** a stable user interface.
+Every tested hypothesis - both working and failed - is documented with forensic post-mortems in [STRATEGY_JOURNAL.md](./STRATEGY_JOURNAL.md).
 
-*В `crates/solbot-strategy/src/bin/` есть дополнительные служебные/debug binaries — воспринимайте их как инженерные инструменты, а не как стабильный пользовательский интерфейс.*
+---
 
-### Build / check / test / Сборка, проверка, тесты
+## Signer Isolation
+
+`solbot-strategy` never touches private keys. For live execution, `solbot-signer` runs as an independent OS process communicating over a Unix socket (`/tmp/solbot-signer.sock`):
+
+- **Monotonic sequence ledger** (`ipc_sequence_ledger`) prevents replay of signed intents.
+- **Policy enforcement** validates program allowlists, maximum lamport spend (`SOLBOT_MAX_SIZE_LAMPORTS`), slippage caps (`SOLBOT_HARD_CAP_BPS_LIMIT`), intent freshness, and abnormal signing velocity before signing.
+- **Memory hygiene** applies `mlock`, core-dump disabling, and `zeroize` on key material paths.
+- **Key sources** support encrypted keyfiles (`SOLBOT_KEYPAIR_PATH` + `SOLBOT_KEYPAIR_PASSWORD`) or explicit dev env vars.
+
+Never commit `.env`, `*.db`, or `*.pem` / keypair files to git.
+
+---
+
+## Development & Checks
 
 ```bash
 cargo check --workspace --all-targets
@@ -372,87 +219,10 @@ cargo clippy --workspace -- -D warnings
 cargo test --workspace
 ```
 
-Also available / Также есть:
-
-- crate-level tests (`crates/solbot-strategy/tests/...`);
-- root tests in / root-тесты в `tests/simulate`, `tests/property`, `tests/chaos`.
+Integration, property, and chaos test suites live under `tests/simulate`, `tests/property`, and `tests/chaos`.
 
 ---
 
-## 🔎 Logs & Diagnostics / Логи и диагностика
+## Disclaimer
 
-**Strategy log landmarks / Ориентиры в логах strategy:**
-
-- enabled signal-source messages / сообщения о включённых signal sources;
-- `Risk gate ACCEPT` / `Risk gate REJECT` + reason / причина;
-- drops: `queue_overflow` / `stale` / `bad_mint`;
-- final and periodic `PIPELINE STATS`;
-- `paper_trade_log` events: `ACCEPT`, `REJECT`, `PAPER_BUY`, `PAPER_SELL`.
-
-**Signer logs / Логи signer:**
-
-- startup, anti-replay ledger hydration / старт, гидрация anti-replay ledger;
-- `Intent ACCEPTED and signed` / `Intent REJECTED`;
-- validation-pipeline rejection reasons / причины отклонения validation pipeline.
-
----
-
-## ⚠️ Known Limitations & Risks / Известные ограничения и риски
-
-- The project is under active development; interfaces and behavior may change.
-- Some modules / binaries contain placeholder / TODO sections.
-- Not every YAML config in `config/` is guaranteed to be fully wired into the runtime path.
-- `solbot-cli` commands are currently mostly scaffolding / logging.
-- Live execution depends critically on RPC / infra quality and correct manual setup.
-- Having anti-rug / risk-gate checks does **not** mean "safe trading".
-
-<details>
-<summary><b>🇷🇺 Русский</b></summary>
-
-- Проект находится в активной разработке; интерфейсы и поведение могут меняться.
-- Некоторые модули/бинарники содержат placeholder/TODO участки.
-- Не все YAML-конфиги из `config/` гарантированно полностью подключены в runtime path.
-- Команды `solbot-cli` сейчас в основном каркасные/логирующие.
-- Live execution критически зависит от качества RPC/infra и корректности ручной настройки.
-- Наличие anti-rug/risk-gate не означает «безопасную торговлю».
-
-</details>
-
----
-
-## 🤝 Contributing / Разработка и контрибьютинг
-
-- Make small, verifiable changes. / Делайте небольшие и проверяемые изменения.
-- Before opening a PR, run / Перед PR желательно прогонять:
-  ```bash
-  cargo check --workspace --all-targets
-  cargo clippy --workspace -- -D warnings
-  cargo test --workspace
-  ```
-- For SQLx/SQLite migrations, verify compatibility with existing tests and the state/repo layers. / Для SQLx/SQLite миграций проверяйте совместимость с текущими тестами и state/repo слоями.
-- Do not add secrets or keys to git. / Не добавляйте секреты/ключи в git.
-
----
-
-## 📜 Disclaimer / Дисклеймер
-
-> [!IMPORTANT]
-> ### 🇬🇧 English
-> This project is a **Proof of Concept (PoC) / Experimental Prototype** built for rapid research, educational purposes, and testing architecture patterns in the Solana ecosystem. It is **NOT** a finished, production-ready product.
->
-> - **Use at your own risk:** the code is provided "AS IS" without any warranties.
-> - **Financial warning:** do not run this software with real funds without a comprehensive code audit and thorough testing. The author assumes no responsibility for any financial losses, bugs, or unexpected behavior.
->
-> ---
->
-> ### 🇷🇺 Русский
-> Данный проект является **экспериментальным прототипом (Proof of Concept)**, созданным исключительно в целях исследования, обучения и тестирования архитектурных решений в экосистеме Solana. Проект **НЕ является** законченным коммерческим или готовым к продакшену продуктом.
->
-> - **Использование на свой страх и риск:** код предоставляется по принципу «как есть» (AS IS) без каких-либо гарантий.
-> - **Финансовое предупреждение:** не запускайте данный софт с реальными средствами без глубокого аудита кода и проведения тестов. Автор не несёт ответственности за возможные финансовые потери, ошибки или нестабильную работу.
-
-<div align="center">
-
-⚡ *Built for research. Tested on paper. Use with caution.* ⚡
-
-</div>
+Provided **AS IS** for research and educational experimentation on Solana market microstructure. On-chain trading carries severe execution, smart-contract, RPC, and liquidity risks. Audit every line of the live routing and signing path and test with dust sizes before risking real funds.
